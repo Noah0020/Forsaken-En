@@ -147,101 +147,6 @@ end
 connectAutoPunchNetwork()
 
 -- ============================================================
--- AIM PUNCH / LOCK
--- ============================================================
-local MyAnimLockOn = false
-local aimPunch     = false
-local lastAimTrigger = {}
-local AIM_COOLDOWN   = 0.8
-local AIM_WINDOW     = 0.8
-local predictionValue = 4
-
-local aimPunchToggles = {
-    ["Character Lock"]   = false,
-    ["Camera Lock"]      = false,
-    ["Camera + Char Lock"] = false,
-}
-
-local killerNames = {"c00lkidd","Nosferatu","JohnDoe","1x1x1x1","Azure","Noli","Slasher","Sixer"}
-
-local punchAnimIds = {
-    "87259391926321","99100240941590","72685103823181","81905101227053",
-    "113936304594883","140703210927645","136007065400978","129843313690921",
-    "86709774283672","108807732150251","138040001965654","86096387000557",
-    "119850211147676","131696603025265","119462383658044","116618003477002",
-    "133491532453922","76649505662612","71190646367497",
-}
-
-local punchAnimSet = {}
-for _, id in ipairs(punchAnimIds) do punchAnimSet[id] = true end
-
-local cachedAnimator = nil
-local function refreshAnimator()
-    local char = lp.Character
-    if not char then cachedAnimator = nil; return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    cachedAnimator = hum and hum:FindFirstChildOfClass("Animator") or nil
-end
-
-RunService.RenderStepped:Connect(function()
-    aimPunch = MyAnimLockOn or aimPunchToggles["Character Lock"]
-    local camLockEnabled = aimPunchToggles["Camera Lock"]
-    if not (aimPunch or camLockEnabled) then return end
-
-    local myChar = lp.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return end
-    if not cachedAnimator then refreshAnimator() end
-    local animator = cachedAnimator
-    if not animator then return end
-
-    local camera = workspace.CurrentCamera
-    local playersFolder = workspace:FindFirstChild("Players")
-    local killersFolder = playersFolder and playersFolder:FindFirstChild("Killers")
-    if not killersFolder then return end
-
-    for _, name in ipairs(killerNames) do
-        local killer = killersFolder:FindFirstChild(name)
-        if killer and killer:FindFirstChild("HumanoidRootPart") then
-            local root = killer.HumanoidRootPart
-            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                local animId = string_match(tostring_ref(track.Animation.AnimationId), "%d+")
-                if punchAnimSet[animId] then
-                    local last = lastAimTrigger[track]
-                    if not (last and tick_ref() - last < AIM_COOLDOWN) then
-                        local timePos = 0
-                        pcall(function() timePos = track.TimePosition or 0 end)
-                        if timePos <= 0.1 then
-                            lastAimTrigger[track] = tick_ref()
-                            local humanoid = myChar:FindFirstChild("Humanoid")
-                            if humanoid and aimPunch then humanoid.AutoRotate = false end
-                            spawn_ref(function()
-                                local start = tick_ref()
-                                while tick_ref() - start < AIM_WINDOW do
-                                    if myRoot and root and root.Parent then
-                                        local predictedPos = root.Position + (root.CFrame.LookVector * predictionValue)
-                                        if aimPunch then
-                                            myRoot.CFrame = CFrame.lookAt(myRoot.Position, predictedPos)
-                                        end
-                                        if camLockEnabled then
-                                            camera.CFrame = CFrame.lookAt(camera.CFrame.Position, predictedPos)
-                                        end
-                                    end
-                                    wait_ref()
-                                end
-                                if humanoid and aimPunch then humanoid.AutoRotate = true end
-                                task.delay(AIM_COOLDOWN - AIM_WINDOW, function()
-                                    lastAimTrigger[track] = nil
-                                end)
-                            end)
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
-
 -- ============================================================
 local espEnabled = false
 
@@ -305,130 +210,8 @@ end)
 -- ============================================================
 -- ============================================================
 -- ============================================================
--- IVY FACING CHECK (standalone visual / direction utility)
--- Kept separate from GoodSAKEN's Auto Block detection engine.
--- ============================================================
-local facingCheckEnabled = true
-local customFacingDot = 0.3
-local facingDetectionRange = 18
-local facingVisualOn = false
-local facingVisuals = {}
-local detectionCircles = {}
-local killerCirclesVisible = false
-
-local function isFacing(localRoot, targetRoot)
-    if not facingCheckEnabled then return true end
-    if not (localRoot and targetRoot) then return false end
-    local offset = localRoot.Position - targetRoot.Position
-    if offset.Magnitude == 0 then return true end
-    return targetRoot.CFrame.LookVector:Dot(offset.Unit) > customFacingDot
-end
-
-local function updateFacingVisual(killer, visual)
-    if not (killer and visual and visual.Parent) then return end
-    local hrp = killer:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    local dot = math.clamp(customFacingDot, -1, 1)
-    local frac = math.acos(dot) / math.pi
-    visual.Radius = math.max(1, facingDetectionRange * (0.20 + 0.80 * frac))
-    visual.Height = 0.12
-    visual.CFrame = CFrame.new(0, -(hrp.Size.Y/2 + 0.05), -facingDetectionRange * (0.35 + 0.15 * frac))
-        * CFrame.Angles(math.rad(90), 0, 0)
-    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if myRoot then
-        local dist = (hrp.Position - myRoot.Position).Magnitude
-        if dist <= facingDetectionRange then
-            visual.Color3 = Color3.fromRGB(255, 0, 0)
-            visual.Transparency = 0.40
-        else
-            visual.Color3 = Color3.fromRGB(255, 255, 0)
-            visual.Transparency = 0.85
-        end
-    end
-end
-
-local function addFacingVisual(killer)
-    if not killer or not killer:IsA("Model") or facingVisuals[killer] then return end
-    local hrp = killer:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    local visual = Instance.new("CylinderHandleAdornment")
-    visual.Name = "FacingCheckVisual"
-    visual.Adornee = hrp
-    visual.AlwaysOnTop = true
-    visual.ZIndex = 2
-    visual.Transparency = 0.55
-    visual.Color3 = Color3.fromRGB(255, 255, 0)
-    visual.Parent = hrp
-    facingVisuals[killer] = visual
-    updateFacingVisual(killer, visual)
-end
-
-local function removeFacingVisual(killer)
-    local visual = facingVisuals[killer]
-    if visual then visual:Destroy(); facingVisuals[killer] = nil end
-end
-
-local function addKillerCircle(killer)
-    if detectionCircles[killer] then return end
-    local hrp = killer and killer:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    local circle = Instance.new("CylinderHandleAdornment")
-    circle.Name = "KillerDetectionCircle"
-    circle.Adornee = hrp
-    circle.Color3 = Color3.fromRGB(255, 255, 0)
-    circle.AlwaysOnTop = true
-    circle.ZIndex = 1
-    circle.Transparency = 0.6
-    circle.Radius = facingDetectionRange
-    circle.Height = 0.12
-    circle.CFrame = CFrame.new(0, -(hrp.Size.Y/2 + 0.05), 0) * CFrame.Angles(math.rad(90), 0, 0)
-    circle.Parent = hrp
-    detectionCircles[killer] = circle
-end
-
-local function removeKillerCircle(killer)
-    local circle = detectionCircles[killer]
-    if circle then circle:Destroy(); detectionCircles[killer] = nil end
-end
-
-RunService.RenderStepped:Connect(function()
-    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if facingVisualOn then
-        for killer, visual in pairs(facingVisuals) do
-            if not killer.Parent or not killer:FindFirstChild("HumanoidRootPart") then
-                removeFacingVisual(killer)
-            else
-                updateFacingVisual(killer, visual)
-            end
-        end
-    end
-    if killerCirclesVisible then
-        for killer, circle in pairs(detectionCircles) do
-            local hrp = killer and killer:FindFirstChild("HumanoidRootPart")
-            if not killer.Parent or not (circle and circle.Parent and hrp) then
-                removeKillerCircle(killer)
-            else
-                circle.Radius = facingDetectionRange
-                if myRoot then
-                    local dist = (hrp.Position - myRoot.Position).Magnitude
-                    circle.Color3 = (dist <= facingDetectionRange) and Color3.fromRGB(255, 165, 0) or Color3.fromRGB(255, 255, 0)
-                end
-            end
-        end
-    end
-end)
-
-KillersFolder.ChildAdded:Connect(function(killer)
-    task.spawn(function()
-        if not killer:WaitForChild("HumanoidRootPart", 5) then return end
-        if facingVisualOn then addFacingVisual(killer) end
-        if killerCirclesVisible then addKillerCircle(killer) end
-    end)
-end)
-KillersFolder.ChildRemoved:Connect(function(killer)
-    removeFacingVisual(killer)
-    removeKillerCircle(killer)
-end)
+-- FACING CHECK CONFIGURATION
+-- Off: radial zone around killer. Circle Check: circular zone in front. Diamond Check: forward-only diamond starting at the killer, extending outward.
 
 -- GOODSAKEN v9.1.1 AUTO BLOCK MODULE
 -- Only the Auto Block module is transplanted into Bloodsaken.
@@ -443,18 +226,20 @@ local Settings = {
     ABMode = "Guest1337",
     CustomABMode = "Guest1337",
     FourthButtonTarget = "default",
-    AimPunch = false,
-    ShowDiamond = false,
-    ShowCircle = false,
+    -- No facing shape is selected by default: use the radial circle around the killer.
+    FacingMode = "Off",
+    ShowFacingVisual = true,
+    FacingOffRadius = 15,
+    CustomCircleRadius = 5,
+    CustomCircleOffset = 2,
     CustomDiamondLength = 8,
     CustomDiamondWidth = 4,
-    CustomDiamondOffset = 3,
-    CustomCircleRadius = 5,
+    -- The diamond begins at the killer and extends forward; the killer is not centered inside it.
+    CustomDiamondOffset = 0,
     ZoneHeight = 0.5,
 }
 local Toggles = {}
 local _suppressToggleCallback = false
-local zoneStateMemory = { diamond = false, circle = false }
 
 -- MODULE 9: AUTO BLOCK CORE
 -- ═══════════════════════════════════════════════════════════════
@@ -484,17 +269,6 @@ do
     local net2 = net and net:FindFirstChild("Network", true)
     AB.RemoteEvent = net2 and net2:FindFirstChild("RemoteEvent")
     if not AB.RemoteEvent then AB.RemoteEvent = rs:FindFirstChild("RemoteEvent", true) end
-end
-
-local function GetPing()
-    local ping = 0.05
-    pcall(function()
-        local ns = Stats:FindFirstChild("Network")
-        local ssi = ns and ns:FindFirstChild("ServerStatsItem")
-        local dp = ssi and ssi:FindFirstChild("Data Ping")
-        if dp then ping = dp:GetValue() / 1000 end
-    end)
-    return math.clamp(ping, 0.05, 0.35)
 end
 
 local M1_Sounds = {
@@ -622,67 +396,6 @@ local function FireAbilityByMode()
     if GetActiveMode() == "007n7" then FireClone() else FireBlock() end
 end
 
-local function GetNearestKiller()
-    local folder = AB.KillersFolder
-    if not folder or not folder.Parent then
-        local p = Workspace:FindFirstChild("Players")
-        folder = p and p:FindFirstChild("Killers")
-    end
-    local localRoot = AB.LocalRoot
-    if not localRoot or not localRoot.Parent then
-        local char = LocalPlayer.Character
-        localRoot = char and char:FindFirstChild("HumanoidRootPart")
-    end
-    if not folder or not localRoot then return nil, nil end
-    local nearest, model, minD = nil, nil, 30
-    for _, k in pairs(folder:GetChildren()) do
-        local kr = k:FindFirstChild("HumanoidRootPart")
-        if kr then
-            local d = (localRoot.Position - kr.Position).Magnitude
-            if d < minD then minD = d; nearest = kr; model = k end
-        end
-    end
-    return nearest, model
-end
-
-local function AimPunch()
-    local kr, km = GetNearestKiller()
-    if not (kr and AB.LocalRoot and km) then return end
-    local kh = km:FindFirstChildOfClass("Humanoid")
-    local start = tick()
-    local lastPos = kr.Position
-    local conn
-    conn = RunService.RenderStepped:Connect(function(dt)
-        if not AB.running or tick() - start > 0.6 or not AB.LocalRoot or not kr then conn:Disconnect(); return end
-        local cur = AB.LocalRoot.Position
-        local tgt = kr.Position
-        local vel = (tgt - lastPos) / math.max(dt, 0.001)
-        lastPos = tgt
-        local mdir = kh and kh.MoveDirection or Vector3.new()
-        local ws = kh and kh.WalkSpeed or 16
-        local lead = 0.24 + GetPing()
-        local pred = tgt + mdir * ws * lead + Vector3.new(vel.X, 0, vel.Z) * 0.08
-        AB.LocalRoot.CFrame = CFrame.lookAt(cur, Vector3.new(pred.X, cur.Y, pred.Z))
-    end)
-end
-
-local function OnBlockSuccess()
-    if not AB.running or not Settings.AimPunch then return end
-    if GetActiveMode() == "007n7" then return end
-    local now = tick()
-    if now - AB.punchDebounce < 0.2 then return end
-    AB.punchDebounce = now
-    task.spawn(function() AimPunch(); FireAbility("Punch") end)
-end
-
-local function MonitorBlockSuccess(char)
-    if not char then return end
-    local function check(v) if v:IsA("Sound") and isBlockSnd(v.SoundId) then OnBlockSuccess() end end
-    for _, v in pairs(char:GetDescendants()) do check(v) end
-    table.insert(AB.connections, char.DescendantAdded:Connect(check))
-end
-
--- ═══════════════════════════════════════════════════════════════
 -- CUSTOM ZONE
 -- ═══════════════════════════════════════════════════════════════
 local CustomZone = { running=false, connections={}, folder=nil, killerZones={} }
@@ -723,88 +436,99 @@ local function BuildZone(killer)
 end
 
 local function IsPlayerInDiamond(myPos, killerCF, killerPos)
-    -- Detection is independent from ShowDiamond; this toggle controls visuals only.
-    local fwd = killerCF.LookVector
-    local right = killerCF.RightVector
-    local flatFwd = Vector3.new(fwd.X, 0, fwd.Z)
-    local flatRight = Vector3.new(right.X, 0, right.Z)
-    if flatFwd.Magnitude < 0.01 or flatRight.Magnitude < 0.01 then return false end
-    flatFwd = flatFwd.Unit; flatRight = flatRight.Unit
-    local toPlayer = Vector3.new(myPos.X - killerPos.X, 0, myPos.Z - killerPos.Z)
-    local distFwd = toPlayer:Dot(flatFwd)
-    local distRight = toPlayer:Dot(flatRight)
-    local centerDist = Settings.CustomDiamondOffset + Settings.CustomDiamondLength / 2
-    local dF = distFwd - centerDist
-    local halfW = Settings.CustomDiamondWidth / 2 + PLAYER_RADIUS
-    local halfL = Settings.CustomDiamondLength / 2 + PLAYER_RADIUS
-    return math.abs(distRight) / halfW + math.abs(dF) / halfL <= 1
+    local fwd = Vector3.new(killerCF.LookVector.X, 0, killerCF.LookVector.Z)
+    local right = Vector3.new(killerCF.RightVector.X, 0, killerCF.RightVector.Z)
+    if fwd.Magnitude < 0.01 or right.Magnitude < 0.01 then return false end
+    fwd, right = fwd.Unit, right.Unit
+    local delta = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z)
+    local forwardDist, sideDist = delta:Dot(fwd), delta:Dot(right)
+    local centerDist = Settings.CustomDiamondOffset + Settings.CustomDiamondLength/2
+    local halfW = Settings.CustomDiamondWidth/2 + PLAYER_RADIUS
+    local halfL = Settings.CustomDiamondLength/2 + PLAYER_RADIUS
+    return math.abs(sideDist)/halfW + math.abs(forwardDist-centerDist)/halfL <= 1
 end
 
-local function IsPlayerInCircle(myPos, killerPos)
-    if not Settings.ShowCircle then return false end
-    local dx = myPos.X - killerPos.X
-    local dz = myPos.Z - killerPos.Z
-    local effectiveR = Settings.CustomCircleRadius + PLAYER_RADIUS
-    return dx*dx + dz*dz <= effectiveR * effectiveR
+local function IsPlayerInCircleCheck(myPos, killerCF, killerPos)
+    local fwd = Vector3.new(killerCF.LookVector.X, 0, killerCF.LookVector.Z)
+    if fwd.Magnitude < 0.01 then return false end
+    fwd = fwd.Unit
+    local right = Vector3.new(-fwd.Z, 0, fwd.X)
+    local delta = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z)
+    local centerDist = Settings.CustomCircleOffset + Settings.CustomCircleRadius
+    local fromCenter = delta - fwd*centerDist
+    local radius = Settings.CustomCircleRadius + PLAYER_RADIUS
+    return fromCenter:Dot(fromCenter) <= radius*radius
 end
 
-local function IsPlayerInCustomZone(killer)
+local function IsPlayerInFacingZone(killer)
     if not killer or not killer.Parent then return false end
     local kr = killer:FindFirstChild("HumanoidRootPart")
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local char = LocalPlayer.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
     if not kr or not myRoot then return false end
-    return IsPlayerInDiamond(myRoot.Position, kr.CFrame, kr.Position)
+    local mode = Settings.FacingMode
+    if mode ~= "Circle Check" and mode ~= "Diamond Check" then mode = "Off" end
+    local delta = Vector3.new(myRoot.Position.X-kr.Position.X, 0, myRoot.Position.Z-kr.Position.Z)
+    if mode == "Off" then
+        local radius = (Settings.FacingOffRadius or 15) + PLAYER_RADIUS
+        return delta:Dot(delta) <= radius*radius
+    elseif mode == "Circle Check" then
+        return IsPlayerInCircleCheck(myRoot.Position, kr.CFrame, kr.Position)
+    elseif mode == "Diamond Check" then
+        return IsPlayerInDiamond(myRoot.Position, kr.CFrame, kr.Position)
+    end
+    return false
 end
 
 local function UpdateZone(zone, kr, myRoot)
-    if not zone or not zone.model or not zone.model.Parent then return end
-    if not kr or not kr.Parent then return end
-
+    if not zone or not zone.model or not zone.model.Parent or not kr or not kr.Parent then return end
+    local mode = Settings.FacingMode or "Off"
     local baseCF = GetKillerGroundCF(kr)
-    local offset = Settings.CustomDiamondOffset
-    local L = Settings.CustomDiamondLength
-    local W = Settings.CustomDiamondWidth
+    local show = Settings.ShowFacingVisual == true
+    local inZone = myRoot and IsPlayerInFacingZone(zone.killer) or false
+    local zoneColor = inZone and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
 
-    local wA = baseCF:PointToWorldSpace(Vector3.new(0, 0, -offset))
-    local wB = baseCF:PointToWorldSpace(Vector3.new(0, 0, -(offset + L)))
-    local wC = baseCF:PointToWorldSpace(Vector3.new(-W/2, 0, -(offset + L/2)))
-    local wD = baseCF:PointToWorldSpace(Vector3.new(W/2, 0, -(offset + L/2)))
-    local edgeSpecs = { {wA,wC}, {wA,wD}, {wB,wC}, {wB,wD} }
-
-    for i, spec in ipairs(edgeSpecs) do
-        local p1, p2 = spec[1], spec[2]
-        local mid = (p1 + p2) / 2
-        local diff = p2 - p1
-        local length = diff.Magnitude
-        if length > 0.01 then
-            local dir = diff.Unit
-            local edge = zone.edges[i]
-            if edge then
-                edge.Size = Vector3.new(0.35, 0.08, length)
-                edge.CFrame = CFrame.lookAt(mid, mid + dir)
-                edge.Transparency = Settings.ShowDiamond and 0.3 or 1
+    for i, edge in ipairs(zone.edges) do
+        if edge and edge.Parent then
+            if show and mode == "Diamond Check" then
+                local offset, length, width = Settings.CustomDiamondOffset, Settings.CustomDiamondLength, Settings.CustomDiamondWidth
+                local points = {
+                    baseCF:PointToWorldSpace(Vector3.new(0,0,-offset)),
+                    baseCF:PointToWorldSpace(Vector3.new(0,0,-(offset+length))),
+                    baseCF:PointToWorldSpace(Vector3.new(-width/2,0,-(offset+length/2))),
+                    baseCF:PointToWorldSpace(Vector3.new(width/2,0,-(offset+length/2))),
+                }
+                local pairsForEdges = {{1,3},{1,4},{2,3},{2,4}}
+                local pair = pairsForEdges[i]
+                local a,b = points[pair[1]],points[pair[2]]
+                local mid,diff = (a+b)/2,b-a
+                edge.Size = Vector3.new(0.18,0.08,diff.Magnitude)
+                edge.CFrame = CFrame.lookAt(mid,mid+diff.Unit)
+                edge.Transparency = 0.2
+                edge.Color = zoneColor
+            else
+                edge.Transparency = 1
             end
         end
     end
 
-    if zone.circle then
-        local cCenter = Vector3.new(baseCF.Position.X, baseCF.Position.Y + 0.04, baseCF.Position.Z)
-        zone.circle.Size = Vector3.new(0.08, Settings.CustomCircleRadius*2, Settings.CustomCircleRadius*2)
-        zone.circle.CFrame = CFrame.new(cCenter) * CFrame.Angles(0, 0, math.rad(90))
-        zone.circle.Transparency = Settings.ShowCircle and 0.65 or 1
+    local circle = zone.circle
+    if circle and circle.Parent then
+        local isCircle = mode == "Off" or mode == "Circle Check"
+        local radius, center
+        if mode == "Off" then
+            -- Off means radial detection around the killer until a directional check is selected.
+            radius = (Settings.FacingOffRadius or 15) + PLAYER_RADIUS
+            center = baseCF.Position
+        else
+            radius = Settings.CustomCircleRadius + PLAYER_RADIUS
+            center = baseCF:PointToWorldSpace(Vector3.new(0,0,-(Settings.CustomCircleOffset + Settings.CustomCircleRadius)))
+        end
+        circle.Size = Vector3.new(0.08,radius*2,radius*2)
+        circle.CFrame = CFrame.new(center + Vector3.new(0,0.04,0)) * CFrame.Angles(0,0,math.rad(90))
+        circle.Transparency = (show and isCircle) and 0.55 or 1
+        circle.Color = zoneColor
     end
-
-    local inDiamond = myRoot and IsPlayerInDiamond(myRoot.Position, kr.CFrame, kr.Position) or false
-    local inCircle = myRoot and IsPlayerInCircle(myRoot.Position, kr.Position) or false
-
-    local diamondColor = inDiamond and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
-    local circleColor = inCircle and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
-
-    for _, e in ipairs(zone.edges) do
-        if e and e.Parent then e.Color = diamondColor end
-    end
-    if zone.circle and zone.circle.Parent then zone.circle.Color = circleColor end
 end
 
 local function StartCustomZoneVisuals()
@@ -857,7 +581,7 @@ local function StopCustomZoneVisuals()
 end
 
 local function UpdateCustomZoneVisibility()
-    local shouldShow = Settings.ShowDiamond or Settings.ShowCircle
+    local shouldShow = Settings.ShowFacingVisual == true
     if shouldShow and not CustomZone.running then
         StartCustomZoneVisuals()
     elseif not shouldShow and CustomZone.running then
@@ -897,14 +621,7 @@ local function MonitorKillerSound(killer)
         if not AB.LocalRoot then return end
         local kr = killer:FindFirstChild("HumanoidRootPart")
         if not kr or not kr.Parent then return end
-        if Settings.AutoBlockCustom then
-            if not IsPlayerInCustomZone(killer) then return end
-        else
-            local dir = AB.LocalRoot.Position - kr.Position
-            local mag = dir.Magnitude
-            if mag > 15 then return end
-            if facingCheckEnabled and mag > 0 and kr.CFrame.LookVector:Dot(dir.Unit) < customFacingDot then return end
-        end
+        if not IsPlayerInFacingZone(killer) then return end
         local now = tick()
         if now - AB.blueDebounce < 0.15 then return end
         AB.blueDebounce = now
@@ -933,15 +650,7 @@ local function AttrHeartbeat()
                         if st.isBait then st.isBait = false
                         else
                             local shouldBlock = false
-                            if Settings.AutoBlockCustom then
-                                if IsPlayerInCustomZone(k) then shouldBlock = true end
-                            else
-                                local dir = AB.LocalRoot.Position - kr.Position
-                                local mag = dir.Magnitude
-                                if mag <= 15 and mag > 0 and (not facingCheckEnabled or kr.CFrame.LookVector:Dot(dir.Unit) >= customFacingDot) then
-                                    shouldBlock = true
-                                end
-                            end
+                            if IsPlayerInFacingZone(k) then shouldBlock = true end
                             if shouldBlock then
                                 local now = tick()
                                 if now - AB.attrDebounce >= 0.15 then
@@ -1198,11 +907,9 @@ function StartAutoBlock()
     local char = LocalPlayer.Character
     if char then
         AB.LocalRoot = char:FindFirstChild("HumanoidRootPart")
-        MonitorBlockSuccess(char)
     end
     table.insert(AB.connections, LocalPlayer.CharacterAdded:Connect(function(c)
         AB.LocalRoot = c:WaitForChild("HumanoidRootPart", 5)
-        MonitorBlockSuccess(c)
     end))
     local function attachKiller(killer)
         if not killer or not killer:IsA("Model") then return end
@@ -1252,7 +959,6 @@ end
 -- CHARACTER ADDED
 -- ============================================================
 lp.CharacterAdded:Connect(function(character)
-    task.delay(0.5, refreshAnimator)
     task.wait(0.9)
     connectAutoPunchNetwork()
 end)
@@ -1437,10 +1143,6 @@ Toggles.ABModeDropdown = ABMain:CreateDropdown({
     CurrentOption = (Settings.ABMode == "007n7") and "007n7" or "Guest 1337",
     Callback = function(v) Settings.ABMode = (v == "007n7") and "007n7" or "Guest1337" end,
 }, "AB_Mode")
-Toggles.AimPunch = ABMain:CreateToggle({
-    Name = "Auto Aim + Punch", CurrentValue = Settings.AimPunch,
-    Callback = function(v) Settings.AimPunch = v end,
-}, "AB_AimPunch")
 Toggles.AutoBlockButton = ABMain:CreateToggle({
     Name = "Auto Block Button", CurrentValue = Settings.AutoBlockButton,
     Callback = function(v)
@@ -1464,86 +1166,81 @@ Toggles.CustomABModeDropdown = ABCustom:CreateDropdown({
     CurrentOption = (Settings.CustomABMode == "007n7") and "007n7" or "Guest 1337",
     Callback = function(v) Settings.CustomABMode = (v == "007n7") and "007n7" or "Guest1337" end,
 }, "AB_CustomMode")
-Toggles.ShowDiamond = ABCustom:CreateToggle({
-    Name = "Show Diamond Zone", CurrentValue = Settings.ShowDiamond,
-    Callback = function(v)
-        Settings.ShowDiamond = v
-        UpdateCustomZoneVisibility()
-    end,
-}, "AB_ShowDiamond")
-ABCustom:CreateInput({
-    Name = "Diamond Length", CurrentValue = tostring(Settings.CustomDiamondLength),
-    PlaceholderText = "8", Numeric = true,
-    Callback = function(v) Settings.CustomDiamondLength = math.max(1, tonumber(v) or 8) end,
-}, "AB_DiamondLength")
-ABCustom:CreateInput({
-    Name = "Diamond Width", CurrentValue = tostring(Settings.CustomDiamondWidth),
-    PlaceholderText = "4", Numeric = true,
-    Callback = function(v) Settings.CustomDiamondWidth = math.max(1, tonumber(v) or 4) end,
-}, "AB_DiamondWidth")
-ABCustom:CreateInput({
-    Name = "Diamond Face Offset", CurrentValue = tostring(Settings.CustomDiamondOffset),
-    PlaceholderText = "3", Numeric = true,
-    Callback = function(v) Settings.CustomDiamondOffset = math.max(0, tonumber(v) or 3) end,
-}, "AB_DiamondOffset")
-Toggles.ShowCircle = ABCustom:CreateToggle({
-    Name = "Show Circle Zone", CurrentValue = Settings.ShowCircle,
-    Callback = function(v)
-        Settings.ShowCircle = v
-        UpdateCustomZoneVisibility()
-    end,
-}, "AB_ShowCircle")
-ABCustom:CreateInput({
-    Name = "Circle Radius", CurrentValue = tostring(Settings.CustomCircleRadius),
-    PlaceholderText = "5", Numeric = true,
-    Callback = function(v) Settings.CustomCircleRadius = math.max(1, tonumber(v) or 5) end,
-}, "AB_CircleRadius")
 ABCustom:CreateInput({
     Name = "Zone Height", CurrentValue = tostring(Settings.ZoneHeight),
     PlaceholderText = "0.5", Numeric = true,
     Callback = function(v) Settings.ZoneHeight = tonumber(v) or 0.5 end,
 }, "AB_ZoneHeight")
 
--- ============ STANDALONE FACING CHECK ============
+-- ============ FACING CHECK MODES + MATCHED VISUAL ============
 local FacingMain = Tabs.FacingCheck:CreateGroupbox({ Name = "Facing Check", Column = 1 }, "Group_FacingMain")
+local FacingShape = Tabs.FacingCheck:CreateGroupbox({ Name = "Circle / Diamond Settings", Column = 2 }, "Group_FacingShape")
+
 local function applyFacingCheckMode(mode)
-    facingCheckEnabled = mode ~= "Off"
-    facingVisualOn = (mode == "Facing + Cone" or mode == "Facing + Both")
-    killerCirclesVisible = (mode == "Facing + Circle" or mode == "Facing + Both")
-    for _, killer in ipairs(KillersFolder:GetChildren()) do
-        if facingVisualOn then addFacingVisual(killer) else removeFacingVisual(killer) end
-        if killerCirclesVisible then addKillerCircle(killer) else removeKillerCircle(killer) end
-    end
+    if mode ~= "Circle Check" and mode ~= "Diamond Check" then mode = "Off" end
+    Settings.FacingMode = mode
+    UpdateCustomZoneVisibility()
 end
+
 FacingMain:CreateDropdown({
-    Name = "Facing Check Mode",
-    Options = { "Off", "Facing Check", "Facing + Circle", "Facing + Cone", "Facing + Both" },
-    CurrentOption = "Facing Check",
+    Name = "Facing Check (Off = circle around killer)",
+    Options = { "Off", "Circle Check", "Diamond Check" },
+    CurrentOption = Settings.FacingMode,
     Callback = applyFacingCheckMode,
 }, "Facing_Mode")
-FacingMain:CreateInput({
-    Name = "Facing Threshold (DOT)",
-    CurrentValue = tostring(customFacingDot),
-    PlaceholderText = tostring(customFacingDot),
-    Numeric = true,
-    Callback = function(value)
-        local number = tonumber(value)
-        if number then
-            customFacingDot = math.clamp(number, -1, 1)
-            for killer, visual in pairs(facingVisuals) do updateFacingVisual(killer, visual) end
-        end
+FacingMain:CreateToggle({
+    Name = "Show Selected Zone",
+    CurrentValue = Settings.ShowFacingVisual,
+    Callback = function(v)
+        Settings.ShowFacingVisual = v
+        UpdateCustomZoneVisibility()
     end,
-}, "Facing_Threshold")
+}, "Facing_ShowVisual")
 FacingMain:CreateInput({
-    Name = "Facing Visual Range",
-    CurrentValue = tostring(facingDetectionRange),
-    PlaceholderText = tostring(facingDetectionRange),
+    Name = "Off Circle Radius",
+    CurrentValue = tostring(Settings.FacingOffRadius),
+    PlaceholderText = "15",
     Numeric = true,
-    Callback = function(value)
-        local number = tonumber(value)
-        if number and number > 0 then facingDetectionRange = number end
-    end,
-}, "Facing_Range")
+    Callback = function(v) Settings.FacingOffRadius = math.max(1, tonumber(v) or 15) end,
+}, "Facing_OffRadius")
+FacingShape:CreateInput({
+    Name = "Circle Radius",
+    CurrentValue = tostring(Settings.CustomCircleRadius),
+    PlaceholderText = "5",
+    Numeric = true,
+    Callback = function(v) Settings.CustomCircleRadius = math.max(1, tonumber(v) or 5) end,
+}, "Facing_CircleRadius")
+FacingShape:CreateInput({
+    Name = "Circle Forward Offset",
+    CurrentValue = tostring(Settings.CustomCircleOffset),
+    PlaceholderText = "2",
+    Numeric = true,
+    Callback = function(v) Settings.CustomCircleOffset = math.max(0, tonumber(v) or 2) end,
+}, "Facing_CircleOffset")
+FacingShape:CreateInput({
+    Name = "Diamond Length",
+    CurrentValue = tostring(Settings.CustomDiamondLength),
+    PlaceholderText = "8",
+    Numeric = true,
+    Callback = function(v) Settings.CustomDiamondLength = math.max(1, tonumber(v) or 8) end,
+}, "Facing_DiamondLength")
+FacingShape:CreateInput({
+    Name = "Diamond Width",
+    CurrentValue = tostring(Settings.CustomDiamondWidth),
+    PlaceholderText = "4",
+    Numeric = true,
+    Callback = function(v) Settings.CustomDiamondWidth = math.max(1, tonumber(v) or 4) end,
+}, "Facing_DiamondWidth")
+FacingShape:CreateInput({
+    Name = "Diamond Start Offset From Killer",
+    CurrentValue = tostring(Settings.CustomDiamondOffset),
+    PlaceholderText = "0",
+    Numeric = true,
+    Callback = function(v) Settings.CustomDiamondOffset = math.max(0, tonumber(v) or 0) end,
+}, "Facing_DiamondOffset")
+
+-- Draw exactly one visual matching the selected Facing Check mode on startup.
+UpdateCustomZoneVisibility()
 
 -- ============ TECH UTILITIES ============
 local TechMain = Tabs.Tech:CreateGroupbox({ Name = "Techs", Column = 1 }, "Group_TechMain")
@@ -1569,41 +1266,11 @@ TechMain:CreateButton({
 
 -- ============ AUTO PUNCH ============
 local APMain = Tabs.AutoPunch:CreateGroupbox({ Name = "Auto Punch", Column = 1 }, "Group_APMain")
-APMain:CreateDropdown({
-    Name = "Aimbot Mode",
-    Options = {"Guest 1337", "Chance"},
-    CurrentOption = "Guest 1337",
-    Callback = function() end,
-}, "AimbotMode")
 APMain:CreateToggle({
     Name = "Auto Punch",
     CurrentValue = false,
     Callback = function(v) autoPunchEventEnabled = v end,
 }, "AutoPunch")
-APMain:CreateToggle({
-    Name = "Aimbot",
-    CurrentValue = false,
-    Callback = function(v) MyAnimLockOn = v end,
-}, "PunchAimbot")
-APMain:CreateInput({
-    Name = "Aim Lock Duration",
-    CurrentValue = "0.8",
-    PlaceholderText = "0.8",
-    Numeric = true,
-    Callback = function(v) AIM_WINDOW = tonumber(v) or AIM_WINDOW end,
-}, "AimLockDur")
-
-local APLock = Tabs.AutoPunch:CreateGroupbox({ Name = "Aim Lock Modes", Column = 2 }, "Group_APLock")
-APLock:CreateToggle({
-    Name = "Character Lock",
-    CurrentValue = false,
-    Callback = function(v) aimPunchToggles["Character Lock"] = v end,
-}, "AP_CharLock")
-APLock:CreateToggle({
-    Name = "Camera Lock",
-    CurrentValue = false,
-    Callback = function(v) aimPunchToggles["Camera Lock"] = v end,
-}, "AP_CamLock")
 
 -- ============ KILLER ============
 local KillerMain = Tabs.Killer:CreateGroupbox({ Name = "Killer", Column = 1 }, "Group_KillerMain")
