@@ -723,7 +723,7 @@ local function BuildZone(killer)
 end
 
 local function IsPlayerInDiamond(myPos, killerCF, killerPos)
-    if not Settings.ShowDiamond then return false end
+    -- Detection is independent from ShowDiamond; this toggle controls visuals only.
     local fwd = killerCF.LookVector
     local right = killerCF.RightVector
     local flatFwd = Vector3.new(fwd.X, 0, fwd.Z)
@@ -755,7 +755,6 @@ local function IsPlayerInCustomZone(killer)
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not kr or not myRoot then return false end
     return IsPlayerInDiamond(myRoot.Position, kr.CFrame, kr.Position)
-        or IsPlayerInCircle(myRoot.Position, kr.Position)
 end
 
 local function UpdateZone(zone, kr, myRoot)
@@ -868,33 +867,13 @@ end
 
 -- ✅ v9.1.0: normalize zone state khi boot / load config
 local function NormalizeZoneForMode()
-    -- Cả 2 mode cùng ON → ưu tiên Default
+    -- The two Auto Block modes remain mutually exclusive.
+    -- Zone visuals are independent and must stay user-controllable in either mode.
     if Settings.AutoBlock and Settings.AutoBlockCustom then
         Settings.AutoBlockCustom = false
         if Toggles.AutoBlockCustom then
             _suppressToggleCallback = true
             pcall(function() Toggles.AutoBlockCustom:SetValue(false) end)
-            _suppressToggleCallback = false
-        end
-    end
-    -- Default ON → force tắt Show* + lưu memory
-    if Settings.AutoBlock then
-        if Settings.ShowDiamond then
-            zoneStateMemory.diamond = true
-            Settings.ShowDiamond = false
-        end
-        if Settings.ShowCircle then
-            zoneStateMemory.circle = true
-            Settings.ShowCircle = false
-        end
-        if Toggles.ShowDiamond then
-            _suppressToggleCallback = true
-            pcall(function() Toggles.ShowDiamond:SetValue(false) end)
-            _suppressToggleCallback = false
-        end
-        if Toggles.ShowCircle then
-            _suppressToggleCallback = true
-            pcall(function() Toggles.ShowCircle:SetValue(false) end)
             _suppressToggleCallback = false
         end
     end
@@ -985,55 +964,12 @@ local function ab_applyState(state)
     if not state then return end
     if state.mode == "default" then
         Settings.AutoBlock = state.value
-        if state.value then
-            Settings.AutoBlockCustom = false
-            -- ✅ Default ON → lưu + tắt Show*
-            if Settings.ShowDiamond then
-                zoneStateMemory.diamond = true
-                Settings.ShowDiamond = false
-                if Toggles.ShowDiamond then
-                    _suppressToggleCallback = true
-                    pcall(function() Toggles.ShowDiamond:SetValue(false) end)
-                    _suppressToggleCallback = false
-                end
-            end
-            if Settings.ShowCircle then
-                zoneStateMemory.circle = true
-                Settings.ShowCircle = false
-                if Toggles.ShowCircle then
-                    _suppressToggleCallback = true
-                    pcall(function() Toggles.ShowCircle:SetValue(false) end)
-                    _suppressToggleCallback = false
-                end
-            end
-            UpdateCustomZoneVisibility()
-        end
+        if state.value then Settings.AutoBlockCustom = false end
     else
         Settings.AutoBlockCustom = state.value
-        if state.value then
-            Settings.AutoBlock = false
-            -- ✅ Custom ON → restore Show* từ memory
-            if zoneStateMemory.diamond then
-                Settings.ShowDiamond = true
-                if Toggles.ShowDiamond then
-                    _suppressToggleCallback = true
-                    pcall(function() Toggles.ShowDiamond:SetValue(true) end)
-                    _suppressToggleCallback = false
-                end
-            end
-            if zoneStateMemory.circle then
-                Settings.ShowCircle = true
-                if Toggles.ShowCircle then
-                    _suppressToggleCallback = true
-                    pcall(function() Toggles.ShowCircle:SetValue(true) end)
-                    _suppressToggleCallback = false
-                end
-            end
-            zoneStateMemory.diamond = false
-            zoneStateMemory.circle = false
-            UpdateCustomZoneVisibility()
-        end
+        if state.value then Settings.AutoBlock = false end
     end
+
     if Toggles.AutoBlock then
         _suppressToggleCallback = true
         pcall(function() Toggles.AutoBlock:SetValue(Settings.AutoBlock) end)
@@ -1044,6 +980,10 @@ local function ab_applyState(state)
         pcall(function() Toggles.AutoBlockCustom:SetValue(Settings.AutoBlockCustom) end)
         _suppressToggleCallback = false
     end
+
+    -- Keep visuals in sync without changing their enabled states.
+    UpdateCustomZoneVisibility()
+
     if Settings.AutoBlock or Settings.AutoBlockCustom then
         if not AB.running then pcall(StartAutoBlock) end
     else
@@ -1527,15 +1467,6 @@ Toggles.CustomABModeDropdown = ABCustom:CreateDropdown({
 Toggles.ShowDiamond = ABCustom:CreateToggle({
     Name = "Show Diamond Zone", CurrentValue = Settings.ShowDiamond,
     Callback = function(v)
-        if _suppressToggleCallback then Settings.ShowDiamond = v; UpdateCustomZoneVisibility(); return end
-        if Settings.AutoBlock then
-            _suppressToggleCallback = true
-            pcall(function() Toggles.ShowDiamond:SetValue(false) end)
-            _suppressToggleCallback = false
-            Settings.ShowDiamond = false
-            UpdateCustomZoneVisibility()
-            return
-        end
         Settings.ShowDiamond = v
         UpdateCustomZoneVisibility()
     end,
@@ -1558,15 +1489,6 @@ ABCustom:CreateInput({
 Toggles.ShowCircle = ABCustom:CreateToggle({
     Name = "Show Circle Zone", CurrentValue = Settings.ShowCircle,
     Callback = function(v)
-        if _suppressToggleCallback then Settings.ShowCircle = v; UpdateCustomZoneVisibility(); return end
-        if Settings.AutoBlock then
-            _suppressToggleCallback = true
-            pcall(function() Toggles.ShowCircle:SetValue(false) end)
-            _suppressToggleCallback = false
-            Settings.ShowCircle = false
-            UpdateCustomZoneVisibility()
-            return
-        end
         Settings.ShowCircle = v
         UpdateCustomZoneVisibility()
     end,
@@ -2112,71 +2034,115 @@ Workspace.DescendantRemoving:Connect(function(d)
 end)
 
 -- ============ STAMINA ============
+-- The original UI referenced these values/functions without defining them.
+-- Restore the Sprinting module setup from the supplied Ivy source, with safe fallbacks.
+local sprintOk, sprintModule = pcall(function()
+    return require(game.ReplicatedStorage.Systems.Character.Game.Sprinting)
+end)
+if not sprintOk then
+    warn("[Bloodsaken] Could not load the Sprinting module: " .. tostring(sprintModule))
+    sprintModule = nil
+end
+
+local defaultMaxStamina  = sprintModule and sprintModule.MaxStamina or 100
+local defaultSprintSpeed = sprintModule and sprintModule.SprintSpeed or 20
+local defaultStaminaGain = sprintModule and sprintModule.StaminaGain or 20
+local defaultStaminaDrain = sprintModule and sprintModule.StaminaDrain or 1
+local defaultRegenDelay  = sprintModule and sprintModule.StaminaRegenDelay or 0.5
+
+local maxStaminaValue   = defaultMaxStamina
+local sprintSpeedValue  = defaultSprintSpeed
+local staminaGainValue  = defaultStaminaGain
+local staminaDrainValue = defaultStaminaDrain
+local regenDelayValue   = defaultRegenDelay
+local infinityStaminaActive = false
+local staminaThread = nil
+
+local function applyStaminaSettings()
+    if not sprintModule then return end
+    sprintModule.MaxStamina = maxStaminaValue
+    sprintModule.SprintSpeed = sprintSpeedValue
+    sprintModule.StaminaGain = staminaGainValue
+    sprintModule.StaminaDrain = staminaDrainValue
+    sprintModule.StaminaRegenDelay = regenDelayValue
+end
+
+local function EnableInfinityStamina()
+    if not sprintModule or infinityStaminaActive then return end
+    infinityStaminaActive = true
+    applyStaminaSettings()
+    staminaThread = task.spawn(function()
+        while infinityStaminaActive do
+            applyStaminaSettings()
+            sprintModule.Stamina = sprintModule.MaxStamina or maxStaminaValue
+            task.wait(0.03)
+        end
+    end)
+end
+
+local function DisableInfinityStamina()
+    infinityStaminaActive = false
+    if staminaThread then
+        pcall(task.cancel, staminaThread)
+        staminaThread = nil
+    end
+end
 
 local StamMain = Tabs.Stamina:CreateGroupbox({ Name = "Stamina", Column = 1 }, "Group_StamMain")
 StamMain:CreateToggle({
     Name = "Infinite Stamina",
     CurrentValue = false,
     Callback = function(state)
-        if state then
-            EnableInfinityStamina()
-        else
-            DisableInfinityStamina()
+        if not sprintModule then
+            warn("[Bloodsaken] Stamina controls unavailable: Sprinting module was not found.")
+            return
         end
-    end
+        if state then EnableInfinityStamina() else DisableInfinityStamina() end
+    end,
 }, "InfStamina")
-
 StamMain:CreateSlider({
-    Name = "Max Stamina",
-    Range = {1, 1000},
-    Increment = 1,
+    Name = "Max Stamina", Range = {1, 1000}, Increment = 1,
     CurrentValue = maxStaminaValue,
     Callback = function(val)
         maxStaminaValue = tonumber(val) or defaultMaxStamina
-        sprintModule.MaxStamina = maxStaminaValue
-        if not infinityStaminaActive and sprintModule.Stamina > maxStaminaValue then
-            sprintModule.Stamina = maxStaminaValue
+        if sprintModule then
+            applyStaminaSettings()
+            if not infinityStaminaActive and sprintModule.Stamina > maxStaminaValue then
+                sprintModule.Stamina = maxStaminaValue
+            end
         end
     end,
 }, "MaxStaminaSlider")
 StamMain:CreateSlider({
-    Name = "Sprint Speed",
-    Range = {1, 30},
-    Increment = 1,
+    Name = "Sprint Speed", Range = {1, 30}, Increment = 1,
     CurrentValue = sprintSpeedValue,
     Callback = function(val)
         sprintSpeedValue = tonumber(val) or defaultSprintSpeed
-        sprintModule.SprintSpeed = sprintSpeedValue
+        if sprintModule then applyStaminaSettings() end
     end,
 }, "SprintSpeedSlider")
 StamMain:CreateSlider({
-    Name = "Stamina Gain",
-    Range = {1, 1000},
-    Increment = 1,
+    Name = "Stamina Gain", Range = {1, 1000}, Increment = 1,
     CurrentValue = staminaGainValue,
     Callback = function(val)
         staminaGainValue = tonumber(val) or defaultStaminaGain
-        sprintModule.StaminaGain = staminaGainValue
+        if sprintModule then applyStaminaSettings() end
     end,
 }, "StaminaGainSlider")
 StamMain:CreateSlider({
-    Name = "Stamina Drain",
-    Range = {0, 1000},
-    Increment = 1,
+    Name = "Stamina Drain", Range = {0, 1000}, Increment = 1,
     CurrentValue = staminaDrainValue,
     Callback = function(val)
         staminaDrainValue = tonumber(val) or defaultStaminaDrain
-        sprintModule.StaminaDrain = staminaDrainValue
+        if sprintModule then applyStaminaSettings() end
     end,
 }, "StaminaDrainSlider")
 StamMain:CreateSlider({
-    Name = "Regen Delay",
-    Range = {0, 10},
-    Increment = 0.1,
+    Name = "Regen Delay", Range = {0, 10}, Increment = 0.1,
     CurrentValue = regenDelayValue,
     Callback = function(val)
         regenDelayValue = tonumber(val) or defaultRegenDelay
-        sprintModule.StaminaRegenDelay = regenDelayValue
+        if sprintModule then applyStaminaSettings() end
     end,
 }, "RegenDelaySlider")
 
