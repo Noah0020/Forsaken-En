@@ -57,72 +57,132 @@ local wait_ref      = task.wait
 local KillersFolder = Workspace:WaitForChild("Players"):WaitForChild("Killers")
 
 -- ============================================================
--- RAGING PACE
+-- KILLER PARRY: JOHN DOE 404 ERROR + SLASHER RAGING PACE
+-- Event-driven survivor animation detection inside a configurable
+-- radius around the local killer. Uses the animation IDs from the
+-- supplied source pack; no per-frame scan of playing animation tracks.
 -- ============================================================
-local ragingPaceEnabled = false
-local RAGING_RANGE      = 19
-local SPAM_DURATION     = 3
-local COOLDOWN_TIME     = 5
-local activeCooldowns   = {}
-
-local animsToDetect = {
-    ["87259391926321"]=true,["99100240941590"]=true,["72685103823181"]=true,
-    ["81905101227053"]=true,["113936304594883"]=true,["140703210927645"]=true,
-    ["136007065400978"]=true,["129843313690921"]=true,["86709774283672"]=true,
-    ["108807732150251"]=true,["138040001965654"]=true,["86096387000557"]=true,
-    ["119850211147676"]=true,["131696603025265"]=true,["119462383658044"]=true,
-    ["116618003477002"]=true,["133491532453922"]=true,["76649505662612"]=true,
-    ["71190646367497"]=true,["121255898612475"]=true,["103601716322988"]=true,
-    ["86371356500204"]=true,["72722244508749"]=true,["96959123077498"]=true,
+local KillerParry = {
+    enabled404 = false,
+    enabledRaging = false,
+    range = 20,
+    showRange = false,
+    lastUse = { JohnDoe = 0, Slasher = 0 },
+    seenTracks = setmetatable({}, { __mode = "k" }),
+    animatorConnections = setmetatable({}, { __mode = "k" }),
+    modelConnections = setmetatable({}, { __mode = "k" }),
+    visual = nil,
+    animsToDetect = {
+        ["87259391926321"]=true,["99100240941590"]=true,["72685103823181"]=true,
+        ["81905101227053"]=true,["113936304594883"]=true,["140703210927645"]=true,
+        ["136007065400978"]=true,["129843313690921"]=true,["86709774283672"]=true,
+        ["108807732150251"]=true,["138040001965654"]=true,["86096387000557"]=true,
+        ["119850211147676"]=true,["131696603025265"]=true,["119462383658044"]=true,
+        ["116618003477002"]=true,["133491532453922"]=true,["76649505662612"]=true,
+        ["71190646367497"]=true,["121255898612475"]=true,["103601716322988"]=true,
+        ["86371356500204"]=true,["72722244508749"]=true,["96959123077498"]=true,
+    },
 }
 
-local function fireRagingPace()
-    testRemote:FireServer("UseActorAbility", (function(bytes)
-        local b = buffer.create(#bytes)
-        for i = 1, #bytes do buffer.writeu8(b, i-1, bytes[i]) end
-        return b
-    end)({3,10,0,0,0,82,97,103,105,110,103,80,97,99,101}))
-end
-
-local function isAnimationMatching(anim)
-    local id = tostring_ref(anim.Animation and anim.Animation.AnimationId or "")
-    local numId = string_match(id, "%d+")
-    return animsToDetect[numId] or false
-end
-
-RunService.Heartbeat:Connect(function()
-    if not ragingPaceEnabled then return end
-    local myChar = lp.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return end
-    local now = tick_ref()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= lp then
-            local char = player.Character
-            local targetHRP = char and char:FindFirstChild("HumanoidRootPart")
-            if targetHRP and (targetHRP.Position - myRoot.Position).Magnitude <= RAGING_RANGE
-               and (not activeCooldowns[player] or now - activeCooldowns[player] >= COOLDOWN_TIME) then
-                local humanoid = char:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    for _, track in ipairs(humanoid:GetPlayingAnimationTracks()) do
-                        if isAnimationMatching(track) then
-                            activeCooldowns[player] = now
-                            spawn_ref(function()
-                                local start = tick_ref()
-                                while tick_ref() - start < SPAM_DURATION do
-                                    fireRagingPace()
-                                    wait_ref(0.05)
-                                end
-                            end)
-                            break
-                        end
-                    end
-                end
-            end
-        end
+function KillerParry.getLocalKiller()
+    local character = lp.Character
+    if not character or character.Parent ~= KillersFolder then return nil end
+    local name = string.lower(tostring_ref(character.Name)):gsub("[^%w]", "")
+    if name == "johndoe" and KillerParry.enabled404 then
+        return character, "JohnDoe", "404Error", 20
+    elseif name == "slasher" and KillerParry.enabledRaging then
+        return character, "Slasher", "RagingPace", 30
     end
-end)
+    return nil
+end
 
+function KillerParry.fireAbility(abilityName)
+    if type(abilityName) ~= "string" or abilityName == "" then return false end
+    local ok = pcall(function()
+        local bytes = { 3, #abilityName, 0, 0, 0 }
+        for i = 1, #abilityName do bytes[#bytes + 1] = string.byte(abilityName, i) end
+        local payload = buffer.create(#bytes)
+        for i = 1, #bytes do buffer.writeu8(payload, i - 1, bytes[i]) end
+        testRemote:FireServer("UseActorAbility", payload)
+    end)
+    return ok
+end
+
+function KillerParry.onTrack(survivorModel, track)
+    if not track or KillerParry.seenTracks[track] then return end
+    local animation = track.Animation
+    local animationId = animation and string_match(tostring_ref(animation.AnimationId), "%d+")
+    if not animationId or not KillerParry.animsToDetect[animationId] then return end
+
+    local killerCharacter, killerKey, abilityName, abilityCooldown = KillerParry.getLocalKiller()
+    if not killerCharacter then return end
+    local killerRoot = killerCharacter:FindFirstChild("HumanoidRootPart")
+    local survivorRoot = survivorModel and survivorModel:FindFirstChild("HumanoidRootPart")
+    if not killerRoot or not survivorRoot then return end
+    if (survivorRoot.Position - killerRoot.Position).Magnitude > KillerParry.range then return end
+
+    local now = os.clock()
+    if now - (KillerParry.lastUse[killerKey] or 0) < abilityCooldown then return end
+    -- Trigger once per qualifying animation. The previous code spammed
+    -- the ability repeatedly for three seconds after a single detection.
+    KillerParry.seenTracks[track] = true
+    KillerParry.lastUse[killerKey] = now
+    KillerParry.fireAbility(abilityName)
+end
+
+function KillerParry.attachAnimator(animator, survivorModel)
+    if not animator or not animator:IsA("Animator") or KillerParry.animatorConnections[animator] then return end
+    KillerParry.animatorConnections[animator] = animator.AnimationPlayed:Connect(function(track)
+        KillerParry.onTrack(survivorModel, track)
+    end)
+end
+
+function KillerParry.attachSurvivor(model)
+    if not model or not model:IsA("Model") or KillerParry.modelConnections[model] then return end
+    for _, descendant in ipairs(model:GetDescendants()) do
+        if descendant:IsA("Animator") then KillerParry.attachAnimator(descendant, model) end
+    end
+    KillerParry.modelConnections[model] = model.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("Animator") then KillerParry.attachAnimator(descendant, model) end
+    end)
+end
+
+for _, survivor in ipairs(Workspace:WaitForChild("Players"):WaitForChild("Survivors"):GetChildren()) do
+    KillerParry.attachSurvivor(survivor)
+end
+Workspace.Players.Survivors.ChildAdded:Connect(KillerParry.attachSurvivor)
+
+function KillerParry.updateVisual()
+    if not KillerParry.showRange then
+        if KillerParry.visual then pcall(function() KillerParry.visual:Destroy() end); KillerParry.visual = nil end
+        return
+    end
+    local killerCharacter = lp.Character
+    local killerRoot = killerCharacter and killerCharacter.Parent == KillersFolder
+        and killerCharacter:FindFirstChild("HumanoidRootPart") or nil
+    if not killerRoot then
+        if KillerParry.visual then pcall(function() KillerParry.visual:Destroy() end); KillerParry.visual = nil end
+        return
+    end
+    if not KillerParry.visual or KillerParry.visual.Parent ~= killerRoot then
+        if KillerParry.visual then pcall(function() KillerParry.visual:Destroy() end) end
+        local ok, adornment = pcall(function() return Instance.new("CylinderHandleAdornment") end)
+        if not ok or not adornment then return end
+        KillerParry.visual = adornment
+        adornment.Name = "BloodsakenKillerParryRadius"
+        adornment.Adornee = killerRoot
+        adornment.Color3 = Color3.fromRGB(255, 65, 80)
+        adornment.Transparency = 0.55
+        adornment.AlwaysOnTop = true
+        adornment.Height = 0.08
+        adornment.Parent = killerRoot
+    end
+    pcall(function()
+        KillerParry.visual.Radius = KillerParry.range
+        KillerParry.visual.CFrame = CFrame.new(0, -(killerRoot.Size.Y * 0.5 + 0.08), 0)
+    end)
+end
+RunService.Heartbeat:Connect(KillerParry.updateVisual)
 -- ============================================================
 -- AUTO PUNCH (Event based)
 -- ============================================================
@@ -389,6 +449,11 @@ local punchAimMode = "Character Lock"
 local punchAimPrediction = 4
 local punchAimCooldown = 0.18
 local lastPunchAimByAnimationId = {}
+local AttackLunge = {
+    enabled = false, studs = 3, cooldown = 0.18, lastAt = 0,
+    animationIds = {}, characterById = {}, characterEnabled = {},
+    characterOptions = {}, toggles = {}, sortedCharacters = {},
+}
 local aimAnimatorConnection = nil -- listens to the local survivor Animator for tracker + HDT
 local aimAnimationTypeById = {}
 local m1AnimationTypeById = {}
@@ -423,12 +488,35 @@ local function getM1TypeFromConfigPath(path)
     if string.find(token, "g666slash", 1, true) then return "g666slash" end
     if string.find(token, "guestm1", 1, true) then return "guestm1" end
     if string.find(token, "carvingslash", 1, true) then return "carvingslash" end
+    if string.find(token, "parry", 1, true) then return "parry" end
+    if string.find(token, "block", 1, true) then return "block" end
+    if string.find(token, "punch", 1, true) then return "punch" end
+    if string.find(token, "backstab", 1, true) then return "backstab" end
+    if string.find(token, "hatchet", 1, true) then return "hatchet" end
+    if string.find(token, "shot", 1, true) then return "shot" end
     if token == "stab" or string.find(token, "nolim1stab", 1, true) then return "stab" end
     if string.find(token, "slash", 1, true) then return "slash" end
     return nil
 end
 
-local function indexAimAnimationIds(value, path, depth)
+function AttackLunge.isAttackAnimationPath(path)
+    local token = string.lower(tostring(path or "")):gsub("[^%w]", "")
+    local blocked = { "idle", "walk", "run", "sprint", "stun", "hurt", "death", "emote", "victory", "intro", "crouch" }
+    for _, word in ipairs(blocked) do
+        if string.find(token, word, 1, true) then return false end
+    end
+    local attackWords = {
+        "slash", "shot", "hatchet", "backstab", "stab", "carving", "eviscerate",
+        "perforating", "lacerate", "tag", "m1", "attack", "parry", "block",
+        "punch", "strike", "hit", "swing", "sword", "knife", "punching",
+    }
+    for _, word in ipairs(attackWords) do
+        if string.find(token, word, 1, true) then return true end
+    end
+    return false
+end
+
+local function indexAimAnimationIds(value, path, depth, characterName, sourceCategory)
     if depth > 8 then return end
     if type(value) == "string" then
         local keyword = getMatchingAimKeyword(path)
@@ -438,19 +526,38 @@ local function indexAimAnimationIds(value, path, depth)
         -- config overwrite a matching animation ID.
         if id and keyword and not aimAnimationTypeById[id] then aimAnimationTypeById[id] = keyword end
         if id and m1Type and not m1AnimationTypeById[id] then m1AnimationTypeById[id] = m1Type end
+        if id and sourceCategory == "Survivors" and AttackLunge.isAttackAnimationPath(path) then
+            AttackLunge.animationIds[id] = true
+            AttackLunge.characterById[id] = AttackLunge.characterById[id] or characterName
+        end
     elseif type(value) == "table" then
         for key, child in pairs(value) do
             local nextPath = (path ~= "" and (path .. " ") or "") .. tostring(key)
-            indexAimAnimationIds(child, nextPath, depth + 1)
+            indexAimAnimationIds(child, nextPath, depth + 1, characterName, sourceCategory)
         end
     end
 end
 
-local function indexAimConfigModule(module)
+function AttackLunge.getConfigCharacterName(module, root)
+    local node = module
+    while node and node.Parent and node.Parent ~= root do
+        node = node.Parent
+    end
+    if node and node.Parent == root then return node.Name end
+    return module.Parent and module.Parent.Name or "Unknown"
+end
+
+local function indexAimConfigModule(module, root)
     if not module or not module:IsA("ModuleScript") or module.Name ~= "Config" then return end
     local ok, config = pcall(require, module)
     if ok and type(config) == "table" and type(config.Animations) == "table" then
-        indexAimAnimationIds(config.Animations, "", 0)
+        local category = root and root.Name or ""
+        local characterName = root and AttackLunge.getConfigCharacterName(module, root) or "Unknown"
+        if category == "Survivors" then
+            AttackLunge.characterEnabled[characterName] = true
+            AttackLunge.characterOptions[characterName] = true
+        end
+        indexAimAnimationIds(config.Animations, "", 0, characterName, category)
     end
 end
 
@@ -467,14 +574,18 @@ local function buildAimAnimationIdIndex()
     for _, root in ipairs(roots) do
         if root then
             for _, module in ipairs(root:GetDescendants()) do
-                indexAimConfigModule(module)
+                indexAimConfigModule(module, root)
             end
         end
     end
     -- Also index Config modules that appear after the initial pass.
     assets.DescendantAdded:Connect(function(instance)
         if instance:IsA("ModuleScript") and instance.Name == "Config" then
-            task.defer(indexAimConfigModule, instance)
+            local root = instance
+            while root and root.Parent ~= assets do root = root.Parent end
+            if root and (root.Name == "Survivors" or root.Name == "Killers" or root.Name == "Skins") then
+                task.defer(indexAimConfigModule, instance, root)
+            end
         end
     end)
 end
@@ -510,6 +621,11 @@ local hdtBlockAnimSet = {
     ["95802026624883"] = true, ["140671644163156"] = true,
     ["100926346851492"] = true,
 }
+-- Treat the existing HDT block/parry animation IDs as attack triggers too,
+-- so Guest's parry/block animation path can activate the same lunge handler.
+for animationId in pairs(hdtBlockAnimSet) do
+    AttackLunge.animationIds[animationId] = true
+end
 
 local function getNearestHDTKiller()
     local char = lp.Character
@@ -553,6 +669,65 @@ local function snapPunchAim(targetKiller)
         local camera = Workspace.CurrentCamera
         if camera then camera.CFrame = CFrame.lookAt(camera.CFrame.Position, predictedPosition) end
     end
+end
+
+-- Small optional movement correction on recognised local survivor attack
+-- animations. Distance is user-adjustable and character filters are opt-in.
+function AttackLunge.getLocalSurvivorCharacterKey()
+    local char = lp.Character
+    if not char then return nil end
+    local candidates = {
+        char:GetAttribute("CharacterName"),
+        char:GetAttribute("SurvivorName"),
+        char:GetAttribute("ActorName"),
+        char.Name,
+    }
+    for _, candidate in ipairs(candidates) do
+        if type(candidate) == "string" and candidate ~= "" then
+            local key = string.lower(candidate):gsub("[^%w]", "")
+            for configuredName in pairs(AttackLunge.characterOptions) do
+                if string.lower(configuredName):gsub("[^%w]", "") == key then
+                    return configuredName
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function AttackLunge.isAllowedForLocalCharacter(animationId)
+    local mappedCharacter = animationId and AttackLunge.characterById[animationId]
+    local localCharacter = AttackLunge.getLocalSurvivorCharacterKey()
+    local characterName = mappedCharacter or localCharacter
+    if not characterName then return true end -- fail open if the game doesn't expose a matching character name
+    return AttackLunge.characterEnabled[characterName] ~= false
+end
+
+local function lungeTowardNearestKiller()
+    if not AttackLunge.enabled then return end
+    local now = tick_ref()
+    if now - AttackLunge.lastAt < AttackLunge.cooldown then return end
+
+    local char = lp.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    if not myRoot or not humanoid or humanoid.Health <= 0 then return end
+
+    local killer = getNearestHDTKiller()
+    local targetRoot = killer and killer:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return end
+
+    local offset = targetRoot.Position - myRoot.Position
+    local flatOffset = Vector3.new(offset.X, 0, offset.Z)
+    local distance = flatOffset.Magnitude
+    if distance < 0.05 then return end
+
+    -- Preserve height and leave a small gap rather than moving through the target.
+    local moveDistance = math.min(AttackLunge.studs, math.max(0, distance - 1.5))
+    if moveDistance < 0.05 then return end
+
+    AttackLunge.lastAt = now
+    myRoot.CFrame = myRoot.CFrame + flatOffset.Unit * moveDistance
 end
 
 local function stopHDTDrag()
@@ -620,10 +795,19 @@ local function onLocalAnimationPlayed(track)
     local animation = track.Animation
     local animId = animation and string_match(tostring_ref(animation.AnimationId), "%d+")
 
-    -- Aim is triggered by the LOCAL survivor's animation event, not by the
-    -- killer's Animator. Resolve the animation type by name first, then by ID.
+    -- Aim/lunge are triggered by the LOCAL survivor's animation event, not
+    -- by the killer's Animator. Resolve the animation type by name, then ID.
+    local abilityName, abilityKeyword = getAnimationAbilityName(track)
+    local mappedM1Type = animId and m1AnimationTypeById[animId]
+    local isMappedAttack = animId and AttackLunge.animationIds[animId]
+    local isNamedAttack = abilityKeyword ~= nil or getM1TypeFromConfigPath(
+        tostring_ref(track.Name) .. " " .. tostring_ref(animation and animation.Name or "")
+    ) ~= nil
+    if AttackLunge.enabled and (isMappedAttack or mappedM1Type or isNamedAttack)
+        and AttackLunge.isAllowedForLocalCharacter(animId) then
+        lungeTowardNearestKiller()
+    end
     if punchAimEnabled then
-        local abilityName, abilityKeyword = getAnimationAbilityName(track)
         if abilityKeyword then
             local now = tick_ref()
             local debounceKey = animId or string.lower(tostring_ref(abilityName))
@@ -1501,7 +1685,8 @@ local RawTabs = {
     Stam       = Window:AddTab("Stam", "activity", "Stamina controls"),
     AutoBlock  = Window:AddTab("Auto Block", "shield", "GoodSAKEN Auto Block"),
     FacingCheck= Window:AddTab("Facing Check", "scan-eye", "Killer facing and direction visuals"),
-    Aim        = Window:AddTab("Aim", "crosshair", "Auto punch, punch aim and HDT"),
+    Aim        = Window:AddTab("Aim", "crosshair", "Survivor auto aim, auto punch and HDT"),
+    KillerParry= Window:AddTab("Killer Parry", "shield", "John Doe 404 Error and Slasher Raging Pace parry"),
     Misc       = Window:AddTab("Misc", "settings", "Extra features and utilities"),
     Settings   = Window:AddTab("Config", "save", "Configuration and appearance"),
 }
@@ -1556,8 +1741,8 @@ local function wrapGroupbox(realGroupbox)
             Text = config.Name,
             Values = config.Options or {},
             Default = config.CurrentOption or (config.Options and config.Options[1]),
-            Multi = false,
-            Searchable = false,
+            Multi = config.Multi == true,
+            Searchable = config.Searchable == true,
             Tooltip = config.Tooltip,
             Callback = config.Callback,
         })
@@ -1594,7 +1779,8 @@ local Tabs = {
     AutoBlock = wrapTab(RawTabs.AutoBlock),
     FacingCheck = wrapTab(RawTabs.FacingCheck),
     Tech      = wrapTab(RawTabs.Misc),
-    Killer    = wrapTab(RawTabs.Misc),
+    Killer    = wrapTab(RawTabs.KillerParry),
+    KillerParry = wrapTab(RawTabs.KillerParry),
     Gen       = wrapTab(RawTabs.ESP),
     EspMaster = wrapTab(RawTabs.ESP),
     Misc      = wrapTab(RawTabs.Misc),
@@ -1750,8 +1936,8 @@ APMain:CreateToggle({
     Callback = function(v) autoPunchEventEnabled = v end,
 }, "AutoPunch")
 APMain:CreateToggle({
-    Name = "Animation Tracker Aim",
-    Tooltip = "Listen to your survivor Animator. Aim at the nearest killer when your Slash, Shot, Hatchet, Stab or Backstab animation starts.",
+    Name = "Survivor Auto Aim (Animation Tracker)",
+    Tooltip = "Listen to your own survivor Animator. Aim at the nearest killer when a recognised Slash, Shot, Hatchet, Stab or Backstab animation starts.",
     CurrentValue = false,
     Callback = function(v)
         punchAimEnabled = v
@@ -1760,6 +1946,49 @@ APMain:CreateToggle({
         end
     end,
 }, "PunchAim")
+APMain:CreateToggle({
+    Name = "Attack Lunge",
+    Tooltip = "Apply a small movement correction toward the nearest killer when a recognised local survivor attack animation starts, including Guest attacks and parry/block animations indexed from survivor configs.",
+    CurrentValue = false,
+    Callback = function(v)
+        AttackLunge.enabled = v
+        if not v then AttackLunge.lastAt = 0 end
+    end,
+}, "AttackLunge")
+APMain:CreateSlider({
+    Name = "Lunge Distance (studs)",
+    Range = { 1, 5 },
+    Increment = 1,
+    CurrentValue = AttackLunge.studs,
+    Callback = function(v) AttackLunge.studs = math.clamp(tonumber(v) or 3, 1, 5) end,
+}, "AttackLungeDistance")
+
+local APLungeCharacters = Tabs.AutoPunch:CreateGroupbox({ Name = "Attack Lunge Character Selector", Column = 2 })
+for name in pairs(AttackLunge.characterOptions) do
+    AttackLunge.sortedCharacters[#AttackLunge.sortedCharacters + 1] = name
+end
+table.sort(AttackLunge.sortedCharacters)
+APLungeCharacters:CreateDropdown({
+    Name = "Characters Allowed to Lunge",
+    Options = AttackLunge.sortedCharacters,
+    CurrentOption = AttackLunge.sortedCharacters,
+    Multi = true,
+    Searchable = true,
+    Tooltip = "Open this selector and choose which survivor characters can trigger Attack Lunge. Deselect a character to exclude it.",
+    Callback = function(selected)
+        for name in pairs(AttackLunge.characterOptions) do
+            AttackLunge.characterEnabled[name] = false
+        end
+        if type(selected) == "table" then
+            for key, value in pairs(selected) do
+                local name = (type(key) == "number") and value or (value == true and key or nil)
+                if type(name) == "string" and AttackLunge.characterOptions[name] then
+                    AttackLunge.characterEnabled[name] = true
+                end
+            end
+        end
+    end,
+}, "AttackLungeCharacterSelector")
 APMain:CreateToggle({
     Name = "Log Unknown Animation IDs",
     Tooltip = "Print unrecognised local animation IDs to the executor console for adding new ability mappings.",
@@ -1806,13 +2035,38 @@ APLock:CreateInput({
     Callback = function(v) Ddelay = math.clamp(tonumber(v) or 0, 0, 3) end,
 }, "HTDDelay")
 
--- ============ KILLER ============
-local KillerMain = Tabs.Killer:CreateGroupbox({ Name = "Killer", Column = 1 }, "Group_KillerMain")
-KillerMain:CreateToggle({
-    Name = "Auto Raging Pace [Beta]",
+-- ============ KILLER PARRY TAB ============
+local KillerParryMain = Tabs.KillerParry:CreateGroupbox({ Name = "Automatic Killer Parry", Column = 1 }, "Group_KillerParry")
+KillerParryMain:CreateToggle({
+    Name = "John Doe 404 Error Parry",
+    Tooltip = "When playing John Doe, activate 404 Error once when a recognised incoming survivor attack animation starts inside the selected radius.",
     CurrentValue = false,
-    Callback = function(v) ragingPaceEnabled = v end,
-}, "AutoRagingPace")
+    Callback = function(v) KillerParry.enabled404 = v end,
+}, "KillerParry_404Error")
+KillerParryMain:CreateToggle({
+    Name = "Slasher Raging Pace Parry",
+    Tooltip = "When playing Slasher, activate Raging Pace once when a recognised incoming survivor attack animation starts inside the selected radius.",
+    CurrentValue = false,
+    Callback = function(v) KillerParry.enabledRaging = v end,
+}, "KillerParry_RagingPace")
+
+local KillerParryVisual = Tabs.KillerParry:CreateGroupbox({ Name = "Parry Detection Radius", Column = 2 }, "Group_KillerParryRadius")
+KillerParryVisual:CreateSlider({
+    Name = "Parry Radius (studs)",
+    Range = { 5, 60 },
+    Increment = 1,
+    CurrentValue = KillerParry.range,
+    Callback = function(v) KillerParry.range = math.clamp(tonumber(v) or 20, 5, 60); KillerParry.updateVisual() end,
+}, "KillerParry_Radius")
+KillerParryVisual:CreateToggle({
+    Name = "Show Parry Radius",
+    Tooltip = "Display a circle around your killer showing the exact range used for animation detection.",
+    CurrentValue = false,
+    Callback = function(v)
+        KillerParry.showRange = v
+        KillerParry.updateVisual()
+    end,
+}, "KillerParry_ShowRadius")
 
 local function SendNotif(title, message, duration)
     pcall(function()
