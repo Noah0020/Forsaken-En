@@ -4,10 +4,33 @@ repeat task.wait() until game:IsLoaded()
 --  BLOODSAKEN  |  OBSIDIAN UI
 --  Obsidian: https://github.com/deividcomsono/Obsidian
 -- ============================================================
-local ObsidianRepo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
-local Library = loadstring(game:HttpGet(ObsidianRepo .. "Library.lua"))()
-local ThemeManager = loadstring(game:HttpGet(ObsidianRepo .. "addons/ThemeManager.lua"))()
-local SaveManager = loadstring(game:HttpGet(ObsidianRepo .. "addons/SaveManager.lua"))()
+-- Obsidian UI dependency loader (explicit branch path + readable errors)
+local ObsidianRepo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/"
+local function LoadObsidianModule(relativePath, moduleName)
+    local url = ObsidianRepo .. relativePath
+    local okFetch, source = pcall(function()
+        return game:HttpGet(url)
+    end)
+    if not okFetch or type(source) ~= "string" or source == "" then
+        error(("Bloodsaken: failed to download %s from %s. Check your connection or try again."):format(moduleName, url), 0)
+    end
+
+    local compiler = loadstring or load
+    local chunk, compileError = compiler(source)
+    if not chunk then
+        error(("Bloodsaken: %s could not be compiled: %s"):format(moduleName, tostring(compileError)), 0)
+    end
+
+    local okRun, result = pcall(chunk)
+    if not okRun or result == nil then
+        error(("Bloodsaken: %s failed to initialize: %s"):format(moduleName, tostring(result)), 0)
+    end
+    return result
+end
+
+local Library = LoadObsidianModule("Library.lua", "Obsidian Library")
+local ThemeManager = LoadObsidianModule("addons/ThemeManager.lua", "Obsidian ThemeManager")
+local SaveManager = LoadObsidianModule("addons/SaveManager.lua", "Obsidian SaveManager")
 
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
@@ -271,7 +294,7 @@ end)
 -- ============================================================
 -- ============================================================
 -- FACING CHECK CONFIGURATION
--- Off: radial zone around killer. Circle Check: circular zone in front. Diamond Check: forward-only diamond starting at the killer, extending outward.
+-- Circle, Cone and Box zones are evaluated when a killer attack signal arrives.
 
 -- GOODSAKEN v9.1.1 AUTO BLOCK MODULE
 -- Only the Auto Block module is transplanted into Bloodsaken.
@@ -288,16 +311,16 @@ local Settings = {
     ABMode = "Guest1337",
     CustomABMode = "Guest1337",
     FourthButtonTarget = "default",
-    -- No facing shape is selected by default: use the radial circle around the killer.
-    FacingMode = "Off",
+    FacingMode = "Circle",
     ShowFacingVisual = true,
-    FacingOffRadius = 15,
     CustomCircleRadius = 5,
     CustomCircleOffset = 2,
-    CustomDiamondLength = 8,
-    CustomDiamondWidth = 4,
-    -- The diamond begins at the killer and extends forward; the killer is not centered inside it.
-    CustomDiamondOffset = 0,
+    CustomConeLength = 12,
+    CustomConeAngle = 70,
+    CustomConeOffset = 0,
+    CustomBoxLength = 12,
+    CustomBoxWidth = 6,
+    CustomBoxOffset = 0,
     ZoneHeight = 0.5,
 }
 local Toggles = {}
@@ -614,6 +637,7 @@ local HITBOX_DRAG_DURATION = 1.4
 local Dspeed = 5.6
 local Ddelay = 0
 local hdtActiveDrag = nil
+local hdtFaceKillerOnStart = true
 
 -- Block animation IDs from the supplied Ivy.lua HDT implementation.
 local hdtBlockAnimSet = {
@@ -647,8 +671,8 @@ local function getNearestHDTKiller()
     return closest
 end
 
-local function snapPunchAim(targetKiller)
-    if not punchAimEnabled then return end
+local function snapPunchAim(targetKiller, force)
+    if not punchAimEnabled and not Settings.GuestAutoAimEnabled and not force then return end
     local char = lp.Character
     local myRoot = char and char:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
@@ -745,10 +769,18 @@ end
 local function beginHDTDrag(killer)
     if not hitboxDraggingTech or hdtActiveDrag or not killer or not killer.Parent then return end
     local char = lp.Character
-    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    local myRoot = char and (char.PrimaryPart or char:FindFirstChild("HumanoidRootPart"))
     local humanoid = char and char:FindFirstChildOfClass("Humanoid")
     local targetRoot = killer:FindFirstChild("HumanoidRootPart")
     if not myRoot or not humanoid or not targetRoot then return end
+
+    -- HDT Normal: face the killer immediately when a block animation starts.
+    if hdtFaceKillerOnStart then
+        local lookAt = Vector3.new(targetRoot.Position.X, myRoot.Position.Y, targetRoot.Position.Z)
+        if (lookAt - myRoot.Position).Magnitude > 0.05 then
+            myRoot.CFrame = CFrame.lookAt(myRoot.Position, lookAt)
+        end
+    end
 
     local velocity = Instance.new("BodyVelocity")
     velocity.Name = "BloodsakenHDTVelocity"
@@ -790,6 +822,131 @@ local function beginHDTDrag(killer)
     end)
 end
 
+do
+-- ============================================================
+-- GUEST AUTO AIM + SOUND-BASED GUEST AUTO PARRY
+-- Guest parry uses the user's supplied block-start sound IDs and
+-- waits 2 seconds before requesting the Punch ability.
+-- ============================================================
+Settings.GuestAutoAimEnabled = false
+local GuestAutoParry = {
+    enabled = false,
+    connections = {},
+    monitored = setmetatable({}, { __mode = "k" }),
+    lastTriggered = setmetatable({}, { __mode = "k" }),
+    character = nil,
+}
+
+local guestBlockStartSounds = {
+    ["132298811847315"] = true,
+    ["81114852524420"] = true,
+    ["123825742002486"] = true,
+    ["116616310968045"] = true,
+    ["102808968188291"] = true,
+    ["117828699507982"] = true,
+    ["125854302746190"] = true,
+    ["18568553101"] = true,
+    ["95135835034592"] = true,
+    ["135209101640984"] = true,
+    ["91165993312513"] = true,
+    ["82772022662025"] = true,
+}
+
+local function isLocalGuestCharacter(character)
+    character = character or lp.Character
+    if not character then return false end
+    local candidates = {
+        character:GetAttribute("CharacterName"),
+        character:GetAttribute("SurvivorName"),
+        character:GetAttribute("ActorName"),
+        character.Name,
+    }
+    for _, candidate in ipairs(candidates) do
+        if type(candidate) == "string" and candidate ~= "" then
+            local key = string.lower(candidate):gsub("[^%w]", "")
+            if key == "guest" or key == "guest1337" then return true end
+        end
+    end
+    local configKey = AttackLunge.getLocalSurvivorCharacterKey()
+    if type(configKey) == "string" then
+        local key = string.lower(configKey):gsub("[^%w]", "")
+        return key == "guest" or key == "guest1337"
+    end
+    return false
+end
+
+local function disconnectGuestAutoParry()
+    for _, connection in ipairs(GuestAutoParry.connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(GuestAutoParry.connections)
+    GuestAutoParry.character = nil
+    GuestAutoParry.monitored = setmetatable({}, { __mode = "k" })
+    GuestAutoParry.lastTriggered = setmetatable({}, { __mode = "k" })
+end
+
+local function guestFirePunch()
+    local remote = AB.RemoteEvent or testRemote
+    if not remote then return end
+    pcall(function()
+        -- Match the supplied Auto Parry snippet's ability payload.
+        remote:FireServer("UseActorAbility", { "Punch" })
+    end)
+end
+
+local function monitorGuestBlockSound(sound, character, triggerWhenAdded)
+    if not GuestAutoParry.enabled or not isLocalGuestCharacter(character) then return end
+    if not sound or not sound:IsA("Sound") or GuestAutoParry.monitored[sound] then return end
+    local soundId = string_match(tostring_ref(sound.SoundId), "%d+")
+    if not soundId or not guestBlockStartSounds[soundId] then return end
+    GuestAutoParry.monitored[sound] = true
+    local function schedulePunch()
+        if not GuestAutoParry.enabled or lp.Character ~= character then return end
+        if not isLocalGuestCharacter(character) then return end
+        local now = os.clock()
+        local previous = GuestAutoParry.lastTriggered[sound] or 0
+        if now - previous < 2.1 then return end
+        GuestAutoParry.lastTriggered[sound] = now
+        task.delay(2, function()
+            if GuestAutoParry.enabled and lp.Character == character and isLocalGuestCharacter(character) then
+                guestFirePunch()
+            end
+        end)
+    end
+    if triggerWhenAdded then schedulePunch() end
+    -- Existing Sound instances may be reused, so also watch their Played event.
+    local connection = sound.Played:Connect(schedulePunch)
+    table.insert(GuestAutoParry.connections, connection)
+end
+
+local function bindGuestAutoParry(character)
+    disconnectGuestAutoParry()
+    if not GuestAutoParry.enabled or not character or not isLocalGuestCharacter(character) then return end
+    GuestAutoParry.character = character
+    for _, descendant in ipairs(character:GetDescendants()) do
+        if descendant:IsA("Sound") then monitorGuestBlockSound(descendant, character, false) end
+    end
+    table.insert(GuestAutoParry.connections, character.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("Sound") then monitorGuestBlockSound(descendant, character, true) end
+    end))
+end
+
+function GuestAutoParry.setEnabled(enabled)
+    GuestAutoParry.enabled = enabled == true
+    bindGuestAutoParry(lp.Character)
+end
+
+lp.CharacterAdded:Connect(function(character)
+    task.defer(function()
+        if GuestAutoParry.enabled then bindGuestAutoParry(character) end
+    end)
+end)
+Settings.IsLocalGuestCharacter = isLocalGuestCharacter
+Settings.GuestAutoParrySetEnabled = function(enabled)
+    GuestAutoParry.setEnabled(enabled)
+end
+end -- Guest Auto Aim / Auto Parry helper scope
+
 local function onLocalAnimationPlayed(track)
     if not track then return end
     local animation = track.Animation
@@ -822,6 +979,20 @@ local function onLocalAnimationPlayed(track)
             warn("[Bloodsaken Aim Tracker] Unmatched local animation ID: " .. animId
                 .. " | track=" .. tostring_ref(track.Name)
                 .. " | animation=" .. tostring_ref(animation and animation.Name or "?"))
+        end
+    end
+
+    -- Guest Auto Aim is independent of the generic Aim-tab toggle and only
+    -- runs for Guest when a recognised attack animation starts.
+    if Settings.GuestAutoAimEnabled and Settings.IsLocalGuestCharacter(lp.Character)
+        and (abilityKeyword or mappedM1Type or isMappedAttack or isNamedAttack) then
+        local now = tick_ref()
+        local debounceKey = "GuestAutoAim:" .. tostring_ref(animId or abilityName or track.Name)
+        local previous = lastPunchAimByAnimationId[debounceKey]
+        if not previous or now - previous >= punchAimCooldown then
+            lastPunchAimByAnimationId[debounceKey] = now
+            local killer = getNearestHDTKiller()
+            if killer then snapPunchAim(killer, true) end
         end
     end
 
@@ -916,29 +1087,44 @@ local function BuildZone(killer)
     return { model=model, edges=edges, circle=circle, killer=killer }
 end
 
-local function IsPlayerInDiamond(myPos, killerCF, killerPos)
+local function flatBasis(killerCF)
     local fwd = Vector3.new(killerCF.LookVector.X, 0, killerCF.LookVector.Z)
-    local right = Vector3.new(killerCF.RightVector.X, 0, killerCF.RightVector.Z)
-    if fwd.Magnitude < 0.01 or right.Magnitude < 0.01 then return false end
-    fwd, right = fwd.Unit, right.Unit
-    local delta = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z)
-    local forwardDist, sideDist = delta:Dot(fwd), delta:Dot(right)
-    local centerDist = Settings.CustomDiamondOffset + Settings.CustomDiamondLength/2
-    local halfW = Settings.CustomDiamondWidth/2 + PLAYER_RADIUS
-    local halfL = Settings.CustomDiamondLength/2 + PLAYER_RADIUS
-    return math.abs(sideDist)/halfW + math.abs(forwardDist-centerDist)/halfL <= 1
+    if fwd.Magnitude < 0.01 then return nil end
+    fwd = fwd.Unit
+    return fwd, Vector3.new(-fwd.Z, 0, fwd.X)
 end
 
 local function IsPlayerInCircleCheck(myPos, killerCF, killerPos)
-    local fwd = Vector3.new(killerCF.LookVector.X, 0, killerCF.LookVector.Z)
-    if fwd.Magnitude < 0.01 then return false end
-    fwd = fwd.Unit
-    local right = Vector3.new(-fwd.Z, 0, fwd.X)
-    local delta = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z)
+    local fwd = flatBasis(killerCF)
+    if not fwd then return false end
     local centerDist = Settings.CustomCircleOffset + Settings.CustomCircleRadius
-    local fromCenter = delta - fwd*centerDist
+    local fromCenter = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z) - fwd*centerDist
     local radius = Settings.CustomCircleRadius + PLAYER_RADIUS
     return fromCenter:Dot(fromCenter) <= radius*radius
+end
+
+local function IsPlayerInCone(myPos, killerCF, killerPos)
+    local fwd, right = flatBasis(killerCF)
+    if not fwd then return false end
+    local delta = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z)
+    local forwardDist, sideDist = delta:Dot(fwd), math.abs(delta:Dot(right))
+    local offset = Settings.CustomConeOffset or 0
+    local length = Settings.CustomConeLength or 12
+    if forwardDist < offset-PLAYER_RADIUS or forwardDist > offset+length+PLAYER_RADIUS then return false end
+    local depth = math.max(0, forwardDist-offset)
+    local halfWidth = math.tan(math.rad(math.clamp(Settings.CustomConeAngle or 70, 5, 170)/2))*depth + PLAYER_RADIUS
+    return sideDist <= halfWidth
+end
+
+local function IsPlayerInBox(myPos, killerCF, killerPos)
+    local fwd, right = flatBasis(killerCF)
+    if not fwd then return false end
+    local delta = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z)
+    local forwardDist, sideDist = delta:Dot(fwd), math.abs(delta:Dot(right))
+    local offset = Settings.CustomBoxOffset or 0
+    return forwardDist >= offset-PLAYER_RADIUS
+        and forwardDist <= offset+(Settings.CustomBoxLength or 12)+PLAYER_RADIUS
+        and sideDist <= (Settings.CustomBoxWidth or 6)/2+PLAYER_RADIUS
 end
 
 local function IsPlayerInFacingZone(killer)
@@ -947,64 +1133,65 @@ local function IsPlayerInFacingZone(killer)
     local char = LocalPlayer.Character
     local myRoot = char and char:FindFirstChild("HumanoidRootPart")
     if not kr or not myRoot then return false end
-    local mode = Settings.FacingMode
-    if mode ~= "Circle Check" and mode ~= "Diamond Check" then mode = "Off" end
-    local delta = Vector3.new(myRoot.Position.X-kr.Position.X, 0, myRoot.Position.Z-kr.Position.Z)
-    if mode == "Off" then
-        local radius = (Settings.FacingOffRadius or 15) + PLAYER_RADIUS
-        return delta:Dot(delta) <= radius*radius
-    elseif mode == "Circle Check" then
+    local mode = Settings.FacingMode or "Circle"
+    if mode == "Circle" then
         return IsPlayerInCircleCheck(myRoot.Position, kr.CFrame, kr.Position)
-    elseif mode == "Diamond Check" then
-        return IsPlayerInDiamond(myRoot.Position, kr.CFrame, kr.Position)
+    elseif mode == "Cone" then
+        return IsPlayerInCone(myRoot.Position, kr.CFrame, kr.Position)
+    elseif mode == "Box" then
+        return IsPlayerInBox(myRoot.Position, kr.CFrame, kr.Position)
     end
     return false
 end
 
+local function setZoneEdge(edge, a, b, color)
+    local diff = b-a
+    if diff.Magnitude < 0.01 then edge.Transparency = 1; return end
+    edge.Size = Vector3.new(0.18, 0.08, diff.Magnitude)
+    edge.CFrame = CFrame.lookAt((a+b)/2, (a+b)/2+diff.Unit)
+    edge.Color = color
+    edge.Transparency = 0.2
+end
+
 local function UpdateZone(zone, kr, myRoot)
     if not zone or not zone.model or not zone.model.Parent or not kr or not kr.Parent then return end
-    local mode = Settings.FacingMode or "Off"
+    local mode = Settings.FacingMode or "Circle"
     local baseCF = GetKillerGroundCF(kr)
     local show = Settings.ShowFacingVisual == true
     local inZone = myRoot and IsPlayerInFacingZone(zone.killer) or false
     local zoneColor = inZone and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
-
+    local points = nil
+    if mode == "Box" then
+        local o, length, width = Settings.CustomBoxOffset or 0, Settings.CustomBoxLength or 12, Settings.CustomBoxWidth or 6
+        points = {
+            baseCF:PointToWorldSpace(Vector3.new(-width/2,0,-o)),
+            baseCF:PointToWorldSpace(Vector3.new(width/2,0,-o)),
+            baseCF:PointToWorldSpace(Vector3.new(-width/2,0,-(o+length))),
+            baseCF:PointToWorldSpace(Vector3.new(width/2,0,-(o+length))),
+        }
+    elseif mode == "Cone" then
+        local o, length = Settings.CustomConeOffset or 0, Settings.CustomConeLength or 12
+        local half = math.tan(math.rad(math.clamp(Settings.CustomConeAngle or 70,5,170)/2))*length
+        points = {
+            baseCF:PointToWorldSpace(Vector3.new(0,0,-o)),
+            baseCF:PointToWorldSpace(Vector3.new(-half,0,-(o+length))),
+            baseCF:PointToWorldSpace(Vector3.new(half,0,-(o+length))),
+            baseCF:PointToWorldSpace(Vector3.new(0,0,-(o+length))),
+        }
+    end
+    local edgePairs = mode == "Box" and {{1,2},{1,3},{2,4},{3,4}} or {{1,2},{1,3},{2,3},{2,3}}
     for i, edge in ipairs(zone.edges) do
-        if edge and edge.Parent then
-            if show and mode == "Diamond Check" then
-                local offset, length, width = Settings.CustomDiamondOffset, Settings.CustomDiamondLength, Settings.CustomDiamondWidth
-                local points = {
-                    baseCF:PointToWorldSpace(Vector3.new(0,0,-offset)),
-                    baseCF:PointToWorldSpace(Vector3.new(0,0,-(offset+length))),
-                    baseCF:PointToWorldSpace(Vector3.new(-width/2,0,-(offset+length/2))),
-                    baseCF:PointToWorldSpace(Vector3.new(width/2,0,-(offset+length/2))),
-                }
-                local pairsForEdges = {{1,3},{1,4},{2,3},{2,4}}
-                local pair = pairsForEdges[i]
-                local a,b = points[pair[1]],points[pair[2]]
-                local mid,diff = (a+b)/2,b-a
-                edge.Size = Vector3.new(0.18,0.08,diff.Magnitude)
-                edge.CFrame = CFrame.lookAt(mid,mid+diff.Unit)
-                edge.Transparency = 0.2
-                edge.Color = zoneColor
-            else
-                edge.Transparency = 1
-            end
+        if show and points and edgePairs[i] then
+            setZoneEdge(edge, points[edgePairs[i][1]], points[edgePairs[i][2]], zoneColor)
+        else
+            edge.Transparency = 1
         end
     end
-
     local circle = zone.circle
     if circle and circle.Parent then
-        local isCircle = mode == "Off" or mode == "Circle Check"
-        local radius, center
-        if mode == "Off" then
-            -- Off means radial detection around the killer until a directional check is selected.
-            radius = (Settings.FacingOffRadius or 15) + PLAYER_RADIUS
-            center = baseCF.Position
-        else
-            radius = Settings.CustomCircleRadius + PLAYER_RADIUS
-            center = baseCF:PointToWorldSpace(Vector3.new(0,0,-(Settings.CustomCircleOffset + Settings.CustomCircleRadius)))
-        end
+        local isCircle = mode == "Circle"
+        local radius = Settings.CustomCircleRadius + PLAYER_RADIUS
+        local center = baseCF:PointToWorldSpace(Vector3.new(0,0,-(Settings.CustomCircleOffset + Settings.CustomCircleRadius)))
         circle.Size = Vector3.new(0.08,radius*2,radius*2)
         circle.CFrame = CFrame.new(center + Vector3.new(0,0.04,0)) * CFrame.Angles(0,0,math.rad(90))
         circle.Transparency = (show and isCircle) and 0.55 or 1
@@ -1836,19 +2023,45 @@ ABCustom:CreateInput({
     Callback = function(v) Settings.ZoneHeight = tonumber(v) or 0.5 end,
 }, "AB_ZoneHeight")
 
+-- ============ GUEST AUTO AIM + GUEST AUTO PARRY ============
+ABCustom = Tabs.AutoBlock:CreateGroupbox({ Name = "Guest Auto Aim + Auto Parry", Column = 1 }, "Group_GuestAuto")
+ABCustom:CreateToggle({
+    Name = "Guest Auto Aim",
+    Tooltip = "When playing Guest, aim toward the nearest killer when a recognised Guest attack animation starts.",
+    CurrentValue = false,
+    Callback = function(v)
+        Settings.GuestAutoAimEnabled = v == true
+        if not v then
+            for key in pairs(lastPunchAimByAnimationId) do
+                if type(key) == "string" and string.sub(key, 1, 13) == "GuestAutoAim:" then
+                    lastPunchAimByAnimationId[key] = nil
+                end
+            end
+        end
+    end,
+}, "GuestAutoAim")
+ABCustom:CreateToggle({
+    Name = "Guest Auto Parry (Sound Based)",
+    Tooltip = "Uses your 12 supplied block-start sound IDs. After a matching sound plays on Guest, waits 2 seconds and requests Punch.",
+    CurrentValue = false,
+    Callback = function(v)
+        Settings.GuestAutoParrySetEnabled(v)
+    end,
+}, "GuestAutoParry")
+
 -- ============ FACING CHECK MODES + MATCHED VISUAL ============
 local FacingMain = Tabs.FacingCheck:CreateGroupbox({ Name = "Facing Check", Column = 1 }, "Group_FacingMain")
-local FacingShape = Tabs.FacingCheck:CreateGroupbox({ Name = "Circle / Diamond Settings", Column = 2 }, "Group_FacingShape")
+local FacingShape = Tabs.FacingCheck:CreateGroupbox({ Name = "Shape Settings", Column = 2 }, "Group_FacingShape")
 
 local function applyFacingCheckMode(mode)
-    if mode ~= "Circle Check" and mode ~= "Diamond Check" then mode = "Off" end
+    if mode ~= "Circle" and mode ~= "Cone" and mode ~= "Box" then mode = "Circle" end
     Settings.FacingMode = mode
     UpdateCustomZoneVisibility()
 end
 
 FacingMain:CreateDropdown({
-    Name = "Facing Check (Off = circle around killer)",
-    Options = { "Off", "Circle Check", "Diamond Check" },
+    Name = "Facing Check Shape",
+    Options = { "Circle", "Cone", "Box" },
     CurrentOption = Settings.FacingMode,
     Callback = applyFacingCheckMode,
 }, "Facing_Mode")
@@ -1860,50 +2073,31 @@ FacingMain:CreateToggle({
         UpdateCustomZoneVisibility()
     end,
 }, "Facing_ShowVisual")
-FacingMain:CreateInput({
-    Name = "Off Circle Radius",
-    CurrentValue = tostring(Settings.FacingOffRadius),
-    PlaceholderText = "15",
-    Numeric = true,
-    Callback = function(v) Settings.FacingOffRadius = math.max(1, tonumber(v) or 15) end,
-}, "Facing_OffRadius")
-FacingShape:CreateInput({
-    Name = "Circle Radius",
-    CurrentValue = tostring(Settings.CustomCircleRadius),
-    PlaceholderText = "5",
-    Numeric = true,
+FacingShape:CreateInput({ Name = "Circle Radius", CurrentValue = tostring(Settings.CustomCircleRadius), PlaceholderText = "5", Numeric = true,
     Callback = function(v) Settings.CustomCircleRadius = math.max(1, tonumber(v) or 5) end,
 }, "Facing_CircleRadius")
-FacingShape:CreateInput({
-    Name = "Circle Forward Offset",
-    CurrentValue = tostring(Settings.CustomCircleOffset),
-    PlaceholderText = "2",
-    Numeric = true,
+FacingShape:CreateInput({ Name = "Circle Forward Offset", CurrentValue = tostring(Settings.CustomCircleOffset), PlaceholderText = "2", Numeric = true,
     Callback = function(v) Settings.CustomCircleOffset = math.max(0, tonumber(v) or 2) end,
 }, "Facing_CircleOffset")
-FacingShape:CreateInput({
-    Name = "Diamond Length",
-    CurrentValue = tostring(Settings.CustomDiamondLength),
-    PlaceholderText = "8",
-    Numeric = true,
-    Callback = function(v) Settings.CustomDiamondLength = math.max(1, tonumber(v) or 8) end,
-}, "Facing_DiamondLength")
-FacingShape:CreateInput({
-    Name = "Diamond Width",
-    CurrentValue = tostring(Settings.CustomDiamondWidth),
-    PlaceholderText = "4",
-    Numeric = true,
-    Callback = function(v) Settings.CustomDiamondWidth = math.max(1, tonumber(v) or 4) end,
-}, "Facing_DiamondWidth")
-FacingShape:CreateInput({
-    Name = "Diamond Start Offset From Killer",
-    CurrentValue = tostring(Settings.CustomDiamondOffset),
-    PlaceholderText = "0",
-    Numeric = true,
-    Callback = function(v) Settings.CustomDiamondOffset = math.max(0, tonumber(v) or 0) end,
-}, "Facing_DiamondOffset")
+FacingShape:CreateInput({ Name = "Cone Length", CurrentValue = tostring(Settings.CustomConeLength), PlaceholderText = "12", Numeric = true,
+    Callback = function(v) Settings.CustomConeLength = math.max(1, tonumber(v) or 12) end,
+}, "Facing_ConeLength")
+FacingShape:CreateInput({ Name = "Cone Angle (degrees)", CurrentValue = tostring(Settings.CustomConeAngle), PlaceholderText = "70", Numeric = true,
+    Callback = function(v) Settings.CustomConeAngle = math.clamp(tonumber(v) or 70, 5, 170) end,
+}, "Facing_ConeAngle")
+FacingShape:CreateInput({ Name = "Cone Forward Offset", CurrentValue = tostring(Settings.CustomConeOffset), PlaceholderText = "0", Numeric = true,
+    Callback = function(v) Settings.CustomConeOffset = math.max(0, tonumber(v) or 0) end,
+}, "Facing_ConeOffset")
+FacingShape:CreateInput({ Name = "Box Length", CurrentValue = tostring(Settings.CustomBoxLength), PlaceholderText = "12", Numeric = true,
+    Callback = function(v) Settings.CustomBoxLength = math.max(1, tonumber(v) or 12) end,
+}, "Facing_BoxLength")
+FacingShape:CreateInput({ Name = "Box Width", CurrentValue = tostring(Settings.CustomBoxWidth), PlaceholderText = "6", Numeric = true,
+    Callback = function(v) Settings.CustomBoxWidth = math.max(1, tonumber(v) or 6) end,
+}, "Facing_BoxWidth")
+FacingShape:CreateInput({ Name = "Box Forward Offset", CurrentValue = tostring(Settings.CustomBoxOffset), PlaceholderText = "0", Numeric = true,
+    Callback = function(v) Settings.CustomBoxOffset = math.max(0, tonumber(v) or 0) end,
+}, "Facing_BoxOffset")
 
--- Draw exactly one visual matching the selected Facing Check mode on startup.
 UpdateCustomZoneVisibility()
 
 -- ============ TECH UTILITIES ============
@@ -2020,6 +2214,11 @@ APLock:CreateToggle({
         if not v then stopHDTDrag() end
     end,
 }, "HDT")
+APLock:CreateToggle({
+    Name = "HDT Normal: Face Killer on Start",
+    CurrentValue = true,
+    Callback = function(v) hdtFaceKillerOnStart = v end,
+}, "HDT_FaceKiller")
 APLock:CreateInput({
     Name = "HDT Speed",
     CurrentValue = tostring(Dspeed),
