@@ -77,120 +77,220 @@ local tick_ref      = tick
 local spawn_ref     = task.spawn
 local wait_ref      = task.wait
 
-local KillersFolder = Workspace:WaitForChild("Players"):WaitForChild("Killers")
+local PlayersFolder = Workspace:WaitForChild("Players")
+local KillersFolder = PlayersFolder:WaitForChild("Killers")
+local SurvivorsFolder = PlayersFolder:WaitForChild("Survivors")
 
 -- ============================================================
 -- KILLER PARRY: JOHN DOE 404 ERROR + SLASHER RAGING PACE
--- Event-driven survivor animation detection inside a configurable
--- radius around the local killer. Uses the animation IDs from the
--- supplied source pack; no per-frame scan of playing animation tracks.
+-- Uses the same ability RemoteEvent argument format as the working
+-- Auto Block helper: FireServer("UseActorAbility", { abilityName }).
+-- Only runs for the matching local killer character and enabled toggle.
 -- ============================================================
 local KillerParry = {
     enabled404 = false,
     enabledRaging = false,
     range = 20,
     showRange = false,
-    lastUse = { JohnDoe = 0, Slasher = 0 },
+    -- nil means the ability has not been used yet. This avoids blocking
+    -- the first activation when os.clock() is still below the cooldown.
+    lastUse = { JohnDoe = nil, Slasher = nil },
+    lastCharacter = nil,
     seenTracks = setmetatable({}, { __mode = "k" }),
     animatorConnections = setmetatable({}, { __mode = "k" }),
     modelConnections = setmetatable({}, { __mode = "k" }),
     visual = nil,
     animsToDetect = {
-        ["87259391926321"]=true,["99100240941590"]=true,["72685103823181"]=true,
-        ["81905101227053"]=true,["113936304594883"]=true,["140703210927645"]=true,
-        ["136007065400978"]=true,["129843313690921"]=true,["86709774283672"]=true,
-        ["108807732150251"]=true,["138040001965654"]=true,["86096387000557"]=true,
-        ["119850211147676"]=true,["131696603025265"]=true,["119462383658044"]=true,
-        ["116618003477002"]=true,["133491532453922"]=true,["76649505662612"]=true,
-        ["71190646367497"]=true,["121255898612475"]=true,["103601716322988"]=true,
-        ["86371356500204"]=true,["72722244508749"]=true,["96959123077498"]=true,
+        ["87259391926321"] = true, ["99100240941590"] = true,
+        ["72685103823181"] = true, ["81905101227053"] = true,
+        ["113936304594883"] = true, ["140703210927645"] = true,
+        ["136007065400978"] = true, ["129843313690921"] = true,
+        ["86709774283672"] = true, ["108807732150251"] = true,
+        ["138040001965654"] = true, ["86096387000557"] = true,
+        ["119850211147676"] = true, ["131696603025265"] = true,
+        ["119462383658044"] = true, ["116618003477002"] = true,
+        ["133491532453922"] = true, ["76649505662612"] = true,
+        ["71190646367497"] = true, ["121255898612475"] = true,
+        ["103601716322988"] = true, ["86371356500204"] = true,
+        ["72722244508749"] = true, ["96959123077498"] = true,
     },
 }
 
-function KillerParry.getLocalKiller()
+-- Identify the actual local killer model first, independently of toggle state.
+-- IsDescendantOf is more tolerant than checking Parent == KillersFolder only.
+function KillerParry.getKillerIdentity()
     local character = lp.Character
-    if not character or character.Parent ~= KillersFolder then return nil end
+    if not character or not character:IsA("Model") then return nil end
+    if not character:IsDescendantOf(KillersFolder) then return nil end
+
+    -- A new killer character means a new round/character instance. Clear the
+    -- previous instance's local cooldown so it cannot suppress the new round.
+    if KillerParry.lastCharacter ~= character then
+        KillerParry.lastCharacter = character
+        KillerParry.lastUse.JohnDoe = nil
+        KillerParry.lastUse.Slasher = nil
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.Health <= 0 then return nil end
+
     local name = string.lower(tostring_ref(character.Name)):gsub("[^%w]", "")
-    if name == "johndoe" and KillerParry.enabled404 then
+    if name == "johndoe" then
         return character, "JohnDoe", "404Error", 20
-    elseif name == "slasher" and KillerParry.enabledRaging then
+    elseif name == "slasher" then
         return character, "Slasher", "RagingPace", 30
     end
     return nil
 end
 
+-- Return a killer only when its matching user toggle is enabled.
+function KillerParry.getLocalKiller()
+    local character, killerKey, abilityName, abilityCooldown = KillerParry.getKillerIdentity()
+    if not character then return nil end
+
+    if killerKey == "JohnDoe" and KillerParry.enabled404 then
+        return character, killerKey, abilityName, abilityCooldown
+    elseif killerKey == "Slasher" and KillerParry.enabledRaging then
+        return character, killerKey, abilityName, abilityCooldown
+    end
+    return nil
+end
+
+-- This intentionally matches Auto Block's working call format. Do not send
+-- the raw buffer used by the old Killer Parry implementation.
 function KillerParry.fireAbility(abilityName)
     if type(abilityName) ~= "string" or abilityName == "" then return false end
-    local ok = pcall(function()
-        local bytes = { 3, #abilityName, 0, 0, 0 }
-        for i = 1, #abilityName do bytes[#bytes + 1] = string.byte(abilityName, i) end
-        local payload = buffer.create(#bytes)
-        for i = 1, #bytes do buffer.writeu8(payload, i - 1, bytes[i]) end
-        testRemote:FireServer("UseActorAbility", payload)
+    local remote = testRemote
+    if not remote or not remote:IsA("RemoteEvent") then return false end
+
+    local ok, err = pcall(function()
+        remote:FireServer("UseActorAbility", { abilityName })
     end)
+    if not ok then
+        warn("[Bloodsaken] Killer Parry ability request failed: " .. tostring_ref(err))
+    end
     return ok
 end
 
 function KillerParry.onTrack(survivorModel, track)
     if not track or KillerParry.seenTracks[track] then return end
+    if not survivorModel or not survivorModel:IsA("Model")
+        or not survivorModel:IsDescendantOf(SurvivorsFolder) then
+        return
+    end
+
     local animation = track.Animation
     local animationId = animation and string_match(tostring_ref(animation.AnimationId), "%d+")
     if not animationId or not KillerParry.animsToDetect[animationId] then return end
 
+    -- A survivor attack must be detected while the local player is actually
+    -- John Doe or Slasher, with that character's own toggle enabled.
     local killerCharacter, killerKey, abilityName, abilityCooldown = KillerParry.getLocalKiller()
     if not killerCharacter then return end
+
     local killerRoot = killerCharacter:FindFirstChild("HumanoidRootPart")
-    local survivorRoot = survivorModel and survivorModel:FindFirstChild("HumanoidRootPart")
+        or killerCharacter:FindFirstChild("RootPart")
+    local survivorRoot = survivorModel:FindFirstChild("HumanoidRootPart")
+        or survivorModel:FindFirstChild("RootPart")
     if not killerRoot or not survivorRoot then return end
-    if (survivorRoot.Position - killerRoot.Position).Magnitude > KillerParry.range then return end
+
+    local distance = (survivorRoot.Position - killerRoot.Position).Magnitude
+    if distance > KillerParry.range then return end
 
     local now = os.clock()
-    if now - (KillerParry.lastUse[killerKey] or 0) < abilityCooldown then return end
-    -- Trigger once per qualifying animation. The previous code spammed
-    -- the ability repeatedly for three seconds after a single detection.
-    KillerParry.seenTracks[track] = true
-    KillerParry.lastUse[killerKey] = now
-    KillerParry.fireAbility(abilityName)
+    local lastUse = KillerParry.lastUse[killerKey]
+    if lastUse and (now - lastUse) < abilityCooldown then return end
+
+    -- Only consume the local cooldown after the RemoteEvent call succeeds.
+    if KillerParry.fireAbility(abilityName) then
+        KillerParry.seenTracks[track] = true
+        KillerParry.lastUse[killerKey] = now
+    end
 end
 
 function KillerParry.attachAnimator(animator, survivorModel)
-    if not animator or not animator:IsA("Animator") or KillerParry.animatorConnections[animator] then return end
+    if not animator or not animator:IsA("Animator") then return end
+    if KillerParry.animatorConnections[animator] then return end
+
     KillerParry.animatorConnections[animator] = animator.AnimationPlayed:Connect(function(track)
         KillerParry.onTrack(survivorModel, track)
     end)
 end
 
 function KillerParry.attachSurvivor(model)
-    if not model or not model:IsA("Model") or KillerParry.modelConnections[model] then return end
+    if not model or not model:IsA("Model") then return end
+    if not model:IsDescendantOf(SurvivorsFolder) then return end
+    if KillerParry.modelConnections[model] then return end
+
     for _, descendant in ipairs(model:GetDescendants()) do
-        if descendant:IsA("Animator") then KillerParry.attachAnimator(descendant, model) end
+        if descendant:IsA("Animator") then
+            KillerParry.attachAnimator(descendant, model)
+        end
     end
+
     KillerParry.modelConnections[model] = model.DescendantAdded:Connect(function(descendant)
-        if descendant:IsA("Animator") then KillerParry.attachAnimator(descendant, model) end
+        if descendant:IsA("Animator") then
+            KillerParry.attachAnimator(descendant, model)
+        end
     end)
 end
 
-for _, survivor in ipairs(Workspace:WaitForChild("Players"):WaitForChild("Survivors"):GetChildren()) do
+function KillerParry.detachSurvivor(model)
+    local modelConnection = KillerParry.modelConnections[model]
+    if modelConnection then
+        modelConnection:Disconnect()
+        KillerParry.modelConnections[model] = nil
+    end
+
+    -- Disconnect animators belonging to a survivor model after it leaves the
+    -- survivor folder so stale listeners do not build up between rounds.
+    for _, descendant in ipairs(model:GetDescendants()) do
+        local connection = KillerParry.animatorConnections[descendant]
+        if connection then
+            connection:Disconnect()
+            KillerParry.animatorConnections[descendant] = nil
+        end
+    end
+end
+
+for _, survivor in ipairs(SurvivorsFolder:GetChildren()) do
     KillerParry.attachSurvivor(survivor)
 end
-Workspace.Players.Survivors.ChildAdded:Connect(KillerParry.attachSurvivor)
+SurvivorsFolder.ChildAdded:Connect(KillerParry.attachSurvivor)
+SurvivorsFolder.ChildRemoved:Connect(KillerParry.detachSurvivor)
 
 function KillerParry.updateVisual()
     if not KillerParry.showRange then
-        if KillerParry.visual then pcall(function() KillerParry.visual:Destroy() end); KillerParry.visual = nil end
+        if KillerParry.visual then
+            pcall(function() KillerParry.visual:Destroy() end)
+            KillerParry.visual = nil
+        end
         return
     end
-    local killerCharacter = lp.Character
-    local killerRoot = killerCharacter and killerCharacter.Parent == KillersFolder
-        and killerCharacter:FindFirstChild("HumanoidRootPart") or nil
+
+    local killerCharacter = KillerParry.getKillerIdentity()
+    local killerRoot = killerCharacter and (killerCharacter:FindFirstChild("HumanoidRootPart")
+        or killerCharacter:FindFirstChild("RootPart")) or nil
     if not killerRoot then
-        if KillerParry.visual then pcall(function() KillerParry.visual:Destroy() end); KillerParry.visual = nil end
+        if KillerParry.visual then
+            pcall(function() KillerParry.visual:Destroy() end)
+            KillerParry.visual = nil
+        end
         return
     end
+
     if not KillerParry.visual or KillerParry.visual.Parent ~= killerRoot then
-        if KillerParry.visual then pcall(function() KillerParry.visual:Destroy() end) end
-        local ok, adornment = pcall(function() return Instance.new("CylinderHandleAdornment") end)
-        if not ok or not adornment then return end
+        if KillerParry.visual then
+            pcall(function() KillerParry.visual:Destroy() end)
+        end
+        local ok, adornment = pcall(function()
+            return Instance.new("CylinderHandleAdornment")
+        end)
+        if not ok or not adornment then
+            KillerParry.visual = nil
+            return
+        end
+
         KillerParry.visual = adornment
         adornment.Name = "BloodsakenKillerParryRadius"
         adornment.Adornee = killerRoot
@@ -200,25 +300,26 @@ function KillerParry.updateVisual()
         adornment.Height = 0.08
         adornment.Parent = killerRoot
     end
+
     pcall(function()
         KillerParry.visual.Radius = KillerParry.range
         KillerParry.visual.CFrame = CFrame.new(0, -(killerRoot.Size.Y * 0.5 + 0.08), 0)
     end)
 end
-RunService.Heartbeat:Connect(KillerParry.updateVisual)
+
+KillerParry.visualConnection = RunService.Heartbeat:Connect(KillerParry.updateVisual)
 -- ============================================================
 -- AUTO PUNCH (Event based)
 -- ============================================================
 local network = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Network"):WaitForChild("Network"))
 local autoPunchEventEnabled = false
-local runAimBeforePunch, snapPunchAim -- assigned below; Auto Aim must run before Auto Punch
+local snapPunchAim -- single animation-driven Auto Aim implementation
 
 local function connectAutoPunchNetwork()
     local ok, err = pcall(function()
         network:SetConnection(("%s1337ParryIcon"):format(lp.Name), "REMOTE_EVENT", function(blocked)
             if blocked and autoPunchEventEnabled then
-                -- Turn/aim first, then request Punch so the aim correction is not one event late.
-                if runAimBeforePunch then pcall(runAimBeforePunch) end
+                -- Auto Aim is handled only by the local Animator listener.
                 testRemote:FireServer("UseActorAbility", {
                     buffer.fromstring("\003\005\000\000\000Punch")
                 })
@@ -297,36 +398,33 @@ end)
 -- ============================================================
 -- ============================================================
 -- FACING CHECK CONFIGURATION
--- Circle, Cone and Box zones are evaluated when a killer attack signal arrives.
+-- Circle and true 3D Box zones are evaluated during a short killer-attack window.
 
 -- GOODSAKEN v9.1.1 AUTO BLOCK MODULE
 -- Only the Auto Block module is transplanted into Bloodsaken.
 -- ============================================================
-local Stats = game:GetService("Stats")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = lp
 local Settings = {
     AutoBlock = false,
     AutoBlockCustom = false,
     AutoBlockButton = false,
-    -- Choose the legacy sound/config-animation-ID detector or the killer-specific M1 tracker.
+    -- Choose known attack Sound IDs or the optional Godsaken AbilityLastUsed detector.
     AutoBlockDetection = "Regular (Sound IDs)",
     ABMode = "Guest1337",
     CustomABMode = "Guest1337",
     FourthButtonTarget = "default",
-    FacingMode = "Circle",
+    FacingMode = "Box",
     ShowFacingVisual = true,
     FacingHeight = 5,
     CustomCircleRadius = 5,
     CustomCircleOffset = 2,
-    CustomDiamondLength = 12,
-    CustomDiamondWidth = 8,
-    CustomDiamondOffset = 0,
     CustomBoxLength = 12,
     CustomBoxWidth = 6,
     CustomBoxHeight = 8,
     CustomBoxOffset = 0,
     ZoneVisualOffset = 0.5,
+    GodsakenHitboxWindow = 0.7,
 }
 local Toggles = {}
 local _suppressToggleCallback = false
@@ -335,13 +433,15 @@ local _suppressToggleCallback = false
 -- ═══════════════════════════════════════════════════════════════
 local AB = {
     running = false, connections = {},
-    attrStates = {}, attrDebounce = 0,
+    attrStates = setmetatable({}, { __mode = "k" }),
+    attrDebounce = 0,
     blueDebounce = 0, punchDebounce = 0,
     generation = 0,
     RemoteEvent = nil, KillersFolder = nil,
     LocalRoot = nil,
-    -- Per-killer M1 cooldown state. Weak keys allow removed killer models to be collected.
+    -- Per-killer cooldown and pending detection windows avoid one killer suppressing another.
     m1LastAt = setmetatable({}, { __mode = "k" }),
+    pendingChecks = setmetatable({}, { __mode = "k" }),
 }
 local StartAutoBlock, StopAutoBlock
 local FourthBlock = {
@@ -493,7 +593,7 @@ local loggedUnknownAimAnimations = {}
 -- Ability-name filters. Matching is case-insensitive and uses plain substring checks.
 -- "shot" catches OneShot, ShotgunShot, and any other name containing "shot".
 -- Backstab is checked before stab so it keeps its more specific label.
-local aimAbilityNameFilters = { "slash", "shot", "hatchet", "backstab", "stab" }
+local aimAbilityNameFilters = { "slash", "shot", "hatchet", "backstab" }
 
 local function getMatchingAimKeyword(value)
     if type(value) ~= "string" or value == "" then return nil end
@@ -642,8 +742,8 @@ local function getNearestKiller()
     return closest
 end
 
-snapPunchAim = function(targetKiller, force)
-    if not punchAimEnabled and not Settings.GuestAutoAimEnabled and not force then return end
+snapPunchAim = function(targetKiller)
+    if not punchAimEnabled then return end
     local char = lp.Character
     local myRoot = char and char:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
@@ -669,11 +769,10 @@ end
 
 do
 -- ============================================================
--- GUEST AUTO AIM + SOUND-BASED GUEST AUTO PARRY
--- Guest parry uses the user's supplied block-start sound IDs and
+-- GUEST UTILITY: SOUND-BASED AUTO PARRY
+-- Guest parry uses the configured block-start sound IDs and
 -- waits 2 seconds before requesting the Punch ability.
 -- ============================================================
-Settings.GuestAutoAimEnabled = false
 local GuestAutoParry = {
     enabled = false,
     connections = {},
@@ -790,7 +889,7 @@ Settings.IsLocalGuestCharacter = isLocalGuestCharacter
 Settings.GuestAutoParrySetEnabled = function(enabled)
     GuestAutoParry.setEnabled(enabled)
 end
-end -- Guest Auto Aim / Auto Parry helper scope
+end -- Guest utility helper scope
 
 local function onLocalAnimationPlayed(track)
     if not track then return end
@@ -801,13 +900,22 @@ local function onLocalAnimationPlayed(track)
     -- type by name, then by the game's own animation-ID index.
     local abilityName, abilityKeyword = getAnimationAbilityName(track)
     local mappedM1Type = animId and m1AnimationTypeById[animId]
-    local isNamedAttack = abilityKeyword ~= nil or getM1TypeFromConfigPath(
+    local namedM1Type = getM1TypeFromConfigPath(
         tostring_ref(track.Name) .. " " .. tostring_ref(animation and animation.Name or "")
-    ) ~= nil
+    )
+    local isNamedAttack = abilityKeyword ~= nil or namedM1Type ~= nil
+    -- The dedicated Two Time stab handler is controlled by the same master
+    -- Auto Aim toggle. Keep generic Auto Aim from rotating a second time for
+    -- that same stab track.
+    local isDedicatedStab = abilityKeyword == "stab" or mappedM1Type == "stab" or namedM1Type == "stab"
     if punchAimEnabled then
-        if abilityKeyword then
+        -- One animation-driven Auto Aim path handles regular survivors and Guest.
+        -- Two Time stab tracks are handled by the dedicated handler under this
+        -- same toggle, not by a second aim pass.
+        local shouldAim = not isDedicatedStab and (abilityKeyword ~= nil or mappedM1Type ~= nil or isNamedAttack)
+        if shouldAim then
             local now = tick_ref()
-            local debounceKey = animId or string.lower(tostring_ref(abilityName))
+            local debounceKey = animId or string.lower(tostring_ref(abilityName or track.Name))
             local previous = lastPunchAimByAnimationId[debounceKey]
             if not previous or now - previous >= punchAimCooldown then
                 lastPunchAimByAnimationId[debounceKey] = now
@@ -819,20 +927,6 @@ local function onLocalAnimationPlayed(track)
             warn("[Bloodsaken Aim Tracker] Unmatched local animation ID: " .. animId
                 .. " | track=" .. tostring_ref(track.Name)
                 .. " | animation=" .. tostring_ref(animation and animation.Name or "?"))
-        end
-    end
-
-    -- Guest Auto Aim is independent of the generic Aim-tab toggle and only
-    -- runs for Guest when a recognised attack animation starts.
-    if Settings.GuestAutoAimEnabled and Settings.IsLocalGuestCharacter(lp.Character)
-        and (abilityKeyword or mappedM1Type or isNamedAttack) then
-        local now = tick_ref()
-        local debounceKey = "GuestAutoAim:" .. tostring_ref(animId or abilityName or track.Name)
-        local previous = lastPunchAimByAnimationId[debounceKey]
-        if not previous or now - previous >= punchAimCooldown then
-            lastPunchAimByAnimationId[debounceKey] = now
-            local killer = getNearestKiller()
-            if killer then snapPunchAim(killer, true) end
         end
     end
 
@@ -858,277 +952,13 @@ lp.CharacterAdded:Connect(function(character)
 end)
 
 local IntegratedAim = {}
-do
--- ============================================================
--- HUNTER AIM (isolated from the legacy Aim tracker)
--- Extracted from the supplied HunterAim script and adapted to
--- Bloodsaken's UI. Sound detection uses Sound.Played (not Playing).
--- ============================================================
-local HunterAim = {
-    enabled = false,
-    aimMode = "Camera",
-    predictMode = "Both",
-    velocityLead = 0.15,
-    pingMultiplier = 1,
-    smooth = 0.35,
-    debug = false,
-    animationIds = {},
-    soundIds = {},
-    soundConnections = {},
-    hookedSounds = setmetatable({}, { __mode = "k" }),
-    watchedSounds = setmetatable({}, { __mode = "k" }),
-    animatorConnection = nil,
-    characterConnection = nil,
-    activeEvents = {},
-    eventSerial = 0,
-    currentAbility = nil,
-    lastTarget = nil,
-}
-
-local HUNTER_ANIM_KEYS = {
-    Slash = true, AimGun = true, GunFire = true, GunExplode = true,
-    GunFail = true, Stab = true, LungeStart = true, Lunge = true,
-}
-local HUNTER_SOUND_KEYS = {
-    Slash = true, GunFire = true, GunExplode = true, GunFail = true,
-    Shoot = true, Stab = true, Lunge = true,
-}
-local HUNTER_PING_KEYS = { AimGun = true, GunFire = true, GunExplode = true, GunFail = true }
-local HUNTER_SOUND_FIELDS = { "Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds" }
-
-local function hunterPushIds(value, destination, abilityName)
-    if type(value) == "string" or type(value) == "number" then
-        local id = tostring_ref(value):match("%d+")
-        if id and not destination[id] then destination[id] = abilityName end
-    elseif type(value) == "table" then
-        for _, child in pairs(value) do hunterPushIds(child, destination, abilityName) end
-    end
-end
-
-local function hunterReadConfig(module)
-    if not module or not module:IsA("ModuleScript") then return end
-    local ok, config = pcall(require, module)
-    if not ok or type(config) ~= "table" then return end
-    if type(config.Animations) == "table" then
-        for key, value in pairs(config.Animations) do
-            if HUNTER_ANIM_KEYS[key] then hunterPushIds(value, HunterAim.animationIds, key) end
-        end
-    end
-    for _, field in ipairs(HUNTER_SOUND_FIELDS) do
-        local soundTable = config[field]
-        if type(soundTable) == "table" then
-            for key, value in pairs(soundTable) do
-                if HUNTER_SOUND_KEYS[key] then hunterPushIds(value, HunterAim.soundIds, key) end
-            end
-        end
-    end
-end
-
-local function hunterLoadAbilityIds(character)
-    table.clear(HunterAim.animationIds)
-    table.clear(HunterAim.soundIds)
-    local assets = ReplicatedStorage:FindFirstChild("Assets") or ReplicatedStorage:WaitForChild("Assets", 8)
-    if not assets then
-        warn("[Bloodsaken HunterAim] ReplicatedStorage.Assets was not found")
-        return 0, 0
-    end
-    character = character or lp.Character
-    if not character then return 0, 0 end
-    local charName = character:GetAttribute("CharacterName") or character:GetAttribute("SurvivorName") or character.Name
-    local skinName = character:GetAttribute("SkinName") or "Default"
-    local survivorRoot = assets:FindFirstChild("Survivors")
-    local survivorFolder = survivorRoot and survivorRoot:FindFirstChild(charName)
-    local baseConfig = survivorFolder and survivorFolder:FindFirstChild("Config")
-    hunterReadConfig(baseConfig)
-
-    if skinName ~= "Default" then
-        local skins = assets:FindFirstChild("Skins")
-        local skinsSurvivors = skins and skins:FindFirstChild("Survivors")
-        local skinCharacter = skinsSurvivors and skinsSurvivors:FindFirstChild(charName)
-        local skinFolder = skinCharacter and skinCharacter:FindFirstChild(skinName)
-        hunterReadConfig(skinFolder and skinFolder:FindFirstChild("Config"))
-    end
-
-    local animCount, soundCount = 0, 0
-    for _ in pairs(HunterAim.animationIds) do animCount += 1 end
-    for _ in pairs(HunterAim.soundIds) do soundCount += 1 end
-    if HunterAim.debug then
-        print(string.format("[Bloodsaken HunterAim] %s / %s: %d animations, %d sounds", tostring_ref(charName), tostring_ref(skinName), animCount, soundCount))
-    end
-    return animCount, soundCount
-end
-
-local function hunterIsSurvivor(character)
+local function isLocalSurvivor(character)
     character = character or lp.Character
     local playersFolder = Workspace:FindFirstChild("Players")
     local survivors = playersFolder and playersFolder:FindFirstChild("Survivors")
     return character ~= nil and survivors ~= nil and character.Parent == survivors
 end
-
-local function hunterRefreshCurrentAbility()
-    local latest
-    for _, event in pairs(HunterAim.activeEvents) do
-        if not latest or event.started > latest.started then latest = event end
-    end
-    HunterAim.currentAbility = latest and latest.ability or nil
-end
-
-local function hunterEndEvent(token)
-    if token then HunterAim.activeEvents[token] = nil end
-    hunterRefreshCurrentAbility()
-end
-
-local function hunterBeginEvent(kind, id, abilityName, duration)
-    HunterAim.eventSerial = HunterAim.eventSerial + 1
-    local token = HunterAim.eventSerial
-    HunterAim.activeEvents[token] = { kind = kind, id = id, ability = abilityName, started = os.clock() }
-    HunterAim.currentAbility = abilityName
-    if HunterAim.debug then
-        print(string.format("[Bloodsaken HunterAim] %s start: %s (%s)", tostring_ref(kind), tostring_ref(abilityName), tostring_ref(id)))
-    end
-    task.delay(math.max(0.15, duration or 0.5), function()
-        hunterEndEvent(token)
-    end)
-    return token
-end
-
-local function hunterGetPingSeconds()
-    local ok, value = pcall(function() return lp:GetNetworkPing() end)
-    if ok and type(value) == "number" then return math.clamp(value * 0.5, 0, 0.5) end
-    local okStats, ms = pcall(function()
-        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
-    end)
-    if okStats and type(ms) == "number" then return math.clamp(ms / 2000, 0, 0.5) end
-    return 0
-end
-
-local function hunterPredictedPosition(root)
-    if not root then return nil end
-    if HunterAim.predictMode == "Off" then return root.Position end
-    local velocity = root.AssemblyLinearVelocity
-    if velocity.Magnitude > 200 then velocity = Vector3.zero end
-    local velocityLead, pingLead = 0, 0
-    if HunterAim.predictMode == "Velocity" or HunterAim.predictMode == "Both" then
-        velocityLead = HunterAim.velocityLead
-    end
-    local ability = HunterAim.currentAbility
-    if HUNTER_PING_KEYS[ability] and (HunterAim.predictMode == "Ping" or HunterAim.predictMode == "Both") then
-        pingLead = math.clamp(hunterGetPingSeconds() * HunterAim.pingMultiplier, 0, 0.5)
-    end
-    return root.Position + velocity * math.clamp(velocityLead + pingLead, 0, 0.75)
-end
-
-local function hunterApplyAim(targetPosition)
-    if not targetPosition then return end
-    local character = lp.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    local smooth = math.clamp(HunterAim.smooth, 0.01, 1)
-    if HunterAim.aimMode == "Character" or HunterAim.aimMode == "Character + Camera" then
-        local flat = Vector3.new(targetPosition.X, root.Position.Y, targetPosition.Z)
-        if (flat - root.Position).Magnitude > 0.05 then
-            root.CFrame = root.CFrame:Lerp(CFrame.lookAt(root.Position, flat), smooth)
-        end
-    end
-    if HunterAim.aimMode == "Camera" or HunterAim.aimMode == "Character + Camera" then
-        local camera = Workspace.CurrentCamera
-        if camera then
-            camera.CFrame = camera.CFrame:Lerp(CFrame.lookAt(camera.CFrame.Position, targetPosition), smooth)
-        end
-    end
-end
-
-local function hunterWatchSound(sound)
-    if not sound or not sound:IsA("Sound") or HunterAim.hookedSounds[sound]
-        or HunterAim.watchedSounds[sound] then return end
-    HunterAim.watchedSounds[sound] = true
-
-    local function attachKnownSoundId()
-        if HunterAim.hookedSounds[sound] then return end
-        local id = tostring_ref(sound.SoundId):match("%d+")
-        local ability = id and HunterAim.soundIds[id]
-        if not ability then return end
-
-        HunterAim.hookedSounds[sound] = true
-        -- Sound.Playing is a boolean property. Played is the correct event signal.
-        local connection = sound.Played:Connect(function()
-            if not HunterAim.enabled or not hunterIsSurvivor(lp.Character) then return end
-            local duration = sound.TimeLength
-            if not duration or duration <= 0 then duration = 0.45 end
-            hunterBeginEvent("sound", id, ability, math.min(duration + 0.12, 3))
-        end)
-        table.insert(HunterAim.soundConnections, connection)
-    end
-
-    attachKnownSoundId()
-    -- Some game sounds are cloned before their SoundId is assigned.
-    table.insert(HunterAim.soundConnections,
-        sound:GetPropertyChangedSignal("SoundId"):Connect(attachKnownSoundId))
-end
-
-local function hunterDisconnectCharacter()
-    if HunterAim.animatorConnection then pcall(function() HunterAim.animatorConnection:Disconnect() end) end
-    HunterAim.animatorConnection = nil
-    for _, connection in ipairs(HunterAim.soundConnections) do pcall(function() connection:Disconnect() end) end
-    table.clear(HunterAim.soundConnections)
-    HunterAim.hookedSounds = setmetatable({}, { __mode = "k" })
-    HunterAim.watchedSounds = setmetatable({}, { __mode = "k" })
-    HunterAim.activeEvents = {}
-    HunterAim.currentAbility = nil
-end
-
-local function hunterBindCharacter(character)
-    hunterDisconnectCharacter()
-    if not character then return end
-    hunterLoadAbilityIds(character)
-    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
-    local animator = humanoid and (humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 5))
-    if animator then
-        HunterAim.animatorConnection = animator.AnimationPlayed:Connect(function(track)
-            if not HunterAim.enabled or not hunterIsSurvivor(character) then return end
-            local animation = track and track.Animation
-            local id = animation and tostring_ref(animation.AnimationId):match("%d+")
-            local ability = id and HunterAim.animationIds[id]
-            if not ability then return end
-            local duration = track.Length
-            if not duration or duration <= 0 then duration = 0.55 end
-            local eventToken = hunterBeginEvent("animation", id, ability, math.min(duration + 0.15, 3))
-            local stopped = false
-            local stopConnection
-            local function finish()
-                if stopped then return end
-                stopped = true
-                if stopConnection then pcall(function() stopConnection:Disconnect() end) end
-                hunterEndEvent(eventToken)
-            end
-            stopConnection = track.Stopped:Connect(finish)
-            task.delay(math.min(duration + 0.2, 3.2), finish)
-        end)
-    end
-    for _, descendant in ipairs(character:GetDescendants()) do
-        if descendant:IsA("Sound") then hunterWatchSound(descendant) end
-    end
-    table.insert(HunterAim.soundConnections, character.DescendantAdded:Connect(function(descendant)
-        if descendant:IsA("Sound") then hunterWatchSound(descendant) end
-    end))
-end
-
-if lp.Character then task.spawn(hunterBindCharacter, lp.Character) end
-lp.CharacterAdded:Connect(function(character)
-    task.defer(hunterBindCharacter, character)
-end)
-
-RunService.RenderStepped:Connect(function()
-    if not HunterAim.enabled or next(HunterAim.activeEvents) == nil then return end
-    if not hunterIsSurvivor(lp.Character) then return end
-    local killer = getNearestKiller()
-    local targetRoot = killer and killer:FindFirstChild("HumanoidRootPart")
-    if not targetRoot then return end
-    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if myRoot and (targetRoot.Position - myRoot.Position).Magnitude > 500 then return end
-    hunterApplyAim(hunterPredictedPosition(targetRoot))
-end)
-
+do
 -- ============================================================
 -- STAB AIM + STAB TELEPORT (separate Two Time module)
 -- Reintegrates the supplied behind-killer teleport and brief follow routine
@@ -1180,7 +1010,7 @@ local function runStabTeleport(killer, manual)
     if now - StabAim.lastTeleport < StabAim.teleportCooldown then return false end
 
     local character = lp.Character
-    if not hunterIsSurvivor(character) then return false end
+    if not isLocalSurvivor(character) then return false end
     local myRoot = character and character:FindFirstChild("HumanoidRootPart")
     local myHumanoid = character and character:FindFirstChildOfClass("Humanoid")
     killer = (killer and killer.Parent == KillersFolder) and killer or getNearestKiller()
@@ -1260,7 +1090,7 @@ local function stabBindCharacter(character)
     local animator = humanoid and (humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 5))
     if not animator then return end
     StabAim.animatorConnection = animator.AnimationPlayed:Connect(function(track)
-        if (not StabAim.enabled and not StabAim.teleportEnabled) or not hunterIsSurvivor(character) then return end
+        if (not StabAim.enabled and not StabAim.teleportEnabled) or not isLocalSurvivor(character) then return end
         local animation = track and track.Animation
         local id = animation and tostring_ref(animation.AnimationId):match("%d+")
         if not id or not STAB_ANIMATION_IDS[id] then return end
@@ -1291,7 +1121,6 @@ local function stabBindCharacter(character)
         end
 
         if StabAim.teleportEnabled then runStabTeleport(killer, false) end
-        if HunterAim.debug then print("[Bloodsaken Stab] detected", id) end
     end)
 end
 
@@ -1303,7 +1132,7 @@ end)
 
 RunService.RenderStepped:Connect(function()
     if not StabAim.enabled or os.clock() > StabAim.activeUntil then return end
-    if not hunterIsSurvivor(lp.Character) then return end
+    if not isLocalSurvivor(lp.Character) then return end
     local killer = StabAim.activeTarget
     if not killer or killer.Parent ~= KillersFolder then killer = getNearestKiller() end
     local targetRoot = killer and killer:FindFirstChild("HumanoidRootPart")
@@ -1326,16 +1155,11 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
-IntegratedAim.HunterAim = HunterAim
 IntegratedAim.StabAim = StabAim
-IntegratedAim.reloadHunterAim = function()
-    hunterBindCharacter(lp.Character)
-    return hunterLoadAbilityIds(lp.Character)
-end
 IntegratedAim.reloadStabAim = function()
     stabBindCharacter(lp.Character)
 end
-end -- isolated HunterAim + StabAim scope
+end -- isolated StabAim scope
 
 local function isBlockSnd(sid)
     if not sid or sid == "" then return false end
@@ -1346,17 +1170,55 @@ end
 
 local function FireAbility(name)
     local remote = AB.RemoteEvent or testRemote
-    if remote then pcall(function() remote:FireServer("UseActorAbility", {name}) end) end
+    if remote and remote:IsA("RemoteEvent") then
+        local ok = pcall(function() remote:FireServer("UseActorAbility", {name}) end)
+        return ok
+    end
+    return false
 end
-local function FireBlock() FireAbility("Block") end
-local function FireClone() FireAbility("Clone") end
+local function FireBlock() return FireAbility("Block") end
+local function FireClone() return FireAbility("Clone") end
+
+-- Godsaken/Nightsaken first tries the in-game Block button. If the executor
+-- does not expose firesignal or the button is unavailable, use the existing remote.
+local function FireGodsakenBlock()
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local mainUI = playerGui and playerGui:FindFirstChild("MainUI")
+    local abilityContainer = mainUI and mainUI:FindFirstChild("AbilityContainer")
+    local blockFrame = abilityContainer and abilityContainer:FindFirstChild("Block")
+    local button = blockFrame and (blockFrame:FindFirstChildWhichIsA("ImageButton", true)
+        or blockFrame:FindFirstChildWhichIsA("TextButton", true)
+        or (blockFrame:IsA("GuiButton") and blockFrame))
+    if button and type(firesignal) == "function" then
+        local ok = pcall(function()
+            firesignal(button.MouseButton1Click)
+        end)
+        if ok then return true end
+    end
+
+    -- Preserve the exact encoded RemoteEvent fallback used in the uploaded source.
+    local remote = AB.RemoteEvent or testRemote
+    if remote and type(buffer) == "table" and type(buffer.fromstring) == "function" then
+        local ok = pcall(function()
+            remote:FireServer("UseActorAbility", { buffer.fromstring("\3\5\0\0\0Block") })
+        end)
+        if ok then return true end
+    end
+    return FireBlock()
+end
 
 local function GetActiveMode()
     if Settings.AutoBlockCustom then return Settings.CustomABMode end
     return Settings.ABMode
 end
 local function FireAbilityByMode()
-    if GetActiveMode() == "007n7" then FireClone() else FireBlock() end
+    if GetActiveMode() == "007n7" then
+        FireClone()
+    elseif Settings.AutoBlockDetection == "Godsaken (Ability Attributes)" then
+        FireGodsakenBlock()
+    else
+        FireBlock()
+    end
 end
 
 -- CUSTOM ZONE
@@ -1380,55 +1242,95 @@ local function IsPlayerInCircleCheck(myPos, killerCF, killerPos)
     return fromCenter:Dot(fromCenter) <= radius * radius
 end
 
-local function IsPlayerInDiamond(myPos, killerCF, killerPos)
-    local forward, right = flatBasis(killerCF)
-    if not forward then return false end
-    local delta = Vector3.new(myPos.X - killerPos.X, 0, myPos.Z - killerPos.Z)
-    local forwardDistance = delta:Dot(forward)
-    local sideDistance = math.abs(delta:Dot(right))
-    local offset = Settings.CustomDiamondOffset or 0
-    local length = math.max(1, Settings.CustomDiamondLength or 12)
-    local halfWidth = math.max(1, Settings.CustomDiamondWidth or 8) / 2
-    local depth = forwardDistance - offset
-    if depth < -PLAYER_RADIUS or depth > length + PLAYER_RADIUS then return false end
-    local normalizedDepth = math.clamp(depth / length, 0, 1)
-    local allowedSide = halfWidth * (1 - math.abs(2 * normalizedDepth - 1)) + PLAYER_RADIUS
-    return sideDistance <= allowedSide
+local function getKillerRoot(killer)
+    if not killer then return nil end
+    return killer:FindFirstChild("HumanoidRootPart") or killer:FindFirstChild("RootPart")
 end
 
-local function IsPlayerInBox(myPos, killerCF, killerPos)
-    local forward, right = flatBasis(killerCF)
-    if not forward then return false end
-    local delta = Vector3.new(myPos.X - killerPos.X, 0, myPos.Z - killerPos.Z)
-    local forwardDistance = delta:Dot(forward)
-    local sideDistance = math.abs(delta:Dot(right))
-    local offset = Settings.CustomBoxOffset or 0
+local function getFacingBoxFrame(killerRoot)
+    local offset = math.max(0, Settings.CustomBoxOffset or 0)
     local length = math.max(1, Settings.CustomBoxLength or 12)
-    local width = math.max(1, Settings.CustomBoxWidth or 6)
-    return forwardDistance >= offset - PLAYER_RADIUS
-        and forwardDistance <= offset + length + PLAYER_RADIUS
-        and sideDistance <= width / 2 + PLAYER_RADIUS
+    return killerRoot.CFrame * CFrame.new(0, 0, -(offset + length / 2))
+end
+
+-- Uses the exact same oriented CFrame and X/Y/Z extents as the visible 3D box.
+-- Test the local character's full bounding box, not just its root point, so a
+-- body that overlaps the volume still counts when the HRP is near an edge.
+local function IsPlayerInBox(character, killerRoot)
+    if not character or not killerRoot then return false end
+
+    -- This is the exact oriented volume used by the visible 3D Box.
+    local boxCF = getFacingBoxFrame(killerRoot)
+    local boxSize = Vector3.new(
+        math.max(1, Settings.CustomBoxWidth or 6),
+        math.max(1, Settings.CustomBoxHeight or 8),
+        math.max(1, Settings.CustomBoxLength or 12)
+    )
+    local halfWidth, halfHeight, halfLength = boxSize.X / 2, boxSize.Y / 2, boxSize.Z / 2
+
+    -- First ask Roblox's spatial query for any local-character body part whose
+    -- bounds overlap the oriented volume. This catches limb/body overlap even
+    -- when the HumanoidRootPart itself is just outside the box.
+    local queryOK, overlapParts = pcall(function()
+        local params = OverlapParams.new()
+        params.FilterType = Enum.RaycastFilterType.Include
+        params.FilterDescendantsInstances = { character }
+        params.RespectCanCollide = false
+        return Workspace:GetPartBoundsInBox(boxCF, boxSize, params)
+    end)
+    if queryOK and overlapParts then
+        for _, part in ipairs(overlapParts) do
+            if part and part:IsA("BasePart") and part:IsDescendantOf(character) then
+                return true
+            end
+        end
+    end
+
+    -- Fallback for characters whose body parts are non-queryable. Project the
+    -- character's oriented bounding box into the facing-box coordinate frame.
+    local ok, boundsCF, boundsSize = pcall(function()
+        return character:GetBoundingBox()
+    end)
+    if ok and boundsCF and boundsSize then
+        local relativeCF = boxCF:ToObjectSpace(boundsCF)
+        local right, up, look = relativeCF.RightVector, relativeCF.UpVector, relativeCF.LookVector
+        local characterHalfX = (math.abs(right.X) * boundsSize.X
+            + math.abs(up.X) * boundsSize.Y + math.abs(look.X) * boundsSize.Z) / 2
+        local characterHalfY = (math.abs(right.Y) * boundsSize.X
+            + math.abs(up.Y) * boundsSize.Y + math.abs(look.Y) * boundsSize.Z) / 2
+        local characterHalfZ = (math.abs(right.Z) * boundsSize.X
+            + math.abs(up.Z) * boundsSize.Y + math.abs(look.Z) * boundsSize.Z) / 2
+        return math.abs(relativeCF.Position.X) <= halfWidth + characterHalfX + 0.15
+            and math.abs(relativeCF.Position.Y) <= halfHeight + characterHalfY + 0.15
+            and math.abs(relativeCF.Position.Z) <= halfLength + characterHalfZ + 0.15
+    end
+
+    -- Last-resort root-point check if GetBoundingBox is unavailable.
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    local localPosition = boxCF:PointToObjectSpace(root.Position)
+    local rootHalf = root.Size / 2
+    return math.abs(localPosition.X) <= halfWidth + rootHalf.X + 0.15
+        and math.abs(localPosition.Y) <= halfHeight + rootHalf.Y + 0.15
+        and math.abs(localPosition.Z) <= halfLength + rootHalf.Z + 0.15
 end
 
 local function IsPlayerInFacingZone(killer)
     if not killer or not killer.Parent then return false end
-    local killerRoot = killer:FindFirstChild("HumanoidRootPart")
+    local killerRoot = getKillerRoot(killer)
     local character = LocalPlayer.Character
     local myRoot = character and character:FindFirstChild("HumanoidRootPart")
     if not killerRoot or not myRoot then return false end
 
-    local verticalDifference = math.abs(myRoot.Position.Y - killerRoot.Position.Y)
-    if verticalDifference > math.max(0.5, Settings.FacingHeight or 5) then return false end
-
-    local mode = Settings.FacingMode or "Circle"
+    local mode = Settings.FacingMode or "Box"
     if mode == "Circle" then
+        local verticalDifference = math.abs(myRoot.Position.Y - killerRoot.Position.Y)
+        if verticalDifference > math.max(0.5, Settings.FacingHeight or 5) then return false end
         return IsPlayerInCircleCheck(myRoot.Position, killerRoot.CFrame, killerRoot.Position)
-    elseif mode == "Diamond" then
-        return IsPlayerInDiamond(myRoot.Position, killerRoot.CFrame, killerRoot.Position)
     elseif mode == "Box" then
-        local boxHalfHeight = math.max(1, Settings.CustomBoxHeight or 8) / 2
-        if verticalDifference > boxHalfHeight + PLAYER_RADIUS then return false end
-        return IsPlayerInBox(myRoot.Position, killerRoot.CFrame, killerRoot.Position)
+        -- The box's own 3D height is authoritative; do not apply the separate
+        -- circle height gate here, which previously rejected valid box overlap.
+        return IsPlayerInBox(character, killerRoot)
     end
     return false
 end
@@ -1447,23 +1349,7 @@ local function BuildZone(killer)
     local model = Instance.new("Model")
     model.Name = "ABCustomZone_" .. killer.Name
     model.Parent = CustomZone.folder
-    local edges = {}
-    for i = 1, 12 do
-        local p = Instance.new("Part")
-        p.Name = "Edge" .. i
-        p.Anchored = true
-        p.CanCollide = false
-        p.CanQuery = false
-        p.CanTouch = false
-        p.CastShadow = false
-        p.Material = Enum.Material.Neon
-        p.Color = Color3.fromRGB(255, 0, 0)
-        p.Transparency = 1
-        p.Size = Vector3.new(0.12, 0.12, 1)
-        p.CFrame = CFrame.new(0, -5000, 0)
-        p.Parent = model
-        edges[i] = p
-    end
+    local edges = {} -- retained as an empty compatibility list; Box/Circle need no wireframe parts
     local circle = Instance.new("Part")
     circle.Shape = Enum.PartType.Cylinder
     circle.Name = "Circle"
@@ -1495,18 +1381,9 @@ local function BuildZone(killer)
     return { model = model, edges = edges, circle = circle, boxVolume = boxVolume, killer = killer }
 end
 
-local function setZoneEdge(edge, a, b, color)
-    local diff = b - a
-    if diff.Magnitude < 0.01 then edge.Transparency = 1; return end
-    edge.Size = Vector3.new(0.12, 0.12, diff.Magnitude)
-    edge.CFrame = CFrame.lookAt((a + b) / 2, (a + b) / 2 + diff.Unit)
-    edge.Color = color
-    edge.Transparency = 0.15
-end
-
 local function UpdateZone(zone, kr, myRoot)
     if not zone or not zone.model or not zone.model.Parent or not kr or not kr.Parent then return end
-    local mode = Settings.FacingMode or "Circle"
+    local mode = Settings.FacingMode or "Box"
     local baseCF = GetKillerGroundCF(kr)
     local show = Settings.ShowFacingVisual == true
     local inZone = myRoot and IsPlayerInFacingZone(zone.killer) or false
@@ -1516,41 +1393,13 @@ local function UpdateZone(zone, kr, myRoot)
     if zone.boxVolume then zone.boxVolume.Transparency = 1 end
 
     if mode == "Box" then
-        local offset = Settings.CustomBoxOffset or 0
         local length = math.max(1, Settings.CustomBoxLength or 12)
         local width = math.max(1, Settings.CustomBoxWidth or 6)
         local height = math.max(1, Settings.CustomBoxHeight or 8)
         zone.boxVolume.Size = Vector3.new(width, height, length)
-        zone.boxVolume.CFrame = CFrame.new(kr.Position) * kr.CFrame.Rotation * CFrame.new(0, 0, -(offset + length / 2))
+        zone.boxVolume.CFrame = getFacingBoxFrame(kr)
         zone.boxVolume.Color = zoneColor
         zone.boxVolume.Transparency = show and 0.78 or 1
-    elseif mode == "Diamond" then
-        local offset = Settings.CustomDiamondOffset or 0
-        local length = math.max(1, Settings.CustomDiamondLength or 12)
-        local halfWidth = math.max(1, Settings.CustomDiamondWidth or 8) / 2
-        local halfHeight = math.max(0.5, Settings.FacingHeight or 5)
-        local shapeCF = CFrame.new(kr.Position) * kr.CFrame.Rotation
-        local localBase = {
-            Vector3.new(0, -halfHeight, -offset),
-            Vector3.new(-halfWidth, -halfHeight, -(offset + length / 2)),
-            Vector3.new(0, -halfHeight, -(offset + length)),
-            Vector3.new(halfWidth, -halfHeight, -(offset + length / 2)),
-        }
-        local points = {}
-        for i = 1, 4 do
-            points[i] = shapeCF:PointToWorldSpace(localBase[i])
-            points[i + 4] = shapeCF:PointToWorldSpace(localBase[i] + Vector3.new(0, halfHeight * 2, 0))
-        end
-        local pairs3D = {
-            {1,2},{2,3},{3,4},{4,1},
-            {5,6},{6,7},{7,8},{8,5},
-            {1,5},{2,6},{3,7},{4,8},
-        }
-        if show then
-            for i, pair in ipairs(pairs3D) do
-                setZoneEdge(zone.edges[i], points[pair[1]], points[pair[2]], zoneColor)
-            end
-        end
     end
 
     local circle = zone.circle
@@ -1579,7 +1428,7 @@ local function StartCustomZoneVisuals()
         local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
         for _, killer in ipairs(killersFolder:GetChildren()) do
             if killer:IsA("Model") then
-                local kr = killer:FindFirstChild("HumanoidRootPart")
+                local kr = getKillerRoot(killer)
                 if kr then
                     local zone = CustomZone.killerZones[killer]
                     if not zone or not zone.model or not zone.model.Parent then
@@ -1641,15 +1490,49 @@ end
 -- ═══════════════════════════════════════════════════════════════
 -- DETECTION
 -- ═══════════════════════════════════════════════════════════════
+local function startFacingBlockWindow(killer)
+    if not AB.running or not (Settings.AutoBlock or Settings.AutoBlockCustom) then return end
+    if not killer or not killer.Parent then return end
+
+    local window = math.clamp(tonumber(Settings.GodsakenHitboxWindow) or 0.7, 0.1, 2)
+    local existing = AB.pendingChecks[killer]
+    if existing then
+        existing.expiresAt = math.max(existing.expiresAt, tick() + window)
+        return
+    end
+
+    local pending = { expiresAt = tick() + window }
+    AB.pendingChecks[killer] = pending
+    local generation = AB.generation
+    task.spawn(function()
+        while AB.running and AB.generation == generation and killer.Parent
+            and tick() <= pending.expiresAt do
+            if IsPlayerInFacingZone(killer) then
+                local now = tick()
+                local last = AB.m1LastAt[killer] or 0
+                if now - last >= 0.12 then
+                    AB.m1LastAt[killer] = now
+                    AB.blueDebounce = now
+                    FireAbilityByMode()
+                end
+                break
+            end
+            RunService.Heartbeat:Wait()
+        end
+        if AB.pendingChecks[killer] == pending then
+            AB.pendingChecks[killer] = nil
+        end
+    end)
+end
+
 local function tryBlockFromSoundSignal(killer)
     if Settings.AutoBlockDetection ~= "Regular (Sound IDs)" then return end
     if not AB.running or not (Settings.AutoBlock or Settings.AutoBlockCustom) then return end
-    if not killer or not AB.LocalRoot or not AB.LocalRoot.Parent then return end
-    if not IsPlayerInFacingZone(killer) then return end
-    local now = tick()
-    if now - AB.blueDebounce < 0.12 then return end
-    AB.blueDebounce = now
-    FireAbilityByMode()
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    -- Recheck during a short attack window. A single instant check could miss
+    -- because the animation/sound event can arrive just before box overlap.
+    startFacingBlockWindow(killer)
 end
 
 local function isKnownRegularM1Sound(sound)
@@ -1680,9 +1563,50 @@ local function MonitorKillerSound(killer)
     end))
 end
 
--- Auto Block uses the known killer attack sound IDs only; the separate animation tracker was removed.
+-- Optional Godsaken/Nightsaken detector. It watches every active killer model,
+-- keeps state per killer, and opens the same configurable facing-zone window.
+-- This preserves the useful AbilityLastUsed signal without creating a new Part
+-- every Heartbeat or only monitoring GetChildren()[1].
+local GODSAKEN_BAIT_WINDOW = 0.25
 local function AttrHeartbeat()
-    return
+    if not AB.running or not (Settings.AutoBlock or Settings.AutoBlockCustom)
+        or Settings.AutoBlockDetection ~= "Godsaken (Ability Attributes)" then return end
+    local folder = AB.KillersFolder
+    if not folder or not folder.Parent then return end
+
+    local now = tick()
+    for _, killer in ipairs(folder:GetChildren()) do
+        if killer:IsA("Model") then
+            local abilityLastUsed = tonumber(killer:GetAttribute("AbilityLastUsed")) or 0
+            local abilitiesUsed = tonumber(killer:GetAttribute("AbilitiesUsed")) or 0
+            local state = AB.attrStates[killer]
+            if not state then
+                AB.attrStates[killer] = {
+                    lastAbilityUsed = abilityLastUsed,
+                    lastAbilitiesUsed = abilitiesUsed,
+                    baitAt = nil,
+                }
+            else
+                if abilitiesUsed > (state.lastAbilitiesUsed or 0) then
+                    state.baitAt = now
+                end
+
+                local abilityIncreased = abilityLastUsed > (state.lastAbilityUsed or 0)
+                if abilityIncreased then
+                    local isBait = state.baitAt ~= nil and (now - state.baitAt) <= GODSAKEN_BAIT_WINDOW
+                    state.baitAt = nil
+                    if not isBait then
+                        startFacingBlockWindow(killer)
+                    end
+                elseif state.baitAt and (now - state.baitAt) > GODSAKEN_BAIT_WINDOW then
+                    state.baitAt = nil
+                end
+
+                state.lastAbilityUsed = abilityLastUsed
+                state.lastAbilitiesUsed = abilitiesUsed
+            end
+        end
+    end
 end
 
 local function ab_applyState(state)
@@ -1920,8 +1844,9 @@ function StartAutoBlock()
     monitoredM1Sounds = setmetatable({}, { __mode = "k" })
     AB.generation = AB.generation + 1
     local myGen = AB.generation
-    AB.attrStates = {}
+    AB.attrStates = setmetatable({}, { __mode = "k" })
     AB.m1LastAt = setmetatable({}, { __mode = "k" })
+    AB.pendingChecks = setmetatable({}, { __mode = "k" })
     local char = LocalPlayer.Character
     if char then
         AB.LocalRoot = char:FindFirstChild("HumanoidRootPart")
@@ -1955,6 +1880,7 @@ function StartAutoBlock()
             end
         end)
     end
+    table.insert(AB.connections, RunService.Heartbeat:Connect(AttrHeartbeat))
     if FourthBlock.applyTint then FourthBlock.applyTint() end
     print("[shitsaken] AutoBlock ON")
 end
@@ -1962,7 +1888,9 @@ end
 function StopAutoBlock()
     AB.running = false
     AB.generation = AB.generation + 1
-    AB.attrStates = {}
+    AB.attrStates = setmetatable({}, { __mode = "k" })
+    AB.pendingChecks = setmetatable({}, { __mode = "k" })
+    AB.m1LastAt = setmetatable({}, { __mode = "k" })
     for _, c in ipairs(AB.connections) do pcall(function() c:Disconnect() end) end
     AB.connections = {}
     print("[shitsaken] AutoBlock OFF")
@@ -2160,6 +2088,22 @@ Toggles.ABModeDropdown = ABMain:CreateDropdown({
     CurrentOption = (Settings.ABMode == "007n7") and "007n7" or "Guest 1337",
     Callback = function(v) Settings.ABMode = (v == "007n7") and "007n7" or "Guest1337" end,
 }, "AB_Mode")
+Toggles.ABDetectionDropdown = ABMain:CreateDropdown({
+    Name = "Detection Source",
+    Options = { "Sound IDs (GoodSAKEN)", "Godsaken (Ability Attributes)" },
+    CurrentOption = (Settings.AutoBlockDetection == "Godsaken (Ability Attributes)")
+        and "Godsaken (Ability Attributes)" or "Sound IDs (GoodSAKEN)",
+    Callback = function(v)
+        Settings.AutoBlockDetection = (v == "Godsaken (Ability Attributes)")
+            and "Godsaken (Ability Attributes)" or "Regular (Sound IDs)"
+        AB.attrStates = setmetatable({}, { __mode = "k" })
+    end,
+}, "AB_DetectionSource")
+ABMain:CreateSlider({
+    Name = "Attack Detection Window (s)", Range = { 0.1, 2 }, Increment = 0.05,
+    CurrentValue = Settings.GodsakenHitboxWindow,
+    Callback = function(v) Settings.GodsakenHitboxWindow = math.clamp(tonumber(v) or 0.7, 0.1, 2) end,
+}, "AB_GodsakenWindow")
 Toggles.AutoBlockButton = ABMain:CreateToggle({
     Name = "Auto Block Button", CurrentValue = Settings.AutoBlockButton,
     Callback = function(v)
@@ -2186,18 +2130,17 @@ Toggles.CustomABModeDropdown = ABCustom:CreateDropdown({
 -- ============ FACING CHECK MODES + SEPARATE SHAPE SETTINGS ============
 local FacingMain = Tabs.FacingCheck:CreateGroupbox({ Name = "Facing Check", Column = 1 }, "Group_FacingMain")
 local CircleSettings = Tabs.FacingCheck:CreateGroupbox({ Name = "Circle Settings", Column = 2 }, "Group_FacingCircle")
-local DiamondSettings = Tabs.FacingCheck:CreateGroupbox({ Name = "Diamond Settings", Column = 2 }, "Group_FacingDiamond")
 local BoxSettings = Tabs.FacingCheck:CreateGroupbox({ Name = "Box Settings", Column = 2 }, "Group_FacingBox")
 
 local function applyFacingCheckMode(mode)
-    if mode ~= "Circle" and mode ~= "Diamond" and mode ~= "Box" then mode = "Circle" end
+    if mode ~= "Circle" and mode ~= "Box" then mode = "Box" end
     Settings.FacingMode = mode
     UpdateCustomZoneVisibility()
 end
 
 FacingMain:CreateDropdown({
     Name = "Facing Check Shape",
-    Options = { "Circle", "Diamond", "Box" },
+    Options = { "Box", "Circle" },
     CurrentOption = Settings.FacingMode,
     Callback = applyFacingCheckMode,
 }, "Facing_Mode")
@@ -2222,16 +2165,6 @@ CircleSettings:CreateInput({ Name = "Circle Radius", CurrentValue = tostring(Set
 CircleSettings:CreateInput({ Name = "Circle Forward Offset", CurrentValue = tostring(Settings.CustomCircleOffset), PlaceholderText = "2", Numeric = true,
     Callback = function(v) Settings.CustomCircleOffset = math.clamp(tonumber(v) or 2, 0, 60) end,
 }, "Facing_CircleOffset")
-
-DiamondSettings:CreateInput({ Name = "Diamond Length", CurrentValue = tostring(Settings.CustomDiamondLength), PlaceholderText = "12", Numeric = true,
-    Callback = function(v) Settings.CustomDiamondLength = math.clamp(tonumber(v) or 12, 1, 80) end,
-}, "Facing_DiamondLength")
-DiamondSettings:CreateInput({ Name = "Diamond Width", CurrentValue = tostring(Settings.CustomDiamondWidth), PlaceholderText = "8", Numeric = true,
-    Callback = function(v) Settings.CustomDiamondWidth = math.clamp(tonumber(v) or 8, 1, 60) end,
-}, "Facing_DiamondWidth")
-DiamondSettings:CreateInput({ Name = "Diamond Forward Offset", CurrentValue = tostring(Settings.CustomDiamondOffset), PlaceholderText = "0", Numeric = true,
-    Callback = function(v) Settings.CustomDiamondOffset = math.clamp(tonumber(v) or 0, 0, 60) end,
-}, "Facing_DiamondOffset")
 
 BoxSettings:CreateInput({ Name = "Box Length", CurrentValue = tostring(Settings.CustomBoxLength), PlaceholderText = "12", Numeric = true,
     Callback = function(v) Settings.CustomBoxLength = math.clamp(tonumber(v) or 12, 1, 80) end,
@@ -2273,12 +2206,21 @@ TechMain:CreateButton({
 -- ============ AIM TAB: AUTO AIM BEFORE AUTO PUNCH ============
 local APMain = Tabs.AutoPunch:CreateGroupbox({ Name = "Survivor Aim + Punch", Column = 1 }, "Group_APMain")
 APMain:CreateToggle({
-    Name = "Survivor Auto Aim (Animation Tracker)",
-    Tooltip = "Listen to your local survivor Animator and aim toward the nearest killer when a recognised attack animation starts.",
+    Name = "Auto Aim (Single Toggle)",
+    Tooltip = "One master toggle for regular survivor attacks, Guest, and the dedicated Two Time stab animation handler.",
     CurrentValue = false,
     Callback = function(v)
-        punchAimEnabled = v
-        if not v then table.clear(lastPunchAimByAnimationId) end
+        punchAimEnabled = v == true
+        -- One master Auto Aim switch also enables the dedicated Two Time stab
+        -- animation handler, avoiding a second independent aim toggle.
+        if IntegratedAim.StabAim then
+            IntegratedAim.StabAim.enabled = punchAimEnabled
+            if not punchAimEnabled then
+                IntegratedAim.StabAim.activeUntil = 0
+                IntegratedAim.StabAim.activeTarget = nil
+            end
+        end
+        if not punchAimEnabled then table.clear(lastPunchAimByAnimationId) end
     end,
 }, "PunchAim")
 APMain:CreateToggle({
@@ -2308,22 +2250,7 @@ APMain:CreateToggle({
     Callback = function(v) aimDebugUnknownAnimations = v end,
 }, "AimTrackerDebug")
 
-local GuestAimBlock = Tabs.AutoPunch:CreateGroupbox({ Name = "Guest Aim + Block", Column = 2 }, "Group_GuestAimBlock")
-GuestAimBlock:CreateToggle({
-    Name = "Guest Auto Aim",
-    Tooltip = "For Guest only: aim toward the nearest killer when a recognised Guest attack animation starts.",
-    CurrentValue = false,
-    Callback = function(v)
-        Settings.GuestAutoAimEnabled = v == true
-        if not v then
-            for key in pairs(lastPunchAimByAnimationId) do
-                if type(key) == "string" and string.sub(key, 1, 13) == "GuestAutoAim:" then
-                    lastPunchAimByAnimationId[key] = nil
-                end
-            end
-        end
-    end,
-}, "GuestAutoAim")
+local GuestAimBlock = Tabs.AutoPunch:CreateGroupbox({ Name = "Guest Utility", Column = 2 }, "Group_GuestAimBlock")
 GuestAimBlock:CreateToggle({
     Name = "Guest Auto Parry (Sound Based)",
     Tooltip = "Uses the 12 supplied block-start sound IDs, waits 2 seconds, then requests Guest Punch.",
@@ -2331,57 +2258,9 @@ GuestAimBlock:CreateToggle({
     Callback = function(v) Settings.GuestAutoParrySetEnabled(v) end,
 }, "GuestAutoParry")
 
--- ============ ISOLATED HUNTER AIM CONTROLS ============
-local HunterAimGroup = Tabs.AutoPunch:CreateGroupbox({ Name = "Hunter Aim (Ability Tracker)", Column = 2 }, "Group_HunterAim")
-HunterAimGroup:CreateToggle({
-    Name = "Enable Hunter Aim",
-    Tooltip = "Aim only while a recognised Shedletsky Slash, Chance Shoot, or Two Time Stab ability is active.",
-    CurrentValue = false,
-    Callback = function(v) IntegratedAim.HunterAim.enabled = v == true end,
-}, "HunterAim_Enabled")
-HunterAimGroup:CreateDropdown({
-    Name = "Hunter Aim Mode", Options = { "Camera", "Character", "Character + Camera" },
-    CurrentOption = IntegratedAim.HunterAim.aimMode,
-    Callback = function(v) if v == "Camera" or v == "Character" or v == "Character + Camera" then IntegratedAim.HunterAim.aimMode = v end end,
-}, "HunterAim_Mode")
-HunterAimGroup:CreateDropdown({
-    Name = "Prediction Mode", Options = { "Off", "Ping", "Velocity", "Both" },
-    CurrentOption = IntegratedAim.HunterAim.predictMode,
-    Callback = function(v) if v == "Off" or v == "Ping" or v == "Velocity" or v == "Both" then IntegratedAim.HunterAim.predictMode = v end end,
-}, "HunterAim_PredictionMode")
-HunterAimGroup:CreateInput({
-    Name = "Velocity Lead (seconds)", CurrentValue = tostring(IntegratedAim.HunterAim.velocityLead), PlaceholderText = "0.15", Numeric = true,
-    Callback = function(v) IntegratedAim.HunterAim.velocityLead = math.clamp(tonumber(v) or 0.15, 0, 0.5) end,
-}, "HunterAim_VelocityLead")
-HunterAimGroup:CreateInput({
-    Name = "Ping Multiplier (Chance only)", CurrentValue = tostring(IntegratedAim.HunterAim.pingMultiplier), PlaceholderText = "1", Numeric = true,
-    Callback = function(v) IntegratedAim.HunterAim.pingMultiplier = math.clamp(tonumber(v) or 1, 0, 2) end,
-}, "HunterAim_PingMultiplier")
-HunterAimGroup:CreateInput({
-    Name = "Smoothness", CurrentValue = tostring(IntegratedAim.HunterAim.smooth), PlaceholderText = "0.35", Numeric = true,
-    Callback = function(v) IntegratedAim.HunterAim.smooth = math.clamp(tonumber(v) or 0.35, 0.01, 1) end,
-}, "HunterAim_Smoothness")
-HunterAimGroup:CreateToggle({
-    Name = "Hunter Aim Debug", CurrentValue = false,
-    Callback = function(v) IntegratedAim.HunterAim.debug = v == true end,
-}, "HunterAim_Debug")
-HunterAimGroup:CreateButton({
-    Name = "Reload Ability Data",
-    Callback = function()
-        hunterBindCharacter(lp.Character)
-        local animations, sounds = IntegratedAim.reloadHunterAim()
-        pcall(function() StarterGui:SetCore("SendNotification", { Title = "Hunter Aim", Text = string.format("Loaded %d animation IDs and %d sound IDs", animations, sounds), Duration = 4 }) end)
-    end,
-}, "HunterAim_Reload")
-
 -- ============ SEPARATE STAB TAB ============
 local StabMain = Tabs.Stab:CreateGroupbox({ Name = "Two Time Stab Aim", Column = 1 }, "Group_StabMain")
-StabMain:CreateToggle({
-    Name = "Enable Stab Aim",
-    Tooltip = "Detects the supplied normal and crouch stab animation IDs and aims at the nearest killer during the stab animation.",
-    CurrentValue = false,
-    Callback = function(v) IntegratedAim.StabAim.enabled = v == true; if not v then IntegratedAim.StabAim.activeUntil = 0; IntegratedAim.StabAim.activeTarget = nil end end,
-}, "StabAim_Enabled")
+-- Two Time Stab Aim is controlled by the single main Auto Aim toggle above.
 StabMain:CreateDropdown({
     Name = "Stab Aim Mode", Options = { "Camera", "Character", "Character + Camera" },
     CurrentOption = IntegratedAim.StabAim.aimMode,
@@ -2454,13 +2333,6 @@ StabMain:CreateButton({
     Name = "Reset Stab Cooldown",
     Callback = function() IntegratedAim.StabAim.lastTrigger = 0; IntegratedAim.StabAim.activeUntil = 0; IntegratedAim.StabAim.activeTarget = nil end,
 }, "StabAim_Reset")
-
--- The Auto Punch network callback calls this before sending Punch.
-runAimBeforePunch = function()
-    if punchAimEnabled or Settings.GuestAutoAimEnabled then
-        if snapPunchAim then snapPunchAim(nil, true) end
-    end
-end
 
 -- ============ KILLER PARRY TAB ============
 local KillerParryMain = Tabs.KillerParry:CreateGroupbox({ Name = "Automatic Killer Parry", Column = 1 }, "Group_KillerParry")
