@@ -211,11 +211,14 @@ RunService.Heartbeat:Connect(KillerParry.updateVisual)
 -- ============================================================
 local network = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Network"):WaitForChild("Network"))
 local autoPunchEventEnabled = false
+local runAimBeforePunch, snapPunchAim -- assigned below; Auto Aim must run before Auto Punch
 
 local function connectAutoPunchNetwork()
     local ok, err = pcall(function()
-        network:SetConnection(("%*1337ParryIcon"):format(lp.Name), "REMOTE_EVENT", function(blocked)
+        network:SetConnection(("%s1337ParryIcon"):format(lp.Name), "REMOTE_EVENT", function(blocked)
             if blocked and autoPunchEventEnabled then
+                -- Turn/aim first, then request Punch so the aim correction is not one event late.
+                if runAimBeforePunch then pcall(runAimBeforePunch) end
                 testRemote:FireServer("UseActorAbility", {
                     buffer.fromstring("\003\005\000\000\000Punch")
                 })
@@ -307,21 +310,23 @@ local Settings = {
     AutoBlockCustom = false,
     AutoBlockButton = false,
     -- Choose the legacy sound/config-animation-ID detector or the killer-specific M1 tracker.
-    AutoBlockDetection = "Regular (Sound + Animation IDs)",
+    AutoBlockDetection = "Regular (Sound IDs)",
     ABMode = "Guest1337",
     CustomABMode = "Guest1337",
     FourthButtonTarget = "default",
     FacingMode = "Circle",
     ShowFacingVisual = true,
+    FacingHeight = 5,
     CustomCircleRadius = 5,
     CustomCircleOffset = 2,
-    CustomConeLength = 12,
-    CustomConeAngle = 70,
-    CustomConeOffset = 0,
+    CustomDiamondLength = 12,
+    CustomDiamondWidth = 8,
+    CustomDiamondOffset = 0,
     CustomBoxLength = 12,
     CustomBoxWidth = 6,
+    CustomBoxHeight = 8,
     CustomBoxOffset = 0,
-    ZoneHeight = 0.5,
+    ZoneVisualOffset = 0.5,
 }
 local Toggles = {}
 local _suppressToggleCallback = false
@@ -354,8 +359,15 @@ do
     local modules = rs:FindFirstChild("Modules")
     local net = modules and modules:FindFirstChild("Network", true)
     local net2 = net and net:FindFirstChild("Network", true)
-    AB.RemoteEvent = net2 and net2:FindFirstChild("RemoteEvent")
-    if not AB.RemoteEvent then AB.RemoteEvent = rs:FindFirstChild("RemoteEvent", true) end
+    local candidate = net2 and net2:FindFirstChild("RemoteEvent")
+    if not candidate or not candidate:IsA("RemoteEvent") then
+        candidate = rs:FindFirstChild("RemoteEvent", true)
+    end
+    if candidate and candidate:IsA("RemoteEvent") then
+        AB.RemoteEvent = candidate
+    else
+        AB.RemoteEvent = testRemote
+    end
 end
 
 local M1_Sounds = {
@@ -463,7 +475,7 @@ local BlockSounds = {
     ["rbxassetid://91165993312513"]=true,["rbxassetid://82772022662025"]=true,
 }
 -- ============================================================
--- PUNCH AIM + HITBOX DRAGGING TECH (HDT)
+-- PUNCH AIM + ANIMATION INDEX
 -- Event-driven: no per-frame animation polling or full-workspace scans.
 -- ============================================================
 local punchAimEnabled = false -- Local survivor animation tracker
@@ -472,12 +484,7 @@ local punchAimMode = "Character Lock"
 local punchAimPrediction = 4
 local punchAimCooldown = 0.18
 local lastPunchAimByAnimationId = {}
-local AttackLunge = {
-    enabled = false, studs = 3, cooldown = 0.18, lastAt = 0,
-    animationIds = {}, characterById = {}, characterEnabled = {},
-    characterOptions = {}, toggles = {}, sortedCharacters = {},
-}
-local aimAnimatorConnection = nil -- listens to the local survivor Animator for tracker + HDT
+local aimAnimatorConnection = nil -- listens to the local survivor Animator for aim tracking
 local aimAnimationTypeById = {}
 local m1AnimationTypeById = {}
 local aimDebugUnknownAnimations = false
@@ -522,22 +529,6 @@ local function getM1TypeFromConfigPath(path)
     return nil
 end
 
-function AttackLunge.isAttackAnimationPath(path)
-    local token = string.lower(tostring(path or "")):gsub("[^%w]", "")
-    local blocked = { "idle", "walk", "run", "sprint", "stun", "hurt", "death", "emote", "victory", "intro", "crouch" }
-    for _, word in ipairs(blocked) do
-        if string.find(token, word, 1, true) then return false end
-    end
-    local attackWords = {
-        "slash", "shot", "hatchet", "backstab", "stab", "carving", "eviscerate",
-        "perforating", "lacerate", "tag", "m1", "attack", "parry", "block",
-        "punch", "strike", "hit", "swing", "sword", "knife", "punching",
-    }
-    for _, word in ipairs(attackWords) do
-        if string.find(token, word, 1, true) then return true end
-    end
-    return false
-end
 
 local function indexAimAnimationIds(value, path, depth, characterName, sourceCategory)
     if depth > 8 then return end
@@ -549,10 +540,6 @@ local function indexAimAnimationIds(value, path, depth, characterName, sourceCat
         -- config overwrite a matching animation ID.
         if id and keyword and not aimAnimationTypeById[id] then aimAnimationTypeById[id] = keyword end
         if id and m1Type and not m1AnimationTypeById[id] then m1AnimationTypeById[id] = m1Type end
-        if id and sourceCategory == "Survivors" and AttackLunge.isAttackAnimationPath(path) then
-            AttackLunge.animationIds[id] = true
-            AttackLunge.characterById[id] = AttackLunge.characterById[id] or characterName
-        end
     elseif type(value) == "table" then
         for key, child in pairs(value) do
             local nextPath = (path ~= "" and (path .. " ") or "") .. tostring(key)
@@ -561,13 +548,21 @@ local function indexAimAnimationIds(value, path, depth, characterName, sourceCat
     end
 end
 
-function AttackLunge.getConfigCharacterName(module, root)
-    local node = module
-    while node and node.Parent and node.Parent ~= root do
-        node = node.Parent
+local function getLocalSurvivorCharacterKey()
+    local char = lp.Character
+    if not char then return nil end
+    local candidates = {
+        char:GetAttribute("CharacterName"),
+        char:GetAttribute("SurvivorName"),
+        char:GetAttribute("ActorName"),
+        char.Name,
+    }
+    for _, candidate in ipairs(candidates) do
+        if type(candidate) == "string" and candidate ~= "" then
+            return candidate
+        end
     end
-    if node and node.Parent == root then return node.Name end
-    return module.Parent and module.Parent.Name or "Unknown"
+    return nil
 end
 
 local function indexAimConfigModule(module, root)
@@ -575,12 +570,7 @@ local function indexAimConfigModule(module, root)
     local ok, config = pcall(require, module)
     if ok and type(config) == "table" and type(config.Animations) == "table" then
         local category = root and root.Name or ""
-        local characterName = root and AttackLunge.getConfigCharacterName(module, root) or "Unknown"
-        if category == "Survivors" then
-            AttackLunge.characterEnabled[characterName] = true
-            AttackLunge.characterOptions[characterName] = true
-        end
-        indexAimAnimationIds(config.Animations, "", 0, characterName, category)
+        indexAimAnimationIds(config.Animations, "", 0, "Unknown", category)
     end
 end
 
@@ -632,26 +622,7 @@ local function getAnimationAbilityName(track)
     return nil, nil
 end
 
-local hitboxDraggingTech = false
-local HITBOX_DRAG_DURATION = 1.4
-local Dspeed = 5.6
-local Ddelay = 0
-local hdtActiveDrag = nil
-local hdtFaceKillerOnStart = true
-
--- Block animation IDs from the supplied Ivy.lua HDT implementation.
-local hdtBlockAnimSet = {
-    ["72722244508749"] = true, ["96959123077498"] = true,
-    ["95802026624883"] = true, ["140671644163156"] = true,
-    ["100926346851492"] = true,
-}
--- Treat the existing HDT block/parry animation IDs as attack triggers too,
--- so Guest's parry/block animation path can activate the same lunge handler.
-for animationId in pairs(hdtBlockAnimSet) do
-    AttackLunge.animationIds[animationId] = true
-end
-
-local function getNearestHDTKiller()
+local function getNearestKiller()
     local char = lp.Character
     local myRoot = char and char:FindFirstChild("HumanoidRootPart")
     if not myRoot then return nil end
@@ -671,12 +642,12 @@ local function getNearestHDTKiller()
     return closest
 end
 
-local function snapPunchAim(targetKiller, force)
+snapPunchAim = function(targetKiller, force)
     if not punchAimEnabled and not Settings.GuestAutoAimEnabled and not force then return end
     local char = lp.Character
     local myRoot = char and char:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
-    local killer = (targetKiller and targetKiller.Parent == KillersFolder) and targetKiller or getNearestHDTKiller()
+    local killer = (targetKiller and targetKiller.Parent == KillersFolder) and targetKiller or getNearestKiller()
     local targetRoot = killer and killer:FindFirstChild("HumanoidRootPart")
     if not targetRoot then return end
 
@@ -695,132 +666,6 @@ local function snapPunchAim(targetKiller, force)
     end
 end
 
--- Small optional movement correction on recognised local survivor attack
--- animations. Distance is user-adjustable and character filters are opt-in.
-function AttackLunge.getLocalSurvivorCharacterKey()
-    local char = lp.Character
-    if not char then return nil end
-    local candidates = {
-        char:GetAttribute("CharacterName"),
-        char:GetAttribute("SurvivorName"),
-        char:GetAttribute("ActorName"),
-        char.Name,
-    }
-    for _, candidate in ipairs(candidates) do
-        if type(candidate) == "string" and candidate ~= "" then
-            local key = string.lower(candidate):gsub("[^%w]", "")
-            for configuredName in pairs(AttackLunge.characterOptions) do
-                if string.lower(configuredName):gsub("[^%w]", "") == key then
-                    return configuredName
-                end
-            end
-        end
-    end
-    return nil
-end
-
-function AttackLunge.isAllowedForLocalCharacter(animationId)
-    local mappedCharacter = animationId and AttackLunge.characterById[animationId]
-    local localCharacter = AttackLunge.getLocalSurvivorCharacterKey()
-    local characterName = mappedCharacter or localCharacter
-    if not characterName then return true end -- fail open if the game doesn't expose a matching character name
-    return AttackLunge.characterEnabled[characterName] ~= false
-end
-
-local function lungeTowardNearestKiller()
-    if not AttackLunge.enabled then return end
-    local now = tick_ref()
-    if now - AttackLunge.lastAt < AttackLunge.cooldown then return end
-
-    local char = lp.Character
-    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
-    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-    if not myRoot or not humanoid or humanoid.Health <= 0 then return end
-
-    local killer = getNearestHDTKiller()
-    local targetRoot = killer and killer:FindFirstChild("HumanoidRootPart")
-    if not targetRoot then return end
-
-    local offset = targetRoot.Position - myRoot.Position
-    local flatOffset = Vector3.new(offset.X, 0, offset.Z)
-    local distance = flatOffset.Magnitude
-    if distance < 0.05 then return end
-
-    -- Preserve height and leave a small gap rather than moving through the target.
-    local moveDistance = math.min(AttackLunge.studs, math.max(0, distance - 1.5))
-    if moveDistance < 0.05 then return end
-
-    AttackLunge.lastAt = now
-    myRoot.CFrame = myRoot.CFrame + flatOffset.Unit * moveDistance
-end
-
-local function stopHDTDrag()
-    local drag = hdtActiveDrag
-    if not drag then return end
-    hdtActiveDrag = nil
-    if drag.connection then pcall(function() drag.connection:Disconnect() end) end
-    if drag.velocity then pcall(function() drag.velocity:Destroy() end) end
-    if drag.humanoid and drag.humanoid.Parent then
-        drag.humanoid.WalkSpeed = drag.walkSpeed
-        drag.humanoid.JumpPower = drag.jumpPower
-    end
-end
-
-local function beginHDTDrag(killer)
-    if not hitboxDraggingTech or hdtActiveDrag or not killer or not killer.Parent then return end
-    local char = lp.Character
-    local myRoot = char and (char.PrimaryPart or char:FindFirstChild("HumanoidRootPart"))
-    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-    local targetRoot = killer:FindFirstChild("HumanoidRootPart")
-    if not myRoot or not humanoid or not targetRoot then return end
-
-    -- HDT Normal: face the killer immediately when a block animation starts.
-    if hdtFaceKillerOnStart then
-        local lookAt = Vector3.new(targetRoot.Position.X, myRoot.Position.Y, targetRoot.Position.Z)
-        if (lookAt - myRoot.Position).Magnitude > 0.05 then
-            myRoot.CFrame = CFrame.lookAt(myRoot.Position, lookAt)
-        end
-    end
-
-    local velocity = Instance.new("BodyVelocity")
-    velocity.Name = "BloodsakenHDTVelocity"
-    velocity.MaxForce = Vector3.new(100000, 0, 100000)
-    velocity.P = 15000
-    velocity.Velocity = Vector3.zero
-    velocity.Parent = myRoot
-
-    local drag = {
-        velocity = velocity,
-        humanoid = humanoid,
-        walkSpeed = humanoid.WalkSpeed,
-        jumpPower = humanoid.JumpPower,
-    }
-    hdtActiveDrag = drag
-    humanoid.WalkSpeed = 0
-    humanoid.JumpPower = 0
-
-    drag.connection = RunService.Heartbeat:Connect(function()
-        if hdtActiveDrag ~= drag or not hitboxDraggingTech
-            or not myRoot.Parent or not killer.Parent then
-            stopHDTDrag()
-            return
-        end
-        targetRoot = killer:FindFirstChild("HumanoidRootPart")
-        if not targetRoot then stopHDTDrag(); return end
-        local offset = targetRoot.Position - myRoot.Position
-        local horizontal = Vector3.new(offset.X, 0, offset.Z)
-        if horizontal.Magnitude > 0.05 then
-            local direction = horizontal.Unit
-            velocity.Velocity = Vector3.new(direction.X * Dspeed, 0, direction.Z * Dspeed)
-        else
-            velocity.Velocity = Vector3.zero
-        end
-        if offset.Magnitude <= 2 then stopHDTDrag() end
-    end)
-    task.delay(math.max(0.15, HITBOX_DRAG_DURATION), function()
-        if hdtActiveDrag == drag then stopHDTDrag() end
-    end)
-end
 
 do
 -- ============================================================
@@ -867,7 +712,7 @@ local function isLocalGuestCharacter(character)
             if key == "guest" or key == "guest1337" then return true end
         end
     end
-    local configKey = AttackLunge.getLocalSurvivorCharacterKey()
+    local configKey = getLocalSurvivorCharacterKey()
     if type(configKey) == "string" then
         local key = string.lower(configKey):gsub("[^%w]", "")
         return key == "guest" or key == "guest1337"
@@ -952,18 +797,13 @@ local function onLocalAnimationPlayed(track)
     local animation = track.Animation
     local animId = animation and string_match(tostring_ref(animation.AnimationId), "%d+")
 
-    -- Aim/lunge are triggered by the LOCAL survivor's animation event, not
-    -- by the killer's Animator. Resolve the animation type by name, then ID.
+    -- Auto Aim listens to the local survivor Animator. Resolve the animation
+    -- type by name, then by the game's own animation-ID index.
     local abilityName, abilityKeyword = getAnimationAbilityName(track)
     local mappedM1Type = animId and m1AnimationTypeById[animId]
-    local isMappedAttack = animId and AttackLunge.animationIds[animId]
     local isNamedAttack = abilityKeyword ~= nil or getM1TypeFromConfigPath(
         tostring_ref(track.Name) .. " " .. tostring_ref(animation and animation.Name or "")
     ) ~= nil
-    if AttackLunge.enabled and (isMappedAttack or mappedM1Type or isNamedAttack)
-        and AttackLunge.isAllowedForLocalCharacter(animId) then
-        lungeTowardNearestKiller()
-    end
     if punchAimEnabled then
         if abilityKeyword then
             local now = tick_ref()
@@ -971,7 +811,7 @@ local function onLocalAnimationPlayed(track)
             local previous = lastPunchAimByAnimationId[debounceKey]
             if not previous or now - previous >= punchAimCooldown then
                 lastPunchAimByAnimationId[debounceKey] = now
-                local killer = getNearestHDTKiller()
+                local killer = getNearestKiller()
                 if killer then snapPunchAim(killer) end
             end
         elseif aimDebugUnknownAnimations and animId and not loggedUnknownAimAnimations[animId] then
@@ -985,26 +825,17 @@ local function onLocalAnimationPlayed(track)
     -- Guest Auto Aim is independent of the generic Aim-tab toggle and only
     -- runs for Guest when a recognised attack animation starts.
     if Settings.GuestAutoAimEnabled and Settings.IsLocalGuestCharacter(lp.Character)
-        and (abilityKeyword or mappedM1Type or isMappedAttack or isNamedAttack) then
+        and (abilityKeyword or mappedM1Type or isNamedAttack) then
         local now = tick_ref()
         local debounceKey = "GuestAutoAim:" .. tostring_ref(animId or abilityName or track.Name)
         local previous = lastPunchAimByAnimationId[debounceKey]
         if not previous or now - previous >= punchAimCooldown then
             lastPunchAimByAnimationId[debounceKey] = now
-            local killer = getNearestHDTKiller()
+            local killer = getNearestKiller()
             if killer then snapPunchAim(killer, true) end
         end
     end
 
-    -- HDT continues to use its own local block-animation ID list.
-    if animId and hitboxDraggingTech and hdtBlockAnimSet[animId] and not hdtActiveDrag then
-        local killer = getNearestHDTKiller()
-        if killer then
-            task.delay(math.max(0, Ddelay), function()
-                if hitboxDraggingTech and not hdtActiveDrag then beginHDTDrag(killer) end
-            end)
-        end
-    end
 end
 
 local function bindAimAnimator(character)
@@ -1023,9 +854,488 @@ end
 pcall(buildAimAnimationIdIndex)
 if lp.Character then task.spawn(bindAimAnimator, lp.Character) end
 lp.CharacterAdded:Connect(function(character)
-    stopHDTDrag()
     task.spawn(bindAimAnimator, character)
 end)
+
+local IntegratedAim = {}
+do
+-- ============================================================
+-- HUNTER AIM (isolated from the legacy Aim tracker)
+-- Extracted from the supplied HunterAim script and adapted to
+-- Bloodsaken's UI. Sound detection uses Sound.Played (not Playing).
+-- ============================================================
+local HunterAim = {
+    enabled = false,
+    aimMode = "Camera",
+    predictMode = "Both",
+    velocityLead = 0.15,
+    pingMultiplier = 1,
+    smooth = 0.35,
+    debug = false,
+    animationIds = {},
+    soundIds = {},
+    soundConnections = {},
+    hookedSounds = setmetatable({}, { __mode = "k" }),
+    watchedSounds = setmetatable({}, { __mode = "k" }),
+    animatorConnection = nil,
+    characterConnection = nil,
+    activeEvents = {},
+    eventSerial = 0,
+    currentAbility = nil,
+    lastTarget = nil,
+}
+
+local HUNTER_ANIM_KEYS = {
+    Slash = true, AimGun = true, GunFire = true, GunExplode = true,
+    GunFail = true, Stab = true, LungeStart = true, Lunge = true,
+}
+local HUNTER_SOUND_KEYS = {
+    Slash = true, GunFire = true, GunExplode = true, GunFail = true,
+    Shoot = true, Stab = true, Lunge = true,
+}
+local HUNTER_PING_KEYS = { AimGun = true, GunFire = true, GunExplode = true, GunFail = true }
+local HUNTER_SOUND_FIELDS = { "Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds" }
+
+local function hunterPushIds(value, destination, abilityName)
+    if type(value) == "string" or type(value) == "number" then
+        local id = tostring_ref(value):match("%d+")
+        if id and not destination[id] then destination[id] = abilityName end
+    elseif type(value) == "table" then
+        for _, child in pairs(value) do hunterPushIds(child, destination, abilityName) end
+    end
+end
+
+local function hunterReadConfig(module)
+    if not module or not module:IsA("ModuleScript") then return end
+    local ok, config = pcall(require, module)
+    if not ok or type(config) ~= "table" then return end
+    if type(config.Animations) == "table" then
+        for key, value in pairs(config.Animations) do
+            if HUNTER_ANIM_KEYS[key] then hunterPushIds(value, HunterAim.animationIds, key) end
+        end
+    end
+    for _, field in ipairs(HUNTER_SOUND_FIELDS) do
+        local soundTable = config[field]
+        if type(soundTable) == "table" then
+            for key, value in pairs(soundTable) do
+                if HUNTER_SOUND_KEYS[key] then hunterPushIds(value, HunterAim.soundIds, key) end
+            end
+        end
+    end
+end
+
+local function hunterLoadAbilityIds(character)
+    table.clear(HunterAim.animationIds)
+    table.clear(HunterAim.soundIds)
+    local assets = ReplicatedStorage:FindFirstChild("Assets") or ReplicatedStorage:WaitForChild("Assets", 8)
+    if not assets then
+        warn("[Bloodsaken HunterAim] ReplicatedStorage.Assets was not found")
+        return 0, 0
+    end
+    character = character or lp.Character
+    if not character then return 0, 0 end
+    local charName = character:GetAttribute("CharacterName") or character:GetAttribute("SurvivorName") or character.Name
+    local skinName = character:GetAttribute("SkinName") or "Default"
+    local survivorRoot = assets:FindFirstChild("Survivors")
+    local survivorFolder = survivorRoot and survivorRoot:FindFirstChild(charName)
+    local baseConfig = survivorFolder and survivorFolder:FindFirstChild("Config")
+    hunterReadConfig(baseConfig)
+
+    if skinName ~= "Default" then
+        local skins = assets:FindFirstChild("Skins")
+        local skinsSurvivors = skins and skins:FindFirstChild("Survivors")
+        local skinCharacter = skinsSurvivors and skinsSurvivors:FindFirstChild(charName)
+        local skinFolder = skinCharacter and skinCharacter:FindFirstChild(skinName)
+        hunterReadConfig(skinFolder and skinFolder:FindFirstChild("Config"))
+    end
+
+    local animCount, soundCount = 0, 0
+    for _ in pairs(HunterAim.animationIds) do animCount += 1 end
+    for _ in pairs(HunterAim.soundIds) do soundCount += 1 end
+    if HunterAim.debug then
+        print(string.format("[Bloodsaken HunterAim] %s / %s: %d animations, %d sounds", tostring_ref(charName), tostring_ref(skinName), animCount, soundCount))
+    end
+    return animCount, soundCount
+end
+
+local function hunterIsSurvivor(character)
+    character = character or lp.Character
+    local playersFolder = Workspace:FindFirstChild("Players")
+    local survivors = playersFolder and playersFolder:FindFirstChild("Survivors")
+    return character ~= nil and survivors ~= nil and character.Parent == survivors
+end
+
+local function hunterRefreshCurrentAbility()
+    local latest
+    for _, event in pairs(HunterAim.activeEvents) do
+        if not latest or event.started > latest.started then latest = event end
+    end
+    HunterAim.currentAbility = latest and latest.ability or nil
+end
+
+local function hunterEndEvent(token)
+    if token then HunterAim.activeEvents[token] = nil end
+    hunterRefreshCurrentAbility()
+end
+
+local function hunterBeginEvent(kind, id, abilityName, duration)
+    HunterAim.eventSerial = HunterAim.eventSerial + 1
+    local token = HunterAim.eventSerial
+    HunterAim.activeEvents[token] = { kind = kind, id = id, ability = abilityName, started = os.clock() }
+    HunterAim.currentAbility = abilityName
+    if HunterAim.debug then
+        print(string.format("[Bloodsaken HunterAim] %s start: %s (%s)", tostring_ref(kind), tostring_ref(abilityName), tostring_ref(id)))
+    end
+    task.delay(math.max(0.15, duration or 0.5), function()
+        hunterEndEvent(token)
+    end)
+    return token
+end
+
+local function hunterGetPingSeconds()
+    local ok, value = pcall(function() return lp:GetNetworkPing() end)
+    if ok and type(value) == "number" then return math.clamp(value * 0.5, 0, 0.5) end
+    local okStats, ms = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if okStats and type(ms) == "number" then return math.clamp(ms / 2000, 0, 0.5) end
+    return 0
+end
+
+local function hunterPredictedPosition(root)
+    if not root then return nil end
+    if HunterAim.predictMode == "Off" then return root.Position end
+    local velocity = root.AssemblyLinearVelocity
+    if velocity.Magnitude > 200 then velocity = Vector3.zero end
+    local velocityLead, pingLead = 0, 0
+    if HunterAim.predictMode == "Velocity" or HunterAim.predictMode == "Both" then
+        velocityLead = HunterAim.velocityLead
+    end
+    local ability = HunterAim.currentAbility
+    if HUNTER_PING_KEYS[ability] and (HunterAim.predictMode == "Ping" or HunterAim.predictMode == "Both") then
+        pingLead = math.clamp(hunterGetPingSeconds() * HunterAim.pingMultiplier, 0, 0.5)
+    end
+    return root.Position + velocity * math.clamp(velocityLead + pingLead, 0, 0.75)
+end
+
+local function hunterApplyAim(targetPosition)
+    if not targetPosition then return end
+    local character = lp.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local smooth = math.clamp(HunterAim.smooth, 0.01, 1)
+    if HunterAim.aimMode == "Character" or HunterAim.aimMode == "Character + Camera" then
+        local flat = Vector3.new(targetPosition.X, root.Position.Y, targetPosition.Z)
+        if (flat - root.Position).Magnitude > 0.05 then
+            root.CFrame = root.CFrame:Lerp(CFrame.lookAt(root.Position, flat), smooth)
+        end
+    end
+    if HunterAim.aimMode == "Camera" or HunterAim.aimMode == "Character + Camera" then
+        local camera = Workspace.CurrentCamera
+        if camera then
+            camera.CFrame = camera.CFrame:Lerp(CFrame.lookAt(camera.CFrame.Position, targetPosition), smooth)
+        end
+    end
+end
+
+local function hunterWatchSound(sound)
+    if not sound or not sound:IsA("Sound") or HunterAim.hookedSounds[sound]
+        or HunterAim.watchedSounds[sound] then return end
+    HunterAim.watchedSounds[sound] = true
+
+    local function attachKnownSoundId()
+        if HunterAim.hookedSounds[sound] then return end
+        local id = tostring_ref(sound.SoundId):match("%d+")
+        local ability = id and HunterAim.soundIds[id]
+        if not ability then return end
+
+        HunterAim.hookedSounds[sound] = true
+        -- Sound.Playing is a boolean property. Played is the correct event signal.
+        local connection = sound.Played:Connect(function()
+            if not HunterAim.enabled or not hunterIsSurvivor(lp.Character) then return end
+            local duration = sound.TimeLength
+            if not duration or duration <= 0 then duration = 0.45 end
+            hunterBeginEvent("sound", id, ability, math.min(duration + 0.12, 3))
+        end)
+        table.insert(HunterAim.soundConnections, connection)
+    end
+
+    attachKnownSoundId()
+    -- Some game sounds are cloned before their SoundId is assigned.
+    table.insert(HunterAim.soundConnections,
+        sound:GetPropertyChangedSignal("SoundId"):Connect(attachKnownSoundId))
+end
+
+local function hunterDisconnectCharacter()
+    if HunterAim.animatorConnection then pcall(function() HunterAim.animatorConnection:Disconnect() end) end
+    HunterAim.animatorConnection = nil
+    for _, connection in ipairs(HunterAim.soundConnections) do pcall(function() connection:Disconnect() end) end
+    table.clear(HunterAim.soundConnections)
+    HunterAim.hookedSounds = setmetatable({}, { __mode = "k" })
+    HunterAim.watchedSounds = setmetatable({}, { __mode = "k" })
+    HunterAim.activeEvents = {}
+    HunterAim.currentAbility = nil
+end
+
+local function hunterBindCharacter(character)
+    hunterDisconnectCharacter()
+    if not character then return end
+    hunterLoadAbilityIds(character)
+    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
+    local animator = humanoid and (humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 5))
+    if animator then
+        HunterAim.animatorConnection = animator.AnimationPlayed:Connect(function(track)
+            if not HunterAim.enabled or not hunterIsSurvivor(character) then return end
+            local animation = track and track.Animation
+            local id = animation and tostring_ref(animation.AnimationId):match("%d+")
+            local ability = id and HunterAim.animationIds[id]
+            if not ability then return end
+            local duration = track.Length
+            if not duration or duration <= 0 then duration = 0.55 end
+            local eventToken = hunterBeginEvent("animation", id, ability, math.min(duration + 0.15, 3))
+            local stopped = false
+            local stopConnection
+            local function finish()
+                if stopped then return end
+                stopped = true
+                if stopConnection then pcall(function() stopConnection:Disconnect() end) end
+                hunterEndEvent(eventToken)
+            end
+            stopConnection = track.Stopped:Connect(finish)
+            task.delay(math.min(duration + 0.2, 3.2), finish)
+        end)
+    end
+    for _, descendant in ipairs(character:GetDescendants()) do
+        if descendant:IsA("Sound") then hunterWatchSound(descendant) end
+    end
+    table.insert(HunterAim.soundConnections, character.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("Sound") then hunterWatchSound(descendant) end
+    end))
+end
+
+if lp.Character then task.spawn(hunterBindCharacter, lp.Character) end
+lp.CharacterAdded:Connect(function(character)
+    task.defer(hunterBindCharacter, character)
+end)
+
+RunService.RenderStepped:Connect(function()
+    if not HunterAim.enabled or next(HunterAim.activeEvents) == nil then return end
+    if not hunterIsSurvivor(lp.Character) then return end
+    local killer = getNearestKiller()
+    local targetRoot = killer and killer:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return end
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if myRoot and (targetRoot.Position - myRoot.Position).Magnitude > 500 then return end
+    hunterApplyAim(hunterPredictedPosition(targetRoot))
+end)
+
+-- ============================================================
+-- STAB AIM + STAB TELEPORT (separate Two Time module)
+-- Reintegrates the supplied behind-killer teleport and brief follow routine
+-- into Bloodsaken's own Stab tab, without the source file's extra standalone GUI.
+-- ============================================================
+local StabAim = {
+    enabled = false,
+    aimMode = "Character + Camera",
+    velocityLead = 0.12,
+    maxRange = 60,
+    cooldown = 0.5,
+    lastTrigger = 0,
+    activeUntil = 0,
+    activeTarget = nil,
+    animatorConnection = nil,
+    teleportEnabled = false,
+    behindOffset = 1.7,
+    teleportRange = 60,
+    teleportCooldown = 0.5,
+    teleportDelay = 0.02,
+    followDuration = 0.5,
+    lastTeleport = 0,
+    teleportActive = false,
+    teleportConnection = nil,
+    originalAutoRotate = true,
+    savedHumanoid = nil,
+}
+local STAB_ANIMATION_IDS = {
+    ["100725497418533"] = true,
+    ["89448354637442"] = true,
+}
+
+local function stopStabTeleport()
+    if StabAim.teleportConnection then
+        pcall(function() StabAim.teleportConnection:Disconnect() end)
+        StabAim.teleportConnection = nil
+    end
+    StabAim.teleportActive = false
+    local humanoid = StabAim.savedHumanoid
+    if humanoid and humanoid.Parent then humanoid.AutoRotate = StabAim.originalAutoRotate end
+    StabAim.savedHumanoid = nil
+end
+StabAim.stopTeleport = stopStabTeleport
+
+local function runStabTeleport(killer, manual)
+    if not StabAim.teleportEnabled and not manual then return false end
+    if StabAim.teleportActive then return false end
+    local now = os.clock()
+    if now - StabAim.lastTeleport < StabAim.teleportCooldown then return false end
+
+    local character = lp.Character
+    if not hunterIsSurvivor(character) then return false end
+    local myRoot = character and character:FindFirstChild("HumanoidRootPart")
+    local myHumanoid = character and character:FindFirstChildOfClass("Humanoid")
+    killer = (killer and killer.Parent == KillersFolder) and killer or getNearestKiller()
+    local killerRoot = killer and killer:FindFirstChild("HumanoidRootPart")
+    local killerHumanoid = killer and killer:FindFirstChildOfClass("Humanoid")
+    if not myRoot or not myHumanoid or not killerRoot then return false end
+    if killerHumanoid and killerHumanoid.Health <= 0 then return false end
+    if (killerRoot.Position - myRoot.Position).Magnitude > StabAim.teleportRange then return false end
+
+    StabAim.lastTeleport = now
+    StabAim.teleportActive = true
+    task.spawn(function()
+        task.wait(math.clamp(StabAim.teleportDelay, 0, 0.5))
+        if not StabAim.teleportActive or lp.Character ~= character or not killer.Parent then
+            stopStabTeleport()
+            return
+        end
+
+        local currentRoot = character:FindFirstChild("HumanoidRootPart")
+        local currentKillerRoot = killer:FindFirstChild("HumanoidRootPart")
+        if not currentRoot or not currentKillerRoot then
+            stopStabTeleport()
+            return
+        end
+
+        StabAim.originalAutoRotate = myHumanoid.AutoRotate
+        StabAim.savedHumanoid = myHumanoid
+        myHumanoid.AutoRotate = false
+
+        local function getBehindCFrame()
+            local kcf = currentKillerRoot.CFrame
+            local behindPosition = kcf.Position - kcf.LookVector * math.clamp(StabAim.behindOffset, 0.5, 6)
+            return CFrame.lookAt(
+                Vector3.new(behindPosition.X, currentRoot.Position.Y, behindPosition.Z),
+                Vector3.new(kcf.Position.X, currentRoot.Position.Y, kcf.Position.Z)
+            )
+        end
+
+        currentRoot.CFrame = getBehindCFrame()
+        currentRoot.AssemblyLinearVelocity = Vector3.zero
+        local endTime = os.clock() + math.clamp(StabAim.followDuration, 0.1, 2)
+
+        StabAim.teleportConnection = RunService.RenderStepped:Connect(function()
+            if not StabAim.teleportActive or os.clock() >= endTime
+                or lp.Character ~= character or not killer.Parent then
+                stopStabTeleport()
+                return
+            end
+            currentRoot = character:FindFirstChild("HumanoidRootPart")
+            currentKillerRoot = killer:FindFirstChild("HumanoidRootPart")
+            if not currentRoot or not currentKillerRoot then
+                stopStabTeleport()
+                return
+            end
+            local kcf = currentKillerRoot.CFrame
+            local behindPosition = kcf.Position - kcf.LookVector * math.clamp(StabAim.behindOffset, 0.5, 6)
+            local targetCFrame = CFrame.lookAt(
+                Vector3.new(behindPosition.X, currentRoot.Position.Y, behindPosition.Z),
+                Vector3.new(kcf.Position.X, currentRoot.Position.Y, kcf.Position.Z)
+            )
+            currentRoot.CFrame = currentRoot.CFrame:Lerp(targetCFrame, 0.5)
+            currentRoot.AssemblyLinearVelocity = Vector3.zero
+        end)
+    end)
+    return true
+end
+
+StabAim.teleportNow = function()
+    return runStabTeleport(getNearestKiller(), true)
+end
+
+local function stabBindCharacter(character)
+    if StabAim.animatorConnection then pcall(function() StabAim.animatorConnection:Disconnect() end) end
+    StabAim.animatorConnection = nil
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
+    local animator = humanoid and (humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 5))
+    if not animator then return end
+    StabAim.animatorConnection = animator.AnimationPlayed:Connect(function(track)
+        if (not StabAim.enabled and not StabAim.teleportEnabled) or not hunterIsSurvivor(character) then return end
+        local animation = track and track.Animation
+        local id = animation and tostring_ref(animation.AnimationId):match("%d+")
+        if not id or not STAB_ANIMATION_IDS[id] then return end
+        local now = os.clock()
+        local killer = getNearestKiller()
+        local targetRoot = killer and killer:FindFirstChild("HumanoidRootPart")
+        local myRoot = character:FindFirstChild("HumanoidRootPart")
+        if not targetRoot or not myRoot then return end
+
+        if StabAim.enabled and (targetRoot.Position - myRoot.Position).Magnitude <= StabAim.maxRange
+            and now - StabAim.lastTrigger >= StabAim.cooldown then
+            StabAim.lastTrigger = now
+            StabAim.activeTarget = killer
+            local duration = track.Length
+            if not duration or duration <= 0 then duration = 0.45 end
+            StabAim.activeUntil = now + math.clamp(duration + 0.1, 0.2, 2.5)
+            local expectedEnd = StabAim.activeUntil
+            local stopped = false
+            local stopConnection
+            local function finishStabAim()
+                if stopped then return end
+                stopped = true
+                if stopConnection then pcall(function() stopConnection:Disconnect() end) end
+                if StabAim.activeUntil == expectedEnd then StabAim.activeUntil = 0 end
+            end
+            stopConnection = track.Stopped:Connect(finishStabAim)
+            task.delay(math.clamp(duration + 0.15, 0.25, 2.6), finishStabAim)
+        end
+
+        if StabAim.teleportEnabled then runStabTeleport(killer, false) end
+        if HunterAim.debug then print("[Bloodsaken Stab] detected", id) end
+    end)
+end
+
+if lp.Character then task.spawn(stabBindCharacter, lp.Character) end
+lp.CharacterAdded:Connect(function(character)
+    stopStabTeleport()
+    task.defer(stabBindCharacter, character)
+end)
+
+RunService.RenderStepped:Connect(function()
+    if not StabAim.enabled or os.clock() > StabAim.activeUntil then return end
+    if not hunterIsSurvivor(lp.Character) then return end
+    local killer = StabAim.activeTarget
+    if not killer or killer.Parent ~= KillersFolder then killer = getNearestKiller() end
+    local targetRoot = killer and killer:FindFirstChild("HumanoidRootPart")
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not targetRoot or not myRoot then return end
+    if (targetRoot.Position - myRoot.Position).Magnitude > StabAim.maxRange then return end
+    local velocity = targetRoot.AssemblyLinearVelocity
+    if velocity.Magnitude > 200 then velocity = Vector3.zero end
+    local predicted = targetRoot.Position + velocity * math.clamp(StabAim.velocityLead, 0, 0.75)
+    local flat = Vector3.new(predicted.X, myRoot.Position.Y, predicted.Z)
+    local smooth = 0.55
+    if StabAim.aimMode == "Character" or StabAim.aimMode == "Character + Camera" then
+        if (flat - myRoot.Position).Magnitude > 0.05 then
+            myRoot.CFrame = myRoot.CFrame:Lerp(CFrame.lookAt(myRoot.Position, flat), smooth)
+        end
+    end
+    if StabAim.aimMode == "Camera" or StabAim.aimMode == "Character + Camera" then
+        local camera = Workspace.CurrentCamera
+        if camera then camera.CFrame = camera.CFrame:Lerp(CFrame.lookAt(camera.CFrame.Position, predicted), smooth) end
+    end
+end)
+
+IntegratedAim.HunterAim = HunterAim
+IntegratedAim.StabAim = StabAim
+IntegratedAim.reloadHunterAim = function()
+    hunterBindCharacter(lp.Character)
+    return hunterLoadAbilityIds(lp.Character)
+end
+IntegratedAim.reloadStabAim = function()
+    stabBindCharacter(lp.Character)
+end
+end -- isolated HunterAim + StabAim scope
 
 local function isBlockSnd(sid)
     if not sid or sid == "" then return false end
@@ -1035,7 +1345,8 @@ local function isBlockSnd(sid)
 end
 
 local function FireAbility(name)
-    if AB.RemoteEvent then pcall(function() AB.RemoteEvent:FireServer("UseActorAbility", {name}) end) end
+    local remote = AB.RemoteEvent or testRemote
+    if remote then pcall(function() remote:FireServer("UseActorAbility", {name}) end) end
 end
 local function FireBlock() FireAbility("Block") end
 local function FireClone() FireAbility("Clone") end
@@ -1053,6 +1364,75 @@ end
 local CustomZone = { running=false, connections={}, folder=nil, killerZones={} }
 local PLAYER_RADIUS = 1.5
 
+local function flatBasis(killerCF)
+    local forward = Vector3.new(killerCF.LookVector.X, 0, killerCF.LookVector.Z)
+    if forward.Magnitude < 0.01 then return nil end
+    forward = forward.Unit
+    return forward, Vector3.new(-forward.Z, 0, forward.X)
+end
+
+local function IsPlayerInCircleCheck(myPos, killerCF, killerPos)
+    local forward = flatBasis(killerCF)
+    if not forward then return false end
+    local centerDistance = (Settings.CustomCircleOffset or 0) + (Settings.CustomCircleRadius or 5)
+    local fromCenter = Vector3.new(myPos.X - killerPos.X, 0, myPos.Z - killerPos.Z) - forward * centerDistance
+    local radius = (Settings.CustomCircleRadius or 5) + PLAYER_RADIUS
+    return fromCenter:Dot(fromCenter) <= radius * radius
+end
+
+local function IsPlayerInDiamond(myPos, killerCF, killerPos)
+    local forward, right = flatBasis(killerCF)
+    if not forward then return false end
+    local delta = Vector3.new(myPos.X - killerPos.X, 0, myPos.Z - killerPos.Z)
+    local forwardDistance = delta:Dot(forward)
+    local sideDistance = math.abs(delta:Dot(right))
+    local offset = Settings.CustomDiamondOffset or 0
+    local length = math.max(1, Settings.CustomDiamondLength or 12)
+    local halfWidth = math.max(1, Settings.CustomDiamondWidth or 8) / 2
+    local depth = forwardDistance - offset
+    if depth < -PLAYER_RADIUS or depth > length + PLAYER_RADIUS then return false end
+    local normalizedDepth = math.clamp(depth / length, 0, 1)
+    local allowedSide = halfWidth * (1 - math.abs(2 * normalizedDepth - 1)) + PLAYER_RADIUS
+    return sideDistance <= allowedSide
+end
+
+local function IsPlayerInBox(myPos, killerCF, killerPos)
+    local forward, right = flatBasis(killerCF)
+    if not forward then return false end
+    local delta = Vector3.new(myPos.X - killerPos.X, 0, myPos.Z - killerPos.Z)
+    local forwardDistance = delta:Dot(forward)
+    local sideDistance = math.abs(delta:Dot(right))
+    local offset = Settings.CustomBoxOffset or 0
+    local length = math.max(1, Settings.CustomBoxLength or 12)
+    local width = math.max(1, Settings.CustomBoxWidth or 6)
+    return forwardDistance >= offset - PLAYER_RADIUS
+        and forwardDistance <= offset + length + PLAYER_RADIUS
+        and sideDistance <= width / 2 + PLAYER_RADIUS
+end
+
+local function IsPlayerInFacingZone(killer)
+    if not killer or not killer.Parent then return false end
+    local killerRoot = killer:FindFirstChild("HumanoidRootPart")
+    local character = LocalPlayer.Character
+    local myRoot = character and character:FindFirstChild("HumanoidRootPart")
+    if not killerRoot or not myRoot then return false end
+
+    local verticalDifference = math.abs(myRoot.Position.Y - killerRoot.Position.Y)
+    if verticalDifference > math.max(0.5, Settings.FacingHeight or 5) then return false end
+
+    local mode = Settings.FacingMode or "Circle"
+    if mode == "Circle" then
+        return IsPlayerInCircleCheck(myRoot.Position, killerRoot.CFrame, killerRoot.Position)
+    elseif mode == "Diamond" then
+        return IsPlayerInDiamond(myRoot.Position, killerRoot.CFrame, killerRoot.Position)
+    elseif mode == "Box" then
+        local boxHalfHeight = math.max(1, Settings.CustomBoxHeight or 8) / 2
+        if verticalDifference > boxHalfHeight + PLAYER_RADIUS then return false end
+        return IsPlayerInBox(myRoot.Position, killerRoot.CFrame, killerRoot.Position)
+    end
+    return false
+end
+
 local function GetKillerGroundCF(kr)
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
@@ -1060,7 +1440,7 @@ local function GetKillerGroundCF(kr)
     params.IgnoreWater = true
     local ray = Workspace:Raycast(kr.Position, Vector3.new(0, -30, 0), params)
     local groundY = ray and (kr.Position.Y - ray.Distance) or (kr.Position.Y - 3)
-    return CFrame.new(kr.Position.X, groundY + (Settings.ZoneHeight or 0.5), kr.Position.Z) * kr.CFrame.Rotation
+    return CFrame.new(kr.Position.X, groundY + (Settings.ZoneVisualOffset or 0.5), kr.Position.Z) * kr.CFrame.Rotation
 end
 
 local function BuildZone(killer)
@@ -1068,89 +1448,60 @@ local function BuildZone(killer)
     model.Name = "ABCustomZone_" .. killer.Name
     model.Parent = CustomZone.folder
     local edges = {}
-    for i = 1, 4 do
+    for i = 1, 12 do
         local p = Instance.new("Part")
-        p.Name="Edge"..i; p.Anchored=true; p.CanCollide=false; p.CanQuery=false; p.CanTouch=false
-        p.CastShadow=false; p.Material=Enum.Material.Neon
-        p.Color=Color3.fromRGB(255,0,0); p.Transparency=0.3
-        p.Size=Vector3.new(0.35,0.08,1); p.CFrame=CFrame.new(0,-5000,0)
+        p.Name = "Edge" .. i
+        p.Anchored = true
+        p.CanCollide = false
+        p.CanQuery = false
+        p.CanTouch = false
+        p.CastShadow = false
+        p.Material = Enum.Material.Neon
+        p.Color = Color3.fromRGB(255, 0, 0)
+        p.Transparency = 1
+        p.Size = Vector3.new(0.12, 0.12, 1)
+        p.CFrame = CFrame.new(0, -5000, 0)
         p.Parent = model
         edges[i] = p
     end
     local circle = Instance.new("Part")
-    circle.Shape=Enum.PartType.Cylinder; circle.Name="Circle"
-    circle.Anchored=true; circle.CanCollide=false; circle.CanQuery=false; circle.CanTouch=false
-    circle.CastShadow=false; circle.Material=Enum.Material.Neon
-    circle.Color=Color3.fromRGB(255,0,0); circle.Transparency=0.65
-    circle.Size=Vector3.new(0.08,10,10); circle.CFrame=CFrame.new(0,-5000,0)
+    circle.Shape = Enum.PartType.Cylinder
+    circle.Name = "Circle"
+    circle.Anchored = true
+    circle.CanCollide = false
+    circle.CanQuery = false
+    circle.CanTouch = false
+    circle.CastShadow = false
+    circle.Material = Enum.Material.Neon
+    circle.Color = Color3.fromRGB(255, 0, 0)
+    circle.Transparency = 1
+    circle.Size = Vector3.new(0.08, 10, 10)
+    circle.CFrame = CFrame.new(0, -5000, 0)
     circle.Parent = model
-    return { model=model, edges=edges, circle=circle, killer=killer }
-end
 
-local function flatBasis(killerCF)
-    local fwd = Vector3.new(killerCF.LookVector.X, 0, killerCF.LookVector.Z)
-    if fwd.Magnitude < 0.01 then return nil end
-    fwd = fwd.Unit
-    return fwd, Vector3.new(-fwd.Z, 0, fwd.X)
-end
-
-local function IsPlayerInCircleCheck(myPos, killerCF, killerPos)
-    local fwd = flatBasis(killerCF)
-    if not fwd then return false end
-    local centerDist = Settings.CustomCircleOffset + Settings.CustomCircleRadius
-    local fromCenter = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z) - fwd*centerDist
-    local radius = Settings.CustomCircleRadius + PLAYER_RADIUS
-    return fromCenter:Dot(fromCenter) <= radius*radius
-end
-
-local function IsPlayerInCone(myPos, killerCF, killerPos)
-    local fwd, right = flatBasis(killerCF)
-    if not fwd then return false end
-    local delta = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z)
-    local forwardDist, sideDist = delta:Dot(fwd), math.abs(delta:Dot(right))
-    local offset = Settings.CustomConeOffset or 0
-    local length = Settings.CustomConeLength or 12
-    if forwardDist < offset-PLAYER_RADIUS or forwardDist > offset+length+PLAYER_RADIUS then return false end
-    local depth = math.max(0, forwardDist-offset)
-    local halfWidth = math.tan(math.rad(math.clamp(Settings.CustomConeAngle or 70, 5, 170)/2))*depth + PLAYER_RADIUS
-    return sideDist <= halfWidth
-end
-
-local function IsPlayerInBox(myPos, killerCF, killerPos)
-    local fwd, right = flatBasis(killerCF)
-    if not fwd then return false end
-    local delta = Vector3.new(myPos.X-killerPos.X, 0, myPos.Z-killerPos.Z)
-    local forwardDist, sideDist = delta:Dot(fwd), math.abs(delta:Dot(right))
-    local offset = Settings.CustomBoxOffset or 0
-    return forwardDist >= offset-PLAYER_RADIUS
-        and forwardDist <= offset+(Settings.CustomBoxLength or 12)+PLAYER_RADIUS
-        and sideDist <= (Settings.CustomBoxWidth or 6)/2+PLAYER_RADIUS
-end
-
-local function IsPlayerInFacingZone(killer)
-    if not killer or not killer.Parent then return false end
-    local kr = killer:FindFirstChild("HumanoidRootPart")
-    local char = LocalPlayer.Character
-    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
-    if not kr or not myRoot then return false end
-    local mode = Settings.FacingMode or "Circle"
-    if mode == "Circle" then
-        return IsPlayerInCircleCheck(myRoot.Position, kr.CFrame, kr.Position)
-    elseif mode == "Cone" then
-        return IsPlayerInCone(myRoot.Position, kr.CFrame, kr.Position)
-    elseif mode == "Box" then
-        return IsPlayerInBox(myRoot.Position, kr.CFrame, kr.Position)
-    end
-    return false
+    local boxVolume = Instance.new("Part")
+    boxVolume.Name = "BoxVolume"
+    boxVolume.Anchored = true
+    boxVolume.CanCollide = false
+    boxVolume.CanQuery = false
+    boxVolume.CanTouch = false
+    boxVolume.CastShadow = false
+    boxVolume.Material = Enum.Material.ForceField
+    boxVolume.Color = Color3.fromRGB(255, 0, 0)
+    boxVolume.Transparency = 1
+    boxVolume.Size = Vector3.new(6, 8, 12)
+    boxVolume.CFrame = CFrame.new(0, -5000, 0)
+    boxVolume.Parent = model
+    return { model = model, edges = edges, circle = circle, boxVolume = boxVolume, killer = killer }
 end
 
 local function setZoneEdge(edge, a, b, color)
-    local diff = b-a
+    local diff = b - a
     if diff.Magnitude < 0.01 then edge.Transparency = 1; return end
-    edge.Size = Vector3.new(0.18, 0.08, diff.Magnitude)
-    edge.CFrame = CFrame.lookAt((a+b)/2, (a+b)/2+diff.Unit)
+    edge.Size = Vector3.new(0.12, 0.12, diff.Magnitude)
+    edge.CFrame = CFrame.lookAt((a + b) / 2, (a + b) / 2 + diff.Unit)
     edge.Color = color
-    edge.Transparency = 0.2
+    edge.Transparency = 0.15
 end
 
 local function UpdateZone(zone, kr, myRoot)
@@ -1159,41 +1510,56 @@ local function UpdateZone(zone, kr, myRoot)
     local baseCF = GetKillerGroundCF(kr)
     local show = Settings.ShowFacingVisual == true
     local inZone = myRoot and IsPlayerInFacingZone(zone.killer) or false
-    local zoneColor = inZone and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
-    local points = nil
+    local zoneColor = inZone and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+
+    for _, edge in ipairs(zone.edges) do edge.Transparency = 1 end
+    if zone.boxVolume then zone.boxVolume.Transparency = 1 end
+
     if mode == "Box" then
-        local o, length, width = Settings.CustomBoxOffset or 0, Settings.CustomBoxLength or 12, Settings.CustomBoxWidth or 6
-        points = {
-            baseCF:PointToWorldSpace(Vector3.new(-width/2,0,-o)),
-            baseCF:PointToWorldSpace(Vector3.new(width/2,0,-o)),
-            baseCF:PointToWorldSpace(Vector3.new(-width/2,0,-(o+length))),
-            baseCF:PointToWorldSpace(Vector3.new(width/2,0,-(o+length))),
+        local offset = Settings.CustomBoxOffset or 0
+        local length = math.max(1, Settings.CustomBoxLength or 12)
+        local width = math.max(1, Settings.CustomBoxWidth or 6)
+        local height = math.max(1, Settings.CustomBoxHeight or 8)
+        zone.boxVolume.Size = Vector3.new(width, height, length)
+        zone.boxVolume.CFrame = CFrame.new(kr.Position) * kr.CFrame.Rotation * CFrame.new(0, 0, -(offset + length / 2))
+        zone.boxVolume.Color = zoneColor
+        zone.boxVolume.Transparency = show and 0.78 or 1
+    elseif mode == "Diamond" then
+        local offset = Settings.CustomDiamondOffset or 0
+        local length = math.max(1, Settings.CustomDiamondLength or 12)
+        local halfWidth = math.max(1, Settings.CustomDiamondWidth or 8) / 2
+        local halfHeight = math.max(0.5, Settings.FacingHeight or 5)
+        local shapeCF = CFrame.new(kr.Position) * kr.CFrame.Rotation
+        local localBase = {
+            Vector3.new(0, -halfHeight, -offset),
+            Vector3.new(-halfWidth, -halfHeight, -(offset + length / 2)),
+            Vector3.new(0, -halfHeight, -(offset + length)),
+            Vector3.new(halfWidth, -halfHeight, -(offset + length / 2)),
         }
-    elseif mode == "Cone" then
-        local o, length = Settings.CustomConeOffset or 0, Settings.CustomConeLength or 12
-        local half = math.tan(math.rad(math.clamp(Settings.CustomConeAngle or 70,5,170)/2))*length
-        points = {
-            baseCF:PointToWorldSpace(Vector3.new(0,0,-o)),
-            baseCF:PointToWorldSpace(Vector3.new(-half,0,-(o+length))),
-            baseCF:PointToWorldSpace(Vector3.new(half,0,-(o+length))),
-            baseCF:PointToWorldSpace(Vector3.new(0,0,-(o+length))),
+        local points = {}
+        for i = 1, 4 do
+            points[i] = shapeCF:PointToWorldSpace(localBase[i])
+            points[i + 4] = shapeCF:PointToWorldSpace(localBase[i] + Vector3.new(0, halfHeight * 2, 0))
+        end
+        local pairs3D = {
+            {1,2},{2,3},{3,4},{4,1},
+            {5,6},{6,7},{7,8},{8,5},
+            {1,5},{2,6},{3,7},{4,8},
         }
-    end
-    local edgePairs = mode == "Box" and {{1,2},{1,3},{2,4},{3,4}} or {{1,2},{1,3},{2,3},{2,3}}
-    for i, edge in ipairs(zone.edges) do
-        if show and points and edgePairs[i] then
-            setZoneEdge(edge, points[edgePairs[i][1]], points[edgePairs[i][2]], zoneColor)
-        else
-            edge.Transparency = 1
+        if show then
+            for i, pair in ipairs(pairs3D) do
+                setZoneEdge(zone.edges[i], points[pair[1]], points[pair[2]], zoneColor)
+            end
         end
     end
+
     local circle = zone.circle
     if circle and circle.Parent then
         local isCircle = mode == "Circle"
         local radius = Settings.CustomCircleRadius + PLAYER_RADIUS
-        local center = baseCF:PointToWorldSpace(Vector3.new(0,0,-(Settings.CustomCircleOffset + Settings.CustomCircleRadius)))
-        circle.Size = Vector3.new(0.08,radius*2,radius*2)
-        circle.CFrame = CFrame.new(center + Vector3.new(0,0.04,0)) * CFrame.Angles(0,0,math.rad(90))
+        local center = baseCF:PointToWorldSpace(Vector3.new(0, 0, -(Settings.CustomCircleOffset + Settings.CustomCircleRadius)))
+        circle.Size = Vector3.new(0.08, radius * 2, radius * 2)
+        circle.CFrame = CFrame.new(center + Vector3.new(0, 0.04, 0)) * CFrame.Angles(0, 0, math.rad(90))
         circle.Transparency = (show and isCircle) and 0.55 or 1
         circle.Color = zoneColor
     end
@@ -1275,172 +1641,8 @@ end
 -- ═══════════════════════════════════════════════════════════════
 -- DETECTION
 -- ═══════════════════════════════════════════════════════════════
--- Killer-specific M1 tracker. This listens for the killer's replicated animation start,
--- which normally arrives before the associated attack sound. It cannot observe
--- the remote player's physical input before the server replicates the attack.
-local M1_COOLDOWNS = {
-    slasher = 1.9,
-    c00lkidd = 2.0,
-    johndoe = 2.0,
-    ["1x1x1x1"] = 2.0,
-    nosferatu = 2.0,
-    noli = 1.875, -- midpoint of the supplied 1.75-2.0s range
-    azure = 1.8,
-    guest666 = 2.0,
-    guest666_eviscerate = 8.0, -- 8s if used; landed-hit reduction needs hit confirmation
-}
-
-local M1_TYPES_BY_KILLER = {
-    -- Only Slasher, John Doe and 1x1x1x1 use Slash as their ordinary M1.
-    slasher = { slash = true, enragedslash = true },
-    c00lkidd = { tag = true },
-    johndoe = { slash = true },
-    ["1x1x1x1"] = { slash = true },
-    nosferatu = { lacerate = true, laceration = true },
-    noli = { stab = true },
-    azure = { perforating = true },
-    -- Guest 666's Carving Slash is the M1. Eviscerate is also explicitly
-    -- blockable, but is tracked as a separate attack with its own cooldown.
-    guest666 = { carvingslash = true, g666slash = true, guestm1 = true, eviscerate = true },
-}
-
-local function normalizeM1Token(value)
-    return string.lower(tostring_ref(value or "")):gsub("[^%w]", "")
-end
-
-local function getKillerM1Key(killer)
-    if not killer then return nil end
-    local names = {
-        killer.Name,
-        killer:GetAttribute("KillerName"),
-        killer:GetAttribute("CharacterName"),
-    }
-    for _, name in ipairs(names) do
-        local key = normalizeM1Token(name)
-        if key == "slasher" or key == "c00lkidd" or key == "johndoe"
-            or key == "1x1x1x1" or key == "nosferatu" or key == "noli"
-            or key == "azure" or key == "guest666" then
-            return key
-        end
-    end
-    return nil
-end
-
-local function isSlasherEnraged(killer)
-    if not killer then return false end
-    for name, value in pairs(killer:GetAttributes()) do
-        local key = normalizeM1Token(name)
-        if (key == "enraged" or key == "ragingpace" or key == "isenraged") then
-            if value == true or (type(value) == "number" and value > 0) then return true end
-            if type(value) == "string" and value ~= "" and value ~= "false" then return true end
-        end
-    end
-    -- Some builds expose the state as a BoolValue rather than an attribute.
-    for _, child in ipairs(killer:GetChildren()) do
-        local key = normalizeM1Token(child.Name)
-        if key == "enraged" or key == "ragingpace" or key == "isenraged" then
-            if child:IsA("BoolValue") and child.Value then return true end
-            if child:IsA("NumberValue") and child.Value > 0 then return true end
-        end
-    end
-    return false
-end
-
-local function getM1Cooldown(killer, killerKey, attackType)
-    if killerKey == "slasher" and attackType == "enragedslash" then
-        return 0.9 -- supplied Raging Pace range: 0.8-1.0s
-    end
-    if killerKey == "guest666" and attackType == "eviscerate" then
-        return M1_COOLDOWNS.guest666_eviscerate
-    end
-    return M1_COOLDOWNS[killerKey] or 2.0
-end
-
-local function getM1AnimationType(killer, track)
-    if not track then return nil end
-    local killerKey = getKillerM1Key(killer)
-    local allowed = killerKey and M1_TYPES_BY_KILLER[killerKey]
-    if not allowed then return nil end
-
-    local animation = track.Animation
-    local candidates = {
-        track.Name,
-        animation and animation.Name,
-        track:GetAttribute("AbilityName"),
-        animation and animation:GetAttribute("AbilityName"),
-        track:GetAttribute("AnimationType"),
-        animation and animation:GetAttribute("AnimationType"),
-    }
-    for _, candidate in ipairs(candidates) do
-        local token = normalizeM1Token(candidate)
-        if token ~= "" then
-            -- Exact killer-specific names prevent unrelated abilities from
-            -- triggering another killer's M1 classification.
-            if killerKey == "c00lkidd" and (token == "tag" or token == "coolkidm1nm") then
-                return "tag", killerKey
-            elseif killerKey == "nosferatu" and (token == "lacerate" or token == "laceration") then
-                return "lacerate", killerKey
-            elseif killerKey == "noli" and token == "stab" then
-                return "stab", killerKey
-            elseif killerKey == "azure" and token == "perforating" then
-                return "perforating", killerKey
-            elseif killerKey == "guest666" then
-                if token == "eviscerate" then return "eviscerate", killerKey end
-                if token == "carvingslash" or token == "g666slash" or token == "guestm1" then
-                    return "carvingslash", killerKey
-                end
-            elseif killerKey == "slasher" and token == "enragedslash" then
-                return "enragedslash", killerKey
-            elseif allowed[token] then
-                return token, killerKey
-            end
-        end
-    end
-
-    -- Resolve generic Roblox track names through the game's Config animation
-    -- index. This is essential when Animation.Name is only "Animation".
-    local animId = animation and string_match(tostring_ref(animation.AnimationId), "%d+")
-    local mappedM1 = animId and m1AnimationTypeById[animId]
-    if mappedM1 then
-        if allowed[mappedM1] then return mappedM1, killerKey end
-        -- A config can expose CoolkidM1NM as the ID key even if the display
-        -- name says Tag, and vice versa.
-        if killerKey == "c00lkidd" and mappedM1 == "coolkidm1nm" then return "tag", killerKey end
-        if killerKey == "guest666" and (mappedM1 == "g666slash" or mappedM1 == "guestm1") then
-            return "carvingslash", killerKey
-        end
-    end
-    return nil
-end
-
-local function tryBlockFromM1Animation(killer, track)
-    if Settings.AutoBlockDetection ~= "Killer M1 Tracker" then return end
-    if not AB.running or not (Settings.AutoBlock or Settings.AutoBlockCustom) then return end
-    if not killer or not AB.LocalRoot or not AB.LocalRoot.Parent then return end
-    local m1Type, killerKey = getM1AnimationType(killer, track)
-    if not m1Type or not killerKey then return end
-
-    local now = tick()
-    local cooldown = getM1Cooldown(killer, killerKey, m1Type)
-    local perKiller = AB.m1LastAt[killer]
-    if not perKiller then
-        perKiller = {}
-        AB.m1LastAt[killer] = perKiller
-    end
-    local previous = perKiller[m1Type] or 0
-    if now - previous < cooldown then return end
-    -- Track each attack type independently so Guest 666's Eviscerate does not
-    -- suppress their ordinary Carving Slash M1 (or vice versa).
-    perKiller[m1Type] = now
-
-    if not IsPlayerInFacingZone(killer) then return end
-    if now - AB.blueDebounce < 0.08 then return end
-    AB.blueDebounce = now
-    FireAbilityByMode()
-end
-
-local function tryBlockFromRegularSignal(killer)
-    if Settings.AutoBlockDetection ~= "Regular (Sound + Animation IDs)" then return end
+local function tryBlockFromSoundSignal(killer)
+    if Settings.AutoBlockDetection ~= "Regular (Sound IDs)" then return end
     if not AB.running or not (Settings.AutoBlock or Settings.AutoBlockCustom) then return end
     if not killer or not AB.LocalRoot or not AB.LocalRoot.Parent then return end
     if not IsPlayerInFacingZone(killer) then return end
@@ -1463,7 +1665,7 @@ local function monitorRegularM1Sound(killer, sound)
     if not sound or not sound:IsA("Sound") or monitoredM1Sounds[sound] then return end
     monitoredM1Sounds[sound] = true
     local connection = sound.Played:Connect(function()
-        if isKnownRegularM1Sound(sound) then tryBlockFromRegularSignal(killer) end
+        if isKnownRegularM1Sound(sound) then tryBlockFromSoundSignal(killer) end
     end)
     table.insert(AB.connections, connection)
 end
@@ -1478,33 +1680,7 @@ local function MonitorKillerSound(killer)
     end))
 end
 
-local function MonitorKillerM1(killer)
-    if not killer then return end
-    local function connectAnimator(animator)
-        if not animator or not animator:IsA("Animator") then return end
-        local connection = animator.AnimationPlayed:Connect(function(track)
-            if Settings.AutoBlockDetection == "Killer M1 Tracker" then
-                tryBlockFromM1Animation(killer, track)
-            elseif Settings.AutoBlockDetection == "Regular (Sound + Animation IDs)" then
-                local animation = track and track.Animation
-                local animId = animation and string_match(tostring_ref(animation.AnimationId), "%d+")
-                if animId and m1AnimationTypeById[animId] then
-                    tryBlockFromRegularSignal(killer)
-                end
-            end
-        end)
-        table.insert(AB.connections, connection)
-    end
-    for _, descendant in ipairs(killer:GetDescendants()) do
-        if descendant:IsA("Animator") then connectAnimator(descendant) end
-    end
-    table.insert(AB.connections, killer.DescendantAdded:Connect(function(descendant)
-        if descendant:IsA("Animator") then connectAnimator(descendant) end
-    end))
-end
-
--- Generic AbilityLastUsed/AbilitiesUsed attributes are intentionally not used
--- for blocking. The selected detector decides which sound/animation signals count.
+-- Auto Block uses the known killer attack sound IDs only; the separate animation tracker was removed.
 local function AttrHeartbeat()
     return
 end
@@ -1755,7 +1931,6 @@ function StartAutoBlock()
     end))
     local function attachKiller(killer)
         if not killer or not killer:IsA("Model") then return end
-        MonitorKillerM1(killer)
         MonitorKillerSound(killer)
     end
     local function attachFolder(folder)
@@ -1872,7 +2047,8 @@ local RawTabs = {
     Stam       = Window:AddTab("Stam", "activity", "Stamina controls"),
     AutoBlock  = Window:AddTab("Auto Block", "shield", "GoodSAKEN Auto Block"),
     FacingCheck= Window:AddTab("Facing Check", "scan-eye", "Killer facing and direction visuals"),
-    Aim        = Window:AddTab("Aim", "crosshair", "Survivor auto aim, auto punch and HDT"),
+    Aim        = Window:AddTab("Aim", "crosshair", "Survivor and Guest aim controls"),
+    Stab       = Window:AddTab("Stab", "target", "Two Time stab aim controls"),
     KillerParry= Window:AddTab("Killer Parry", "shield", "John Doe 404 Error and Slasher Raging Pace parry"),
     Misc       = Window:AddTab("Misc", "settings", "Extra features and utilities"),
     Settings   = Window:AddTab("Config", "save", "Configuration and appearance"),
@@ -1963,28 +2139,18 @@ end
 local Tabs = {
     Stamina   = wrapTab(RawTabs.Stam),
     AutoPunch = wrapTab(RawTabs.Aim),
+    Stab      = wrapTab(RawTabs.Stab),
     AutoBlock = wrapTab(RawTabs.AutoBlock),
     FacingCheck = wrapTab(RawTabs.FacingCheck),
     Tech      = wrapTab(RawTabs.Misc),
     Killer    = wrapTab(RawTabs.KillerParry),
     KillerParry = wrapTab(RawTabs.KillerParry),
-    Gen       = wrapTab(RawTabs.ESP),
     EspMaster = wrapTab(RawTabs.ESP),
     Misc      = wrapTab(RawTabs.Misc),
 }
 
 -- ============ GOODSAKEN AUTO BLOCK ============
 local ABMain = Tabs.AutoBlock:CreateGroupbox({ Name = "Auto Block (Default)", Column = 1 }, "Group_ABMain")
-ABMain:CreateDropdown({
-    Name = "Detection Method",
-    Options = { "Regular (Sound + Animation IDs)", "Killer M1 Tracker" },
-    CurrentOption = Settings.AutoBlockDetection,
-    Callback = function(v)
-        if v == "Regular (Sound + Animation IDs)" or v == "Killer M1 Tracker" then
-            Settings.AutoBlockDetection = v
-        end
-    end,
-}, "AB_DetectionMethod")
 Toggles.AutoBlock = ABMain:CreateToggle({
     Name = "Auto Block", CurrentValue = Settings.AutoBlock,
     Callback = function(v) if not _suppressToggleCallback then ab_requestState(v, "default") end end,
@@ -2017,51 +2183,21 @@ Toggles.CustomABModeDropdown = ABCustom:CreateDropdown({
     CurrentOption = (Settings.CustomABMode == "007n7") and "007n7" or "Guest 1337",
     Callback = function(v) Settings.CustomABMode = (v == "007n7") and "007n7" or "Guest1337" end,
 }, "AB_CustomMode")
-ABCustom:CreateInput({
-    Name = "Zone Height", CurrentValue = tostring(Settings.ZoneHeight),
-    PlaceholderText = "0.5", Numeric = true,
-    Callback = function(v) Settings.ZoneHeight = tonumber(v) or 0.5 end,
-}, "AB_ZoneHeight")
-
--- ============ GUEST AUTO AIM + GUEST AUTO PARRY ============
-ABCustom = Tabs.AutoBlock:CreateGroupbox({ Name = "Guest Auto Aim + Auto Parry", Column = 1 }, "Group_GuestAuto")
-ABCustom:CreateToggle({
-    Name = "Guest Auto Aim",
-    Tooltip = "When playing Guest, aim toward the nearest killer when a recognised Guest attack animation starts.",
-    CurrentValue = false,
-    Callback = function(v)
-        Settings.GuestAutoAimEnabled = v == true
-        if not v then
-            for key in pairs(lastPunchAimByAnimationId) do
-                if type(key) == "string" and string.sub(key, 1, 13) == "GuestAutoAim:" then
-                    lastPunchAimByAnimationId[key] = nil
-                end
-            end
-        end
-    end,
-}, "GuestAutoAim")
-ABCustom:CreateToggle({
-    Name = "Guest Auto Parry (Sound Based)",
-    Tooltip = "Uses your 12 supplied block-start sound IDs. After a matching sound plays on Guest, waits 2 seconds and requests Punch.",
-    CurrentValue = false,
-    Callback = function(v)
-        Settings.GuestAutoParrySetEnabled(v)
-    end,
-}, "GuestAutoParry")
-
--- ============ FACING CHECK MODES + MATCHED VISUAL ============
+-- ============ FACING CHECK MODES + SEPARATE SHAPE SETTINGS ============
 local FacingMain = Tabs.FacingCheck:CreateGroupbox({ Name = "Facing Check", Column = 1 }, "Group_FacingMain")
-local FacingShape = Tabs.FacingCheck:CreateGroupbox({ Name = "Shape Settings", Column = 2 }, "Group_FacingShape")
+local CircleSettings = Tabs.FacingCheck:CreateGroupbox({ Name = "Circle Settings", Column = 2 }, "Group_FacingCircle")
+local DiamondSettings = Tabs.FacingCheck:CreateGroupbox({ Name = "Diamond Settings", Column = 2 }, "Group_FacingDiamond")
+local BoxSettings = Tabs.FacingCheck:CreateGroupbox({ Name = "Box Settings", Column = 2 }, "Group_FacingBox")
 
 local function applyFacingCheckMode(mode)
-    if mode ~= "Circle" and mode ~= "Cone" and mode ~= "Box" then mode = "Circle" end
+    if mode ~= "Circle" and mode ~= "Diamond" and mode ~= "Box" then mode = "Circle" end
     Settings.FacingMode = mode
     UpdateCustomZoneVisibility()
 end
 
 FacingMain:CreateDropdown({
     Name = "Facing Check Shape",
-    Options = { "Circle", "Cone", "Box" },
+    Options = { "Circle", "Diamond", "Box" },
     CurrentOption = Settings.FacingMode,
     Callback = applyFacingCheckMode,
 }, "Facing_Mode")
@@ -2073,29 +2209,41 @@ FacingMain:CreateToggle({
         UpdateCustomZoneVisibility()
     end,
 }, "Facing_ShowVisual")
-FacingShape:CreateInput({ Name = "Circle Radius", CurrentValue = tostring(Settings.CustomCircleRadius), PlaceholderText = "5", Numeric = true,
-    Callback = function(v) Settings.CustomCircleRadius = math.max(1, tonumber(v) or 5) end,
+FacingMain:CreateInput({
+    Name = "Height Check (studs)", CurrentValue = tostring(Settings.FacingHeight),
+    PlaceholderText = "5", Numeric = true,
+    Tooltip = "Maximum vertical difference between your root and the killer root for a Facing Check block.",
+    Callback = function(v) Settings.FacingHeight = math.clamp(tonumber(v) or 5, 0.5, 30) end,
+}, "Facing_Height")
+
+CircleSettings:CreateInput({ Name = "Circle Radius", CurrentValue = tostring(Settings.CustomCircleRadius), PlaceholderText = "5", Numeric = true,
+    Callback = function(v) Settings.CustomCircleRadius = math.clamp(tonumber(v) or 5, 1, 60) end,
 }, "Facing_CircleRadius")
-FacingShape:CreateInput({ Name = "Circle Forward Offset", CurrentValue = tostring(Settings.CustomCircleOffset), PlaceholderText = "2", Numeric = true,
-    Callback = function(v) Settings.CustomCircleOffset = math.max(0, tonumber(v) or 2) end,
+CircleSettings:CreateInput({ Name = "Circle Forward Offset", CurrentValue = tostring(Settings.CustomCircleOffset), PlaceholderText = "2", Numeric = true,
+    Callback = function(v) Settings.CustomCircleOffset = math.clamp(tonumber(v) or 2, 0, 60) end,
 }, "Facing_CircleOffset")
-FacingShape:CreateInput({ Name = "Cone Length", CurrentValue = tostring(Settings.CustomConeLength), PlaceholderText = "12", Numeric = true,
-    Callback = function(v) Settings.CustomConeLength = math.max(1, tonumber(v) or 12) end,
-}, "Facing_ConeLength")
-FacingShape:CreateInput({ Name = "Cone Angle (degrees)", CurrentValue = tostring(Settings.CustomConeAngle), PlaceholderText = "70", Numeric = true,
-    Callback = function(v) Settings.CustomConeAngle = math.clamp(tonumber(v) or 70, 5, 170) end,
-}, "Facing_ConeAngle")
-FacingShape:CreateInput({ Name = "Cone Forward Offset", CurrentValue = tostring(Settings.CustomConeOffset), PlaceholderText = "0", Numeric = true,
-    Callback = function(v) Settings.CustomConeOffset = math.max(0, tonumber(v) or 0) end,
-}, "Facing_ConeOffset")
-FacingShape:CreateInput({ Name = "Box Length", CurrentValue = tostring(Settings.CustomBoxLength), PlaceholderText = "12", Numeric = true,
-    Callback = function(v) Settings.CustomBoxLength = math.max(1, tonumber(v) or 12) end,
+
+DiamondSettings:CreateInput({ Name = "Diamond Length", CurrentValue = tostring(Settings.CustomDiamondLength), PlaceholderText = "12", Numeric = true,
+    Callback = function(v) Settings.CustomDiamondLength = math.clamp(tonumber(v) or 12, 1, 80) end,
+}, "Facing_DiamondLength")
+DiamondSettings:CreateInput({ Name = "Diamond Width", CurrentValue = tostring(Settings.CustomDiamondWidth), PlaceholderText = "8", Numeric = true,
+    Callback = function(v) Settings.CustomDiamondWidth = math.clamp(tonumber(v) or 8, 1, 60) end,
+}, "Facing_DiamondWidth")
+DiamondSettings:CreateInput({ Name = "Diamond Forward Offset", CurrentValue = tostring(Settings.CustomDiamondOffset), PlaceholderText = "0", Numeric = true,
+    Callback = function(v) Settings.CustomDiamondOffset = math.clamp(tonumber(v) or 0, 0, 60) end,
+}, "Facing_DiamondOffset")
+
+BoxSettings:CreateInput({ Name = "Box Length", CurrentValue = tostring(Settings.CustomBoxLength), PlaceholderText = "12", Numeric = true,
+    Callback = function(v) Settings.CustomBoxLength = math.clamp(tonumber(v) or 12, 1, 80) end,
 }, "Facing_BoxLength")
-FacingShape:CreateInput({ Name = "Box Width", CurrentValue = tostring(Settings.CustomBoxWidth), PlaceholderText = "6", Numeric = true,
-    Callback = function(v) Settings.CustomBoxWidth = math.max(1, tonumber(v) or 6) end,
+BoxSettings:CreateInput({ Name = "Box Width", CurrentValue = tostring(Settings.CustomBoxWidth), PlaceholderText = "6", Numeric = true,
+    Callback = function(v) Settings.CustomBoxWidth = math.clamp(tonumber(v) or 6, 1, 60) end,
 }, "Facing_BoxWidth")
-FacingShape:CreateInput({ Name = "Box Forward Offset", CurrentValue = tostring(Settings.CustomBoxOffset), PlaceholderText = "0", Numeric = true,
-    Callback = function(v) Settings.CustomBoxOffset = math.max(0, tonumber(v) or 0) end,
+BoxSettings:CreateInput({ Name = "Box Height", CurrentValue = tostring(Settings.CustomBoxHeight), PlaceholderText = "8", Numeric = true,
+    Callback = function(v) Settings.CustomBoxHeight = math.clamp(tonumber(v) or 8, 1, 40) end,
+}, "Facing_BoxHeight")
+BoxSettings:CreateInput({ Name = "Box Forward Offset", CurrentValue = tostring(Settings.CustomBoxOffset), PlaceholderText = "0", Numeric = true,
+    Callback = function(v) Settings.CustomBoxOffset = math.clamp(tonumber(v) or 0, 0, 60) end,
 }, "Facing_BoxOffset")
 
 UpdateCustomZoneVisibility()
@@ -2122,73 +2270,22 @@ TechMain:CreateButton({
     end,
 }, "Button_FakeLagTech")
 
--- ============ AIM TAB: AUTO PUNCH + PUNCH AIM + HDT ============
-local APMain = Tabs.AutoPunch:CreateGroupbox({ Name = "Auto Punch + Animation Tracker", Column = 1 }, "Group_APMain")
+-- ============ AIM TAB: AUTO AIM BEFORE AUTO PUNCH ============
+local APMain = Tabs.AutoPunch:CreateGroupbox({ Name = "Survivor Aim + Punch", Column = 1 }, "Group_APMain")
+APMain:CreateToggle({
+    Name = "Survivor Auto Aim (Animation Tracker)",
+    Tooltip = "Listen to your local survivor Animator and aim toward the nearest killer when a recognised attack animation starts.",
+    CurrentValue = false,
+    Callback = function(v)
+        punchAimEnabled = v
+        if not v then table.clear(lastPunchAimByAnimationId) end
+    end,
+}, "PunchAim")
 APMain:CreateToggle({
     Name = "Auto Punch",
     CurrentValue = false,
     Callback = function(v) autoPunchEventEnabled = v end,
 }, "AutoPunch")
-APMain:CreateToggle({
-    Name = "Survivor Auto Aim (Animation Tracker)",
-    Tooltip = "Listen to your own survivor Animator. Aim at the nearest killer when a recognised Slash, Shot, Hatchet, Stab or Backstab animation starts.",
-    CurrentValue = false,
-    Callback = function(v)
-        punchAimEnabled = v
-        if not v then
-            table.clear(lastPunchAimByAnimationId)
-        end
-    end,
-}, "PunchAim")
-APMain:CreateToggle({
-    Name = "Attack Lunge",
-    Tooltip = "Apply a small movement correction toward the nearest killer when a recognised local survivor attack animation starts, including Guest attacks and parry/block animations indexed from survivor configs.",
-    CurrentValue = false,
-    Callback = function(v)
-        AttackLunge.enabled = v
-        if not v then AttackLunge.lastAt = 0 end
-    end,
-}, "AttackLunge")
-APMain:CreateSlider({
-    Name = "Lunge Distance (studs)",
-    Range = { 1, 5 },
-    Increment = 1,
-    CurrentValue = AttackLunge.studs,
-    Callback = function(v) AttackLunge.studs = math.clamp(tonumber(v) or 3, 1, 5) end,
-}, "AttackLungeDistance")
-
-local APLungeCharacters = Tabs.AutoPunch:CreateGroupbox({ Name = "Attack Lunge Character Selector", Column = 2 })
-for name in pairs(AttackLunge.characterOptions) do
-    AttackLunge.sortedCharacters[#AttackLunge.sortedCharacters + 1] = name
-end
-table.sort(AttackLunge.sortedCharacters)
-APLungeCharacters:CreateDropdown({
-    Name = "Characters Allowed to Lunge",
-    Options = AttackLunge.sortedCharacters,
-    CurrentOption = AttackLunge.sortedCharacters,
-    Multi = true,
-    Searchable = true,
-    Tooltip = "Open this selector and choose which survivor characters can trigger Attack Lunge. Deselect a character to exclude it.",
-    Callback = function(selected)
-        for name in pairs(AttackLunge.characterOptions) do
-            AttackLunge.characterEnabled[name] = false
-        end
-        if type(selected) == "table" then
-            for key, value in pairs(selected) do
-                local name = (type(key) == "number") and value or (value == true and key or nil)
-                if type(name) == "string" and AttackLunge.characterOptions[name] then
-                    AttackLunge.characterEnabled[name] = true
-                end
-            end
-        end
-    end,
-}, "AttackLungeCharacterSelector")
-APMain:CreateToggle({
-    Name = "Log Unknown Animation IDs",
-    Tooltip = "Print unrecognised local animation IDs to the executor console for adding new ability mappings.",
-    CurrentValue = false,
-    Callback = function(v) aimDebugUnknownAnimations = v end,
-}, "AimTrackerDebug")
 APMain:CreateDropdown({
     Name = "Punch Aim Mode",
     Options = { "Character Lock", "Camera Lock", "Character + Camera Lock" },
@@ -2204,35 +2301,166 @@ APMain:CreateInput({
     Numeric = true,
     Callback = function(v) punchAimPrediction = math.clamp(tonumber(v) or 4, 0, 30) end,
 }, "PunchAimPrediction")
+APMain:CreateToggle({
+    Name = "Log Unknown Animation IDs",
+    Tooltip = "Print unrecognised local animation IDs to the executor console for mapping/debugging.",
+    CurrentValue = false,
+    Callback = function(v) aimDebugUnknownAnimations = v end,
+}, "AimTrackerDebug")
 
-local APLock = Tabs.AutoPunch:CreateGroupbox({ Name = "Hitbox Dragging Tech (HDT)", Column = 2 }, "Group_HDT")
-APLock:CreateToggle({
-    Name = "Enable HDT",
+local GuestAimBlock = Tabs.AutoPunch:CreateGroupbox({ Name = "Guest Aim + Block", Column = 2 }, "Group_GuestAimBlock")
+GuestAimBlock:CreateToggle({
+    Name = "Guest Auto Aim",
+    Tooltip = "For Guest only: aim toward the nearest killer when a recognised Guest attack animation starts.",
     CurrentValue = false,
     Callback = function(v)
-        hitboxDraggingTech = v
-        if not v then stopHDTDrag() end
+        Settings.GuestAutoAimEnabled = v == true
+        if not v then
+            for key in pairs(lastPunchAimByAnimationId) do
+                if type(key) == "string" and string.sub(key, 1, 13) == "GuestAutoAim:" then
+                    lastPunchAimByAnimationId[key] = nil
+                end
+            end
+        end
     end,
-}, "HDT")
-APLock:CreateToggle({
-    Name = "HDT Normal: Face Killer on Start",
-    CurrentValue = true,
-    Callback = function(v) hdtFaceKillerOnStart = v end,
-}, "HDT_FaceKiller")
-APLock:CreateInput({
-    Name = "HDT Speed",
-    CurrentValue = tostring(Dspeed),
-    PlaceholderText = "5.6",
-    Numeric = true,
-    Callback = function(v) Dspeed = math.clamp(tonumber(v) or 5.6, 0, 30) end,
-}, "HTDSpeed")
-APLock:CreateInput({
-    Name = "HDT Delay",
-    CurrentValue = tostring(Ddelay),
-    PlaceholderText = "0",
-    Numeric = true,
-    Callback = function(v) Ddelay = math.clamp(tonumber(v) or 0, 0, 3) end,
-}, "HTDDelay")
+}, "GuestAutoAim")
+GuestAimBlock:CreateToggle({
+    Name = "Guest Auto Parry (Sound Based)",
+    Tooltip = "Uses the 12 supplied block-start sound IDs, waits 2 seconds, then requests Guest Punch.",
+    CurrentValue = false,
+    Callback = function(v) Settings.GuestAutoParrySetEnabled(v) end,
+}, "GuestAutoParry")
+
+-- ============ ISOLATED HUNTER AIM CONTROLS ============
+local HunterAimGroup = Tabs.AutoPunch:CreateGroupbox({ Name = "Hunter Aim (Ability Tracker)", Column = 2 }, "Group_HunterAim")
+HunterAimGroup:CreateToggle({
+    Name = "Enable Hunter Aim",
+    Tooltip = "Aim only while a recognised Shedletsky Slash, Chance Shoot, or Two Time Stab ability is active.",
+    CurrentValue = false,
+    Callback = function(v) IntegratedAim.HunterAim.enabled = v == true end,
+}, "HunterAim_Enabled")
+HunterAimGroup:CreateDropdown({
+    Name = "Hunter Aim Mode", Options = { "Camera", "Character", "Character + Camera" },
+    CurrentOption = IntegratedAim.HunterAim.aimMode,
+    Callback = function(v) if v == "Camera" or v == "Character" or v == "Character + Camera" then IntegratedAim.HunterAim.aimMode = v end end,
+}, "HunterAim_Mode")
+HunterAimGroup:CreateDropdown({
+    Name = "Prediction Mode", Options = { "Off", "Ping", "Velocity", "Both" },
+    CurrentOption = IntegratedAim.HunterAim.predictMode,
+    Callback = function(v) if v == "Off" or v == "Ping" or v == "Velocity" or v == "Both" then IntegratedAim.HunterAim.predictMode = v end end,
+}, "HunterAim_PredictionMode")
+HunterAimGroup:CreateInput({
+    Name = "Velocity Lead (seconds)", CurrentValue = tostring(IntegratedAim.HunterAim.velocityLead), PlaceholderText = "0.15", Numeric = true,
+    Callback = function(v) IntegratedAim.HunterAim.velocityLead = math.clamp(tonumber(v) or 0.15, 0, 0.5) end,
+}, "HunterAim_VelocityLead")
+HunterAimGroup:CreateInput({
+    Name = "Ping Multiplier (Chance only)", CurrentValue = tostring(IntegratedAim.HunterAim.pingMultiplier), PlaceholderText = "1", Numeric = true,
+    Callback = function(v) IntegratedAim.HunterAim.pingMultiplier = math.clamp(tonumber(v) or 1, 0, 2) end,
+}, "HunterAim_PingMultiplier")
+HunterAimGroup:CreateInput({
+    Name = "Smoothness", CurrentValue = tostring(IntegratedAim.HunterAim.smooth), PlaceholderText = "0.35", Numeric = true,
+    Callback = function(v) IntegratedAim.HunterAim.smooth = math.clamp(tonumber(v) or 0.35, 0.01, 1) end,
+}, "HunterAim_Smoothness")
+HunterAimGroup:CreateToggle({
+    Name = "Hunter Aim Debug", CurrentValue = false,
+    Callback = function(v) IntegratedAim.HunterAim.debug = v == true end,
+}, "HunterAim_Debug")
+HunterAimGroup:CreateButton({
+    Name = "Reload Ability Data",
+    Callback = function()
+        hunterBindCharacter(lp.Character)
+        local animations, sounds = IntegratedAim.reloadHunterAim()
+        pcall(function() StarterGui:SetCore("SendNotification", { Title = "Hunter Aim", Text = string.format("Loaded %d animation IDs and %d sound IDs", animations, sounds), Duration = 4 }) end)
+    end,
+}, "HunterAim_Reload")
+
+-- ============ SEPARATE STAB TAB ============
+local StabMain = Tabs.Stab:CreateGroupbox({ Name = "Two Time Stab Aim", Column = 1 }, "Group_StabMain")
+StabMain:CreateToggle({
+    Name = "Enable Stab Aim",
+    Tooltip = "Detects the supplied normal and crouch stab animation IDs and aims at the nearest killer during the stab animation.",
+    CurrentValue = false,
+    Callback = function(v) IntegratedAim.StabAim.enabled = v == true; if not v then IntegratedAim.StabAim.activeUntil = 0; IntegratedAim.StabAim.activeTarget = nil end end,
+}, "StabAim_Enabled")
+StabMain:CreateDropdown({
+    Name = "Stab Aim Mode", Options = { "Camera", "Character", "Character + Camera" },
+    CurrentOption = IntegratedAim.StabAim.aimMode,
+    Callback = function(v) if v == "Camera" or v == "Character" or v == "Character + Camera" then IntegratedAim.StabAim.aimMode = v end end,
+}, "StabAim_Mode")
+StabMain:CreateInput({
+    Name = "Stab Velocity Lead (seconds)", CurrentValue = tostring(IntegratedAim.StabAim.velocityLead), PlaceholderText = "0.12", Numeric = true,
+    Callback = function(v) IntegratedAim.StabAim.velocityLead = math.clamp(tonumber(v) or 0.12, 0, 0.5) end,
+}, "StabAim_VelocityLead")
+StabMain:CreateInput({
+    Name = "Stab Max Range (studs)", CurrentValue = tostring(IntegratedAim.StabAim.maxRange), PlaceholderText = "60", Numeric = true,
+    Callback = function(v) IntegratedAim.StabAim.maxRange = math.clamp(tonumber(v) or 60, 5, 150) end,
+}, "StabAim_MaxRange")
+StabMain:CreateInput({
+    Name = "Stab Cooldown (seconds)", CurrentValue = tostring(IntegratedAim.StabAim.cooldown), PlaceholderText = "0.5", Numeric = true,
+    Callback = function(v) IntegratedAim.StabAim.cooldown = math.clamp(tonumber(v) or 0.5, 0.1, 2) end,
+}, "StabAim_Cooldown")
+
+local StabTeleportGroup = Tabs.Stab:CreateGroupbox({ Name = "Stab Teleport + Follow", Column = 2 }, "Group_StabTeleport")
+StabTeleportGroup:CreateToggle({
+    Name = "Enable Stab Teleport",
+    Tooltip = "On the recognised normal or crouch stab animation, move behind the nearest killer and follow briefly.",
+    CurrentValue = false,
+    Callback = function(v)
+        IntegratedAim.StabAim.teleportEnabled = v == true
+        if not v then IntegratedAim.StabAim.stopTeleport() end
+    end,
+}, "StabTeleport_Enabled")
+StabTeleportGroup:CreateSlider({
+    Name = "Behind Offset (studs)", Range = { 0.5, 6 }, Increment = 0.1,
+    CurrentValue = IntegratedAim.StabAim.behindOffset,
+    Callback = function(v) IntegratedAim.StabAim.behindOffset = math.clamp(tonumber(v) or 1.7, 0.5, 6) end,
+}, "StabTeleport_BehindOffset")
+StabTeleportGroup:CreateSlider({
+    Name = "Teleport Max Range (studs)", Range = { 10, 150 }, Increment = 1,
+    CurrentValue = IntegratedAim.StabAim.teleportRange,
+    Callback = function(v) IntegratedAim.StabAim.teleportRange = math.clamp(tonumber(v) or 60, 10, 150) end,
+}, "StabTeleport_Range")
+StabTeleportGroup:CreateSlider({
+    Name = "Teleport Cooldown (seconds)", Range = { 0.1, 2 }, Increment = 0.05,
+    CurrentValue = IntegratedAim.StabAim.teleportCooldown,
+    Callback = function(v) IntegratedAim.StabAim.teleportCooldown = math.clamp(tonumber(v) or 0.5, 0.1, 2) end,
+}, "StabTeleport_Cooldown")
+StabTeleportGroup:CreateSlider({
+    Name = "Teleport Delay (seconds)", Range = { 0, 0.5 }, Increment = 0.01,
+    CurrentValue = IntegratedAim.StabAim.teleportDelay,
+    Callback = function(v) IntegratedAim.StabAim.teleportDelay = math.clamp(tonumber(v) or 0.02, 0, 0.5) end,
+}, "StabTeleport_Delay")
+StabTeleportGroup:CreateSlider({
+    Name = "Follow Duration (seconds)", Range = { 0.1, 2 }, Increment = 0.05,
+    CurrentValue = IntegratedAim.StabAim.followDuration,
+    Callback = function(v) IntegratedAim.StabAim.followDuration = math.clamp(tonumber(v) or 0.5, 0.1, 2) end,
+}, "StabTeleport_FollowDuration")
+StabTeleportGroup:CreateButton({
+    Name = "Teleport Behind Nearest Killer Now",
+    Tooltip = "Manually run the stab teleport once using the current settings.",
+    Callback = function()
+        local ok = IntegratedAim.StabAim.teleportNow()
+        pcall(function() StarterGui:SetCore("SendNotification", { Title = "Stab Teleport", Text = ok and "Teleport started" or "No valid killer, out of range, or on cooldown", Duration = 3 }) end)
+    end,
+}, "StabTeleport_Manual")
+StabMain:CreateButton({
+    Name = "Reload Stab Animation IDs",
+    Callback = function()
+        if lp.Character then IntegratedAim.reloadStabAim() end
+        pcall(function() StarterGui:SetCore("SendNotification", { Title = "Stab Aim", Text = "Normal and crouch stab animation listeners refreshed", Duration = 4 }) end)
+    end,
+}, "StabAim_Reload")
+StabMain:CreateButton({
+    Name = "Reset Stab Cooldown",
+    Callback = function() IntegratedAim.StabAim.lastTrigger = 0; IntegratedAim.StabAim.activeUntil = 0; IntegratedAim.StabAim.activeTarget = nil end,
+}, "StabAim_Reset")
+
+-- The Auto Punch network callback calls this before sending Punch.
+runAimBeforePunch = function()
+    if punchAimEnabled or Settings.GuestAutoAimEnabled then
+        if snapPunchAim then snapPunchAim(nil, true) end
+    end
+end
 
 -- ============ KILLER PARRY TAB ============
 local KillerParryMain = Tabs.KillerParry:CreateGroupbox({ Name = "Automatic Killer Parry", Column = 1 }, "Group_KillerParry")
@@ -2668,7 +2896,7 @@ local function espDoGenerators(on)
     end
 end
 
-local GenMain = Tabs.Gen:CreateGroupbox({ Name = "Generator ESP", Column = 1 }, "Group_GenMain")
+local GenMain = Tabs.EspMaster:CreateGroupbox({ Name = "Generator ESP", Column = 1 }, "Group_GenMain")
 GenMain:CreateToggle({
     Name = "Generators ESP",
     CurrentValue = false,
@@ -2687,265 +2915,6 @@ Workspace.DescendantRemoving:Connect(function(d)
     if d.Name == "Generator" then espDetachGenerator(d, "esp_g") end
 end)
 
-local function InstallBloodsakenAutoDots()
--- ============ BLOODSAKEN AUTO DOTS PUZZLE ============
--- The supplied source pack contains a FlowGame solution-path solver. This
--- ports that approach into Bloodsaken and adds a dots-only pacing control.
--- Speed 1 targets ~4 seconds for the entire dots board; larger values are slower.
-local AutoDots = {
-    Enabled = false,
-    Speed = 1,
-    Generation = 0,
-    Hooked = false,
-    LastPuzzle = nil,
-    LastUI = nil,
-    FlowModule = nil,
-}
-
-local function autoDotsKey(point)
-    return tostring(point.row) .. "-" .. tostring(point.col)
-end
-
-local function autoDotsOrderPath(path, endpoints)
-    if type(path) ~= "table" or #path < 2 then return path or {} end
-
-    local pointsByKey = {}
-    for _, point in ipairs(path) do
-        if type(point) == "table" and type(point.row) == "number" and type(point.col) == "number" then
-            pointsByKey[autoDotsKey(point)] = { row = point.row, col = point.col }
-        end
-    end
-
-    local startPoint
-    if type(endpoints) == "table" then
-        for _, endpoint in ipairs(endpoints) do
-            if type(endpoint) == "table" then
-                local key = autoDotsKey(endpoint)
-                if pointsByKey[key] then
-                    startPoint = pointsByKey[key]
-                    break
-                end
-            end
-        end
-    end
-
-    local directions = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } }
-    if not startPoint then
-        for _, point in pairs(pointsByKey) do
-            local neighbours = 0
-            for _, direction in ipairs(directions) do
-                local key = tostring(point.row + direction[1]) .. "-" .. tostring(point.col + direction[2])
-                if pointsByKey[key] then neighbours = neighbours + 1 end
-            end
-            if neighbours == 1 then
-                startPoint = point
-                break
-            end
-        end
-    end
-    if not startPoint then return path end
-
-    local ordered, visited = {}, {}
-    local current = startPoint
-    while current do
-        local currentKey = autoDotsKey(current)
-        if visited[currentKey] then break end
-        visited[currentKey] = true
-        table.insert(ordered, { row = current.row, col = current.col })
-
-        local nextPoint
-        for _, direction in ipairs(directions) do
-            local nextKey = tostring(current.row + direction[1]) .. "-" .. tostring(current.col + direction[2])
-            if pointsByKey[nextKey] and not visited[nextKey] then
-                nextPoint = pointsByKey[nextKey]
-                break
-            end
-        end
-        current = nextPoint
-    end
-
-    if #ordered ~= #path then
-        -- Preserve the source path if it is not a single unbranched chain.
-        return path
-    end
-    return ordered
-end
-
-local function autoDotsDirection(fromPoint, toPoint)
-    if not fromPoint or not toPoint then return nil end
-    if toPoint.row < fromPoint.row then return "up" end
-    if toPoint.row > fromPoint.row then return "down" end
-    if toPoint.col < fromPoint.col then return "left" end
-    if toPoint.col > fromPoint.col then return "right" end
-    return nil
-end
-
-local function autoDotsConnections(previous, current, following)
-    local connections = {}
-    if previous then
-        local direction = autoDotsDirection(current, previous)
-        if direction == "up" then direction = "down"
-        elseif direction == "down" then direction = "up"
-        elseif direction == "left" then direction = "right"
-        elseif direction == "right" then direction = "left" end
-        if direction then connections[direction] = true end
-    end
-    if following then
-        local direction = autoDotsDirection(current, following)
-        if direction then connections[direction] = true end
-    end
-    return connections
-end
-
-local function autoDotsStillValid(generation, ui)
-    return AutoDots.Enabled
-        and AutoDots.Generation == generation
-        and ui ~= nil
-        and ui.Parent ~= nil
-        and PlayerGui:FindFirstChild("PuzzleUI") ~= nil
-end
-
-local function autoDotsSolve(puzzle, ui)
-    if not AutoDots.Enabled or not puzzle or type(puzzle.Solution) ~= "table" then return end
-    if not ui or not ui.Parent or not PlayerGui:FindFirstChild("PuzzleUI") then return end
-
-    AutoDots.Generation = AutoDots.Generation + 1
-    local generation = AutoDots.Generation
-    AutoDots.LastPuzzle = puzzle
-    AutoDots.LastUI = ui
-
-    local pathsByColour = {}
-    local totalSteps = 0
-    for colour, path in pairs(puzzle.Solution) do
-        local ordered = autoDotsOrderPath(path, puzzle.targetPairs and puzzle.targetPairs[colour])
-        if type(ordered) == "table" and #ordered > 0 then
-            pathsByColour[colour] = ordered
-            totalSteps = totalSteps + #ordered
-        end
-    end
-    if totalSteps <= 0 then return end
-
-    -- Speed 1 = approximately 4 seconds for all dot paths combined.
-    -- Speed 2 = 8s, Speed 3 = 12s, etc. This pacing is used only here.
-    local targetDuration = 4 * math.max(1, tonumber(AutoDots.Speed) or 1)
-    local stepDelay = targetDuration / totalSteps
-    local colourOrder = {}
-    for colour in pairs(pathsByColour) do table.insert(colourOrder, colour) end
-    table.sort(colourOrder, function(a, b) return tostring(a) < tostring(b) end)
-
-    task.spawn(function()
-        puzzle.paths = puzzle.paths or {}
-        puzzle.gridConnections = puzzle.gridConnections or {}
-
-        for _, colour in ipairs(colourOrder) do
-            if not autoDotsStillValid(generation, ui) then return end
-            local path = pathsByColour[colour]
-            puzzle.paths[colour] = {}
-
-            for index, point in ipairs(path) do
-                if not autoDotsStillValid(generation, ui) then return end
-                table.insert(puzzle.paths[colour], { row = point.row, col = point.col })
-                puzzle.gridConnections[autoDotsKey(point)] = autoDotsConnections(path[index - 1], point, path[index + 1])
-
-                local ok, err = pcall(function() puzzle:updateGui() end)
-                if not ok then
-                    warn("[Bloodsaken Auto Dots] updateGui failed: " .. tostring(err))
-                    return
-                end
-                task.wait(stepDelay)
-            end
-
-            if not autoDotsStillValid(generation, ui) then return end
-            local ok, err = pcall(function() puzzle:checkForWin() end)
-            if not ok then
-                warn("[Bloodsaken Auto Dots] checkForWin failed: " .. tostring(err))
-                return
-            end
-        end
-    end)
-end
-
-local function autoDotsSetEnabled(state)
-    AutoDots.Enabled = state == true
-    AutoDots.Generation = AutoDots.Generation + 1
-    if AutoDots.Enabled and AutoDots.LastPuzzle and AutoDots.LastUI then
-        autoDotsSolve(AutoDots.LastPuzzle, AutoDots.LastUI)
-    end
-end
-
-local AutoDotsGroup = Tabs.Gen:CreateGroupbox({ Name = "Auto Generator (Dots)", Column = 2 }, "Group_AutoDots")
-AutoDotsGroup:CreateToggle({
-    Name = "Auto Dots Puzzle",
-    CurrentValue = false,
-    Tooltip = "Automatically solves the FlowGame wire/dots puzzle. Gear and skill-check minigames are not automated by this solver.",
-    Callback = autoDotsSetEnabled,
-}, "AutoDotsPuzzle")
-AutoDotsGroup:CreateSlider({
-    Name = "Dots Puzzle Speed",
-    CurrentValue = 1,
-    Range = { 1, 5 },
-    Increment = 1,
-    Tooltip = "1 targets about 4 seconds for the full dots puzzle. Higher values are slower. Only affects dots/wires.",
-    Callback = function(value)
-        AutoDots.Speed = math.clamp(math.floor((tonumber(value) or 1) + 0.5), 1, 5)
-    end,
-}, "AutoDotsSpeed")
-
--- Hook only the FlowGame module used by the wire/dots puzzle. Other minigames
--- (gear and timing/lock puzzles) are deliberately left untouched.
-task.spawn(function()
-    local module = ReplicatedStorage:FindFirstChild("FlowGame", true)
-    if not module then
-        local started = tick()
-        repeat
-            task.wait(0.25)
-            module = ReplicatedStorage:FindFirstChild("FlowGame", true)
-        until module or tick() - started > 20
-    end
-    if not module or not module:IsA("ModuleScript") then
-        warn("[Bloodsaken Auto Dots] FlowGame module was not found; dots automation unavailable")
-        return
-    end
-
-    local ok, api = pcall(require, module)
-    if not ok or type(api) ~= "table" or type(api.new) ~= "function" then
-        warn("[Bloodsaken Auto Dots] Could not load FlowGame.new")
-        return
-    end
-    if AutoDots.Hooked then return end
-
-    local originalNew = api.new
-    local wrappedOk = pcall(function()
-        api.new = function(...)
-            local args = table.pack(...)
-            local puzzle = originalNew(table.unpack(args, 1, args.n))
-            local gridSize = args[2]
-            local ui = args[1]
-            if type(gridSize) == "number" or gridSize == nil then
-                AutoDots.LastPuzzle = puzzle
-                AutoDots.LastUI = ui
-                if AutoDots.Enabled then
-                    task.delay(0.35, function()
-                        if AutoDots.Enabled then autoDotsSolve(puzzle, ui) end
-                    end)
-                end
-            end
-            return puzzle
-        end
-    end)
-
-    if wrappedOk then
-        AutoDots.Hooked = true
-        AutoDots.FlowModule = module
-        print("[Bloodsaken Auto Dots] FlowGame hook installed")
-    else
-        warn("[Bloodsaken Auto Dots] Could not hook FlowGame.new")
-    end
-end)
-
-end
-
-InstallBloodsakenAutoDots()
 
 -- ============ STAMINA ============
 -- The original UI referenced these values/functions without defining them.
