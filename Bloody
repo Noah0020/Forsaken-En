@@ -1,7 +1,7 @@
 --[[
     CR4ZY HUB — OBSIDIAN UI
     Crimson Edition
-    Silent Aim freeze-fixed
+    Silent Aim lightweight + round-start freeze fixes
 ]]
 
 local Players             = game:GetService("Players")
@@ -379,10 +379,17 @@ local function AB_UpdateVisual(model, hrp)
     end
 end
 
-RunService.RenderStepped:Connect(function()
+-- AB visual loop (throttled to 6 Hz when AB is off, full speed when on)
+local abVisualAccum = 0
+RunService.RenderStepped:Connect(function(dt)
     if not Settings.AB_ShowZone then
         for m in pairs(AB.visual) do AB_RemoveVisual(m) end
         return
+    end
+    if not AB.running then
+        abVisualAccum = abVisualAccum + (dt or 0)
+        if abVisualAccum < 0.15 then return end
+        abVisualAccum = 0
     end
     local kf = GetKillersFolder()
     if kf then
@@ -755,6 +762,9 @@ local function Aim_SetupHook()
     local ok = pcall(function()
         local old
         old = hookmetamethod(game, "__namecall", function(self, ...)
+            -- Early bail: this hook fires on EVERY namecall in the game.
+            -- Must be near-free when SurvivorAim is off.
+            if not Settings.AIM_Enabled then return old(self, ...) end
             if getnamecallmethod() == "FireServer" and self == NetworkEvent then
                 local args = {...}
                 if args[1] == "UseActorAbility" then
@@ -848,50 +858,80 @@ local function ES_Clear(model)
     local h = ESP_HL[model]
     if h then pcall(function() h:Destroy() end); ESP_HL[model] = nil end
 end
+
+-- ESP loop — skips entirely when nothing is enabled; item scan throttled.
 task.spawn(function()
+    local lastItemScan = 0
+    local ITEM_SCAN_INTERVAL = 2
     while true do
         task.wait(0.35)
+
+        local anyPlayerESP = Settings.ESP_Killer or Settings.ESP_Survivor
+        local anyItemESP   = Settings.ESP_Generator or Settings.ESP_Medkit or Settings.ESP_Bloxy
+
+        if not anyPlayerESP and not anyItemESP then
+            if next(ESP_HL) then
+                for m in pairs(ESP_HL) do ES_Clear(m) end
+            end
+            continue
+        end
+
         local seen = {}
         local pf = Workspace:FindFirstChild("Players")
-        if pf then
-            local kf = pf:FindFirstChild("Killers")
-            if kf and Settings.ESP_Killer then
-                for _, k in ipairs(kf:GetChildren()) do
-                    local hrp = k:FindFirstChild("HumanoidRootPart")
-                    if hrp and LocalRoot and (hrp.Position - LocalRoot.Position).Magnitude <= Settings.ESP_MaxDist and ES_Visible(hrp) then
-                        seen[k] = true; ES_Apply(k, Color3.fromRGB(255,0,0))
+
+        if anyPlayerESP and pf then
+            if Settings.ESP_Killer then
+                local kf = pf:FindFirstChild("Killers")
+                if kf then
+                    for _, k in ipairs(kf:GetChildren()) do
+                        local hrp = k:FindFirstChild("HumanoidRootPart")
+                        if hrp and LocalRoot and (hrp.Position - LocalRoot.Position).Magnitude <= Settings.ESP_MaxDist and ES_Visible(hrp) then
+                            seen[k] = true; ES_Apply(k, Color3.fromRGB(255,0,0))
+                        end
                     end
                 end
             end
-            local sf = pf:FindFirstChild("Survivors")
-            if sf and Settings.ESP_Survivor then
-                for _, s in ipairs(sf:GetChildren()) do
-                    if s ~= LocalCharacter then
-                        local hrp = s:FindFirstChild("HumanoidRootPart")
-                        if hrp and LocalRoot and (hrp.Position - LocalRoot.Position).Magnitude <= Settings.ESP_MaxDist and ES_Visible(hrp) then
-                            seen[s] = true; ES_Apply(s, Color3.fromRGB(0,255,0))
+            if Settings.ESP_Survivor then
+                local sf = pf:FindFirstChild("Survivors")
+                if sf then
+                    for _, s in ipairs(sf:GetChildren()) do
+                        if s ~= LocalCharacter then
+                            local hrp = s:FindFirstChild("HumanoidRootPart")
+                            if hrp and LocalRoot and (hrp.Position - LocalRoot.Position).Magnitude <= Settings.ESP_MaxDist and ES_Visible(hrp) then
+                                seen[s] = true; ES_Apply(s, Color3.fromRGB(0,255,0))
+                            end
                         end
                     end
                 end
             end
         end
-        for _, obj in ipairs(Workspace:GetDescendants()) do
-            if obj:IsA("BasePart") or obj:IsA("Model") then
-                local n = obj.Name
-                local color
-                if Settings.ESP_Generator and n == "Generator" then color = Color3.fromRGB(255,255,0)
-                elseif Settings.ESP_Medkit and n == "Medkit" then color = Color3.fromRGB(255,105,180)
-                elseif Settings.ESP_Bloxy and n == "BloxyCola" then color = Color3.fromRGB(0,150,255) end
-                if color and not ESP_HL[obj] then
-                    local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart")
-                    if part and LocalRoot and (part.Position - LocalRoot.Position).Magnitude <= Settings.ESP_MaxDist and ES_Visible(part) then
+
+        local now = os.clock()
+        if anyItemESP and (now - lastItemScan) >= ITEM_SCAN_INTERVAL then
+            lastItemScan = now
+            for _, obj in ipairs(Workspace:GetDescendants()) do
+                if obj:IsA("BasePart") or obj:IsA("Model") then
+                    local n = obj.Name
+                    local color
+                    if Settings.ESP_Generator and n == "Generator" then color = Color3.fromRGB(255,255,0)
+                    elseif Settings.ESP_Medkit and n == "Medkit" then color = Color3.fromRGB(255,105,180)
+                    elseif Settings.ESP_Bloxy and n == "BloxyCola" then color = Color3.fromRGB(0,150,255) end
+                    if color and not ESP_HL[obj] then
+                        local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart")
+                        if part and LocalRoot and (part.Position - LocalRoot.Position).Magnitude <= Settings.ESP_MaxDist and ES_Visible(part) then
+                            seen[obj] = true; ES_Apply(obj, color)
+                        end
+                    elseif color and ESP_HL[obj] then
                         seen[obj] = true; ES_Apply(obj, color)
                     end
-                elseif color and ESP_HL[obj] then
-                    seen[obj] = true; ES_Apply(obj, color)
                 end
             end
+        else
+            for m in pairs(ESP_HL) do
+                if m and m.Parent then seen[m] = true end
+            end
         end
+
         for m in pairs(ESP_HL) do if not seen[m] or not m.Parent then ES_Clear(m) end end
     end
 end)
@@ -1428,9 +1468,11 @@ local function Vee_SkateControl(on)
         end)
     end
 end
+
+-- Use cached modules on respawn — NO getgc(true) on round start.
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(2)
-    if Vee.CustomStats then pcall(function() Vee_ApplyStats(true) end) end
+    if Vee.CustomStats then pcall(function() Vee_ApplyStats() end) end
 end)
 
 --═══════════════════════════════════════════════════════════════════
@@ -1604,7 +1646,7 @@ local function HBE_ApplyVelocity()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- SILENT AIM (freeze-fixed)
+-- SILENT AIM — Ultra Lightweight
 --═══════════════════════════════════════════════════════════════════
 local SilentAim = {
     Enabled = false,
@@ -1612,26 +1654,95 @@ local SilentAim = {
     LeadTime = 0.15,
     UseMouseHook = true,
     _installed = false,
-    _mouseHookOk = false,
+    _armedUntil = 0,
+    _target = nil,
     _velCache = setmetatable({}, {__mode="k"}),
-    _busy = false,
-    _lastCompute = 0,
-    _activeUntil = 0,
+    _charName = "",
+    _lastCharRef = nil,
 }
 
-local SA_COMPUTE_INTERVAL = 0.05
-local SA_ACTIVE_WINDOW    = 0.15
-
-local SA_PingCache = 0
+local SA_PING = 0
 task.spawn(function()
-    while true do
-        pcall(function() SA_PingCache = LocalPlayer:GetNetworkPing() or 0 end)
-        task.wait(1)
+    while task.wait(2) do
+        pcall(function() SA_PING = LocalPlayer:GetNetworkPing() or 0 end)
     end
 end)
 
-local function SA_Arm() SilentAim._activeUntil = os.clock() + SA_ACTIVE_WINDOW end
-local function SA_IsArmed() return os.clock() < SilentAim._activeUntil end
+local function SA_CharName()
+    local c = LocalPlayer.Character
+    if not c then return "" end
+    if SilentAim._lastCharRef == c then return SilentAim._charName end
+    SilentAim._lastCharRef = c
+    SilentAim._charName = c:GetAttribute("CharacterName") or c.Name or ""
+    return SilentAim._charName
+end
+
+local function SA_ShouldArm()
+    if not SilentAim.Enabled then return false end
+    local sel = SilentAim.Selected
+    if type(sel) ~= "table" then return false end
+    local cn = SA_CharName()
+    if cn == "Noli"      then return sel["Void Star"]      == true end
+    if cn == "c00lkidd"  then return sel["Corrupt Nature"] == true end
+    if cn == "Sixer"     then return sel["Infernal Cry"]   == true end
+    if cn == "Nosferatu" then return sel["Hunter's Feast"] == true end
+    if cn == "JaneDoe"   then return sel["Crystal Pitch"]  == true end
+    if cn == "Dusekkar"  then return sel["Plasma Beam"]    == true end
+    return false
+end
+
+local function SA_SmoothVel(part)
+    local now = os.clock()
+    local ok, v = pcall(function() return part.AssemblyLinearVelocity end)
+    if not ok or not v or v.Magnitude > 120 then return Vector3.zero end
+    local c = SilentAim._velCache[part]
+    if not c then SilentAim._velCache[part] = {t=now, v=v}; return v end
+    c.v = c.v:Lerp(v, math.clamp(1 - math.exp(-math.max(now - c.t, 0.001) * 12), 0, 1))
+    c.t = now
+    return c.v
+end
+
+local function SA_FindTarget(nearest)
+    local sf = GetSurvivorsFolder()
+    if not sf then return nil end
+    local best, bd = nil, math.huge
+    local origin = (LocalRoot and LocalRoot.Position) or Vector3.zero
+    for _, m in ipairs(sf:GetChildren()) do
+        local hrp = m:FindFirstChild("HumanoidRootPart")
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then
+            if nearest then
+                local d = (hrp.Position - origin).Magnitude
+                if d < bd then bd = d; best = m end
+            else
+                return m
+            end
+        end
+    end
+    return best
+end
+
+local function SA_ComputeTarget()
+    local cn = SA_CharName()
+    local target = nil
+    if cn == "Noli"      then target = SA_FindTarget(true)
+    elseif cn == "c00lkidd"  then target = SA_FindTarget(true)
+    elseif cn == "Sixer"     then target = SA_FindTarget(true)
+    elseif cn == "Nosferatu" then target = SA_FindTarget(true)
+    elseif cn == "JaneDoe"   then target = SA_FindTarget(false)
+    elseif cn == "Dusekkar"  then target = SA_FindTarget(false)
+    end
+    if not target then return nil end
+    local hrp = target:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local lead = SilentAim.LeadTime + SA_PING * 0.5
+    return hrp.Position + SA_SmoothVel(hrp) * lead
+end
+
+local function SA_Arm()
+    SilentAim._armedUntil = os.clock() + 0.10
+    SilentAim._target = nil
+end
 
 local function SA_NormalizeSelected(v)
     local out = {}
@@ -1646,81 +1757,6 @@ local function SA_NormalizeSelected(v)
     return out
 end
 
-local function SA_SmoothVel(part)
-    if not part or not part.Parent then return Vector3.zero end
-    local now = os.clock()
-    local ok, v = pcall(function() return part.AssemblyLinearVelocity end)
-    if not ok or not v then return Vector3.zero end
-    if v.Magnitude > 120 then v = Vector3.zero end
-    local c = SilentAim._velCache[part]
-    if not c then SilentAim._velCache[part] = {t=now, v=v}; return v end
-    c.v = c.v:Lerp(v, math.clamp(1 - math.exp(-math.max(now - c.t, 0.001) * 12), 0, 1))
-    c.t = now
-    return c.v
-end
-
-local function SA_GetFirstSurvivor()
-    local sf = GetSurvivorsFolder(); if not sf then return nil end
-    for _, m in ipairs(sf:GetChildren()) do
-        local ok, hrp = pcall(function() return m:FindFirstChild("HumanoidRootPart") end)
-        local hum = m:FindFirstChildOfClass("Humanoid")
-        if ok and hrp and hum and hum.Health > 0 then return m end
-    end
-    return nil
-end
-
-local function SA_GetNearestSurvivor(origin)
-    local sf = GetSurvivorsFolder(); if not sf then return nil end
-    local best, bd = nil, math.huge
-    for _, m in ipairs(sf:GetChildren()) do
-        local ok, hrp = pcall(function() return m:FindFirstChild("HumanoidRootPart") end)
-        local hum = m:FindFirstChildOfClass("Humanoid")
-        if ok and hrp and hum and hum.Health > 0 then
-            local d = (hrp.Position - origin).Magnitude
-            if d < bd then bd = d; best = m end
-        end
-    end
-    return best
-end
-
-local function SA_Predict(target)
-    if not target or not target.Parent then return nil end
-    local ok, hrp = pcall(function() return target:FindFirstChild("HumanoidRootPart") end)
-    if not ok or not hrp then return nil end
-    local lead = SilentAim.LeadTime + SA_PingCache * 0.5
-    local ok2, pos = pcall(function() return hrp.Position + SA_SmoothVel(hrp) * lead end)
-    return ok2 and pos or nil
-end
-
-local function SA_CheckAbility(name)
-    if not SilentAim.Enabled then return false end
-    local sel = SilentAim.Selected
-    if type(sel) ~= "table" then return false end
-    return sel[name] == true
-end
-
-local function SA_GetPlayerCharName()
-    local c = LocalPlayer.Character
-    if not c then return "" end
-    local ok, attr = pcall(function() return c:GetAttribute("CharacterName") end)
-    return (ok and attr) or c.Name or ""
-end
-
-local function SA_ResolveTarget()
-    local char = LocalPlayer.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return nil end
-    local originPos = root.Position
-    local cn = SA_GetPlayerCharName()
-    if cn == "Noli"       and SA_CheckAbility("Void Star")      then return SA_Predict(SA_GetNearestSurvivor(originPos)) end
-    if cn == "c00lkidd"   and SA_CheckAbility("Corrupt Nature") then return SA_Predict(SA_GetNearestSurvivor(originPos)) end
-    if cn == "Sixer"      and SA_CheckAbility("Infernal Cry")   then return SA_Predict(SA_GetNearestSurvivor(originPos)) end
-    if cn == "Nosferatu"  and SA_CheckAbility("Hunter's Feast") then return SA_Predict(SA_GetNearestSurvivor(originPos)) end
-    if cn == "JaneDoe"    and SA_CheckAbility("Crystal Pitch")  then return SA_Predict(SA_GetFirstSurvivor()) end
-    if cn == "Dusekkar"   and SA_CheckAbility("Plasma Beam")    then return SA_Predict(SA_GetFirstSurvivor()) end
-    return nil
-end
-
 local function SA_Install()
     if SilentAim._installed then return end
     if not hookfunction then return end
@@ -1730,21 +1766,18 @@ local function SA_Install()
         local orig = mod.GetMousePos
         if type(orig) ~= "function" then return end
         hookfunction(orig, function(...)
-            if not SilentAim.Enabled or not SilentAim.UseMouseHook or SilentAim._busy then
+            if not SilentAim.Enabled
+               or not SilentAim.UseMouseHook
+               or os.clock() > SilentAim._armedUntil then
                 return orig(...)
             end
-            local now = os.clock()
-            if not SA_IsArmed() and (now - SilentAim._lastCompute) < SA_COMPUTE_INTERVAL then
-                return orig(...)
+            if SilentAim._target == nil then
+                local ok, t = pcall(SA_ComputeTarget)
+                SilentAim._target = ok and t or false
             end
-            SilentAim._lastCompute = now
-            SilentAim._busy = true
-            local okCall, result = pcall(SA_ResolveTarget)
-            SilentAim._busy = false
-            if okCall and typeof(result) == "Vector3" then return result end
+            if SilentAim._target then return SilentAim._target end
             return orig(...)
         end)
-        SilentAim._mouseHookOk = true
     end)
 
     local ok2 = pcall(function()
@@ -1752,31 +1785,21 @@ local function SA_Install()
         local orig = Network.FireServerConnection
         if type(orig) ~= "function" then return end
         hookfunction(orig, function(self, name, evt, ...)
-            if SilentAim.Enabled then
-                pcall(function()
-                    if evt == "UREMOTE_EVENT" and type(name) == "string" then
-                        local l = name:lower()
-                        if l:find("ability", 1, true) or l:find("slash", 1, true)
-                           or l:find("shoot", 1, true) or l:find("cast", 1, true)
-                           or l:find("star", 1, true) then
-                            SA_Arm()
-                        end
-                    end
-                end)
-                if name == LocalPlayer.Name .. "AzureUpdateCameraLookVector"
-                   and evt == "UREMOTE_EVENT"
-                   and SA_CheckAbility("Tentacles (Grab)") then
-                    local args = table.pack(...)
-                    if typeof(args[1]) == "Vector3" then
-                        local ok3, pp = pcall(function()
-                            local char = LocalPlayer.Character
-                            local root = char and char:FindFirstChild("HumanoidRootPart")
-                            return SA_Predict(SA_GetNearestSurvivor(root and root.Position or Vector3.zero))
-                        end)
-                        if ok3 and pp then args[1] = pp end
-                    end
-                    return orig(self, name, evt, table.unpack(args, 1, args.n))
+            if not SilentAim.Enabled or evt ~= "UREMOTE_EVENT" or type(name) ~= "string" then
+                return orig(self, name, evt, ...)
+            end
+            if name == LocalPlayer.Name .. "AzureUpdateCameraLookVector"
+               and SilentAim.Selected["Tentacles (Grab)"] then
+                local args = table.pack(...)
+                if typeof(args[1]) == "Vector3" then
+                    local ok, pp = pcall(SA_ComputeTarget)
+                    if ok and pp then args[1] = pp end
                 end
+                return orig(self, name, evt, table.unpack(args, 1, args.n))
+            end
+            local l = name:lower()
+            if (l:find("ability", 1, true) or l:find("actor", 1, true)) and SA_ShouldArm() then
+                SA_Arm()
             end
             return orig(self, name, evt, ...)
         end)
@@ -1789,7 +1812,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed or not SilentAim.Enabled then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1
        or input.UserInputType == Enum.UserInputType.Touch then
-        SA_Arm()
+        if SA_ShouldArm() then SA_Arm() end
     end
 end)
 
@@ -2093,8 +2116,8 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Crimson Edition — Silent Aim freeze-fixed",
+    Content = "Crimson Edition — Silent Aim lightweight, round-start fixed",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — Obsidian UI, Silent Aim fixed.")
+print("[Cr4zy HuB] Loaded — Silent Aim ultra-lightweight, all round-start freezes patched.")
