@@ -1,21 +1,11 @@
 --[[
-    GODSAKEN UNIFIED v2.4 — REDLINE + MERGED
-    Fixes:
-      - Survivor Auto Aim: prediction now uses velocity only
-      - HDT: uses internal HDT.Speed/Duration/Delay synced from Settings
-    New in v2.3:
-      - Vee (Veeronica) full option suite
-      - Hitbox Expander (Killer tab)
-      - Silent Aim (Survivor tab)
-      - Normal Aim (dedicated tab, formerly "Manual Aim")
-      - Obsidian logo updated
-    v2.4 — Auto Trick rewritten (button-based, matches Cursedsaken) + bug fixes:
-      - AntiRebound: gated by toggle + re-installable
-      - UnlimitedSk8 / Sk8Everywhere: cached module, InZone reset on disable
-      - SilentAim: _installed only set after hooks succeed
-      - HitboxExpander: force-clears _running on disable
-      - NormalAim: removed no-op camera from ray filter
-      - Unload: full Vee/VeerState/HBE/SA teardown
+    GODSAKEN UNIFIED v2.5 — REDLINE + MERGED
+    v2.5 changes:
+      - Vee simplified: only Auto Trick, Skate Control, Custom Stats
+      - Stat Change: robust multi-path module resolver + respawn/loop reapply
+      - Auto Trick: tightened trigger (per-connection fallback)
+      - Icon: rbxassetid:// prefix removed
+      - Removed: AntiRebound / UnlimitedSk8 / AutoFarmSk8 / Sk8Everywhere / AutoPhase
 ]]
 
 local Players             = game:GetService("Players")
@@ -935,7 +925,7 @@ local function ES_Visible(part)
     if not cam or not part then return true end
     local p = RaycastParams.new()
     p.FilterType = Enum.RaycastFilterType.Exclude
-    p.FilterDescendantsInstances = { LocalPlayer.Character, cam }
+    p.FilterDescendantsInstances = { LocalPlayer.Character }
     local res = Workspace:Raycast(cam.CFrame.Position, part.Position - cam.CFrame.Position, p)
     if not res then return true end
     return res.Instance:IsDescendantOf(part.Parent)
@@ -1501,73 +1491,127 @@ local function GS_Disable()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- VEE (VEERONICA)
+-- VEE (simplified: Auto Trick, Skate Control, Custom Stats)
 --═══════════════════════════════════════════════════════════════════
 local Vee = {
-    AutoTrick=false, SkateControl=false, AntiRebound=false,
-    UnlimitedSk8=false, AutoFarmSk8=false, CustomStats=false,
-    Sk8Speed=1.15, Sk8TrickAirborneSpeed=1.42, Sk8BumpPower=11.9,
-    Sk8TrickStamina=4, Sk8TrickCooldown=1,
-    Sk8Everywhere=false, AutoPhase=false,
-    _conns={}, _threads={}, _util=nil
+    AutoTrick = false,
+    SkateControl = false,
+    CustomStats = false,
+    Sk8Speed = 1.15,
+    Sk8TrickAirborneSpeed = 1.42,
+    Sk8BumpPower = 11.9,
+    Sk8TrickStamina = 4,
+    Sk8TrickCooldown = 1,
 }
+local Vee_StatsLoop = true
 
-local function Vee_GetModule()
-    local ok, m = pcall(function()
-        return require(ReplicatedStorage.Assets.Survivors.Veeronica.Behavior)
-    end)
-    return ok and m or nil
+local function Vee_GetBehaviorFolder()
+    local a = ReplicatedStorage:FindFirstChild("Assets"); if not a then return nil end
+    local s = a:FindFirstChild("Survivors"); if not s then return nil end
+    return s:FindFirstChild("Veeronica")
 end
 
-local function Vee_SetStat(key, val)
-    local module = Vee_GetModule()
-    if module then module[key] = val end
-    pcall(function()
-        if not getgc then return end
-        for _, v in pairs(getgc(true)) do
-            if type(v) == "table" and rawget(v, "DisplayName") == "Veeronica" then
-                v[key] = val
+local function Vee_CollectModules()
+    local out, seen = {}, {}
+    local vee = Vee_GetBehaviorFolder()
+    if vee then
+        local try = { vee:FindFirstChild("Behavior"), vee:FindFirstChild("Config"), vee }
+        for _, p in ipairs(try) do
+            if p and p:IsA("ModuleScript") then
+                local ok, m = pcall(function() return require(p) end)
+                if ok and type(m) == "table" and not seen[m] then
+                    seen[m] = true
+                    table.insert(out, m)
+                end
             end
         end
-    end)
+    end
+    if getgc then
+        pcall(function()
+            for _, t in pairs(getgc(true)) do
+                if type(t) == "table" and not seen[t] then
+                    if rawget(t, "DisplayName") == "Veeronica" then
+                        seen[t] = true
+                        table.insert(out, t)
+                    end
+                end
+            end
+        end)
+    end
+    return out
 end
 
-local function Vee_ApplyStats()
-    local module = Vee_GetModule()
-    if not module then return end
+local function Vee_SetAll(key, val)
+    local mods = Vee_CollectModules()
+    for _, m in ipairs(mods) do
+        pcall(function() m[key] = val end)
+        pcall(function() rawset(m, key, val) end)
+    end
+end
+
+local _veeLastApply = 0
+local function Vee_ApplyStats(force)
+    local now = os.clock()
+    if not force and now - _veeLastApply < 0.2 then return end
+    _veeLastApply = now
     if Vee.CustomStats then
-        Vee_SetStat("Sk8Speed", Vee.Sk8Speed)
-        Vee_SetStat("Sk8SpeedExhaust", Vee.Sk8Speed)
-        Vee_SetStat("Sk8TrickAirborneSpeed", Vee.Sk8TrickAirborneSpeed)
-        Vee_SetStat("Sk8BumpPower", Vee.Sk8BumpPower)
-        Vee_SetStat("Sk8BumpChargedPower", Vee.Sk8BumpPower + 3.1)
-        Vee_SetStat("Sk8TrickStamina", Vee.Sk8TrickStamina)
-        Vee_SetStat("Sk8TrickStaminaNerfed", Vee.Sk8TrickStamina)
-        Vee_SetStat("Sk8TrickCooldown", Vee.Sk8TrickCooldown)
+        Vee_SetAll("Sk8Speed", Vee.Sk8Speed)
+        Vee_SetAll("Sk8SpeedExhaust", Vee.Sk8Speed)
+        Vee_SetAll("Sk8TrickAirborneSpeed", Vee.Sk8TrickAirborneSpeed)
+        Vee_SetAll("Sk8BumpPower", Vee.Sk8BumpPower)
+        Vee_SetAll("Sk8BumpChargedPower", Vee.Sk8BumpPower + 3.1)
+        Vee_SetAll("Sk8TrickStamina", Vee.Sk8TrickStamina)
+        Vee_SetAll("Sk8TrickStaminaNerfed", Vee.Sk8TrickStamina)
+        Vee_SetAll("Sk8TrickCooldown", Vee.Sk8TrickCooldown)
     else
-        Vee_SetStat("Sk8Speed", 1.15); Vee_SetStat("Sk8SpeedExhaust", 1.15)
-        Vee_SetStat("Sk8TrickAirborneSpeed", 1.42); Vee_SetStat("Sk8BumpPower", 11.9)
-        Vee_SetStat("Sk8BumpChargedPower", 15)
-        Vee_SetStat("Sk8TrickStamina", 10); Vee_SetStat("Sk8TrickStaminaNerfed", 4)
-        Vee_SetStat("Sk8TrickCooldown", 1)
+        Vee_SetAll("Sk8Speed", 1.15)
+        Vee_SetAll("Sk8SpeedExhaust", 1.15)
+        Vee_SetAll("Sk8TrickAirborneSpeed", 1.42)
+        Vee_SetAll("Sk8BumpPower", 11.9)
+        Vee_SetAll("Sk8BumpChargedPower", 15)
+        Vee_SetAll("Sk8TrickStamina", 10)
+        Vee_SetAll("Sk8TrickStaminaNerfed", 4)
+        Vee_SetAll("Sk8TrickCooldown", 1)
     end
 end
 
 local function Vee_SkateControl(on)
-    local module = Vee_GetModule()
-    if module then module.Sk8TurnControl = on and 6.5 or 0.65 end
+    local vee = Vee_GetBehaviorFolder()
+    if vee then
+        local p = vee:FindFirstChild("Behavior")
+        if p then
+            local ok, m = pcall(function() return require(p) end)
+            if ok and type(m) == "table" then
+                pcall(function() m.Sk8TurnControl = on and 6.5 or 0.65 end)
+            end
+        end
+    end
     pcall(function()
         if not getgc then return end
         for _, v in pairs(getgc(true)) do
-            if type(v) == "table" and rawget(v, "Sk8TurnControl") then
-                v.Sk8TurnControl = on and 6.5 or 0.65
+            if type(v) == "table" then
+                if rawget(v, "Sk8TurnControl") ~= nil then
+                    pcall(function() v.Sk8TurnControl = on and 6.5 or 0.65 end)
+                end
             end
         end
     end)
 end
 
+-- Keep Stats fresh: re-apply on respawn + background loop
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1.5)
+    if Vee.CustomStats then Vee_ApplyStats(true) end
+end)
+task.spawn(function()
+    while Vee_StatsLoop do
+        task.wait(1)
+        if Vee.CustomStats then pcall(Vee_ApplyStats) end
+    end
+end)
+
 --═══════════════════════════════════════════════════════════════════
--- VEE AUTO TRICK (rewritten — button-based, matches Cursedsaken)
+-- VEE AUTO TRICK (button-based, Cursedsaken-style)
 --═══════════════════════════════════════════════════════════════════
 local VeerState = { atRunning=false, atMonitors={}, atConn=nil, atRetry=nil }
 
@@ -1581,15 +1625,9 @@ local function VeerTriggerSprint()
     pcall(function()
         local btn = VeerGetSprintBtn(); if not btn then return end
         if getconnections and btn.MouseButton1Down then
-            local fired = false
             for _, c in pairs(getconnections(btn.MouseButton1Down)) do
-                local ok = pcall(function()
-                    if c.Fire then c:Fire()
-                    elseif c.Function then c.Function() end
-                end)
-                if ok then fired = true; break end
+                if pcall(function() c.Function() end) then return end
             end
-            if fired then return end
         end
         pcall(function() btn:Activate() end)
         pcall(function()
@@ -1606,10 +1644,8 @@ local function VeerTriggerSprint()
 end
 
 local function VeerATGetFolder()
-    local a = ReplicatedStorage:FindFirstChild("Assets"); if not a then return nil end
-    local s = a:FindFirstChild("Survivors"); if not s then return nil end
-    local v = s:FindFirstChild("Veeronica"); if not v then return nil end
-    return v:FindFirstChild("Behavior")
+    local vee = Vee_GetBehaviorFolder()
+    return vee and vee:FindFirstChild("Behavior")
 end
 
 local function VeerATMonitor(h)
@@ -1663,150 +1699,6 @@ local function VeerATStop()
     if VeerState.atConn then pcall(function() VeerState.atConn:Disconnect() end); VeerState.atConn = nil end
     if VeerState.atRetry then pcall(task.cancel, VeerState.atRetry); VeerState.atRetry = nil end
     VeerState.atMonitors = {}
-end
-
---═══════════════════════════════════════════════════════════════════
--- VEE — Anti Rebound / Unlimited Sk8 / Auto Farm Sk8 / Sk8 Everywhere / Auto Phase
---═══════════════════════════════════════════════════════════════════
-
-local function Vee_RunAntiRebound()
-    if Vee._conns.AntiReboundHook then return end
-    if not hookmetamethod then return end
-    pcall(function()
-        local old
-        old = hookmetamethod(game, "__namecall", function(self, ...)
-            if getnamecallmethod() == "FireServer" and self == NetworkEvent and Vee.AntiRebound then
-                local args = {...}
-                local n = tostring(args[1])
-                if n:find("SkateRebound") then return end
-                if n:find("StopSkate") and type(args[2]) == "table" then
-                    for _, v in ipairs(args[2]) do
-                        if typeof(v) == "Instance" then
-                            NetworkEvent:FireServer(LocalPlayer.Character.Name .. "StopSkate",
-                                { buffer.fromstring("\"Manual\"") })
-                            return
-                        end
-                    end
-                end
-            end
-            return old(self, ...)
-        end)
-    end)
-    Vee._conns.AntiReboundHook = true
-end
-
-local function Vee_RunUnlimitedSk8()
-    if Vee._conns.UnlimitedSk8 then return end
-    local sp
-    pcall(function() sp = require(ReplicatedStorage.Systems.Character.Game.Sprinting) end)
-    if not sp then return end
-    Vee._conns.UnlimitedSk8 = RunService.Heartbeat:Connect(function()
-        if not Vee.UnlimitedSk8 then return end
-        local c = LocalPlayer.Character
-        local hrp = c and c:FindFirstChild("HumanoidRootPart")
-        if not hrp or not hrp:FindFirstChild("SkatePointer") then return end
-        pcall(function() sp.Stamina = sp.MaxStamina end)
-    end)
-end
-
-local function Vee_RunAutoFarmSk8()
-    if Vee._threads.AutoFarmSk8 then pcall(task.cancel, Vee._threads.AutoFarmSk8); Vee._threads.AutoFarmSk8 = nil end
-    if not Vee.AutoFarmSk8 then return end
-    Vee._threads.AutoFarmSk8 = task.spawn(function()
-        while Vee.AutoFarmSk8 do
-            if NetworkEvent then
-                pcall(function() NetworkEvent:FireServer(LocalPlayer.Name .. "SkateTrick", {}) end)
-            end
-            task.wait(0.5)
-        end
-    end)
-end
-
-local function Vee_RunSk8Everywhere(on)
-    if not on then
-        if Vee._threads.Sk8Everywhere then pcall(task.cancel, Vee._threads.Sk8Everywhere); Vee._threads.Sk8Everywhere = nil end
-        local m = Vee_GetModule()
-        if m and m.Abilities and m.Abilities.Sk8 and m.Abilities.Sk8.__orig then
-            m.Abilities.Sk8.Callback = m.Abilities.Sk8.__orig
-            m.Abilities.Sk8.__orig = nil
-            m.Abilities.Sk8.__bypass = nil
-        end
-        if Vee._util then
-            local ok, a = pcall(Vee._util.GetActor, Vee._util, LocalPlayer)
-            if ok and a and a.State then a.State.InZone = false end
-        end
-        return
-    end
-    if Vee._util == nil then
-        local ok, u = pcall(function()
-            return require(ReplicatedStorage.Modules.Utilities.Util)
-        end)
-        Vee._util = ok and u or false
-    end
-    local utilMod = Vee._util or nil
-    local function bypass(t)
-        if type(t) ~= "table" then return end
-        local sk8 = t.Sk8
-        if type(sk8) ~= "table" or sk8.__bypass then return end
-        if type(sk8.Callback) ~= "function" then return end
-        sk8.__orig = sk8.Callback
-        sk8.__bypass = true
-        sk8.Callback = function(a, b) if b == "BAD" then b = nil end return sk8.__orig(a, b) end
-    end
-    local function getActor()
-        if not utilMod or type(utilMod.GetActor) ~= "function" then return nil end
-        local ok, a = pcall(utilMod.GetActor, utilMod, LocalPlayer)
-        return ok and a or nil
-    end
-    bypass((Vee_GetModule() or {}).Abilities)
-    local a = getActor()
-    if a and a.Behavior and a.Behavior.Abilities then bypass(a.Behavior.Abilities) end
-    if a and a.State then a.State.InZone = true end
-    if utilMod then
-        pcall(function() utilMod:ToggleLockForAbilityIcon("Sk8", "NoCharges", false) end)
-    end
-    Vee._threads.Sk8Everywhere = task.spawn(function()
-        while Vee.Sk8Everywhere do
-            task.wait(0.5)
-            bypass((Vee_GetModule() or {}).Abilities)
-            local a2 = getActor()
-            if a2 then
-                if a2.Behavior and a2.Behavior.Abilities then bypass(a2.Behavior.Abilities) end
-                if a2.State then a2.State.InZone = true end
-            end
-            if utilMod then
-                pcall(function() utilMod:ToggleLockForAbilityIcon("Sk8", "NoCharges", false) end)
-            end
-        end
-    end)
-end
-
-local function Vee_RunAutoPhase()
-    if Vee._threads.AutoPhase then pcall(task.cancel, Vee._threads.AutoPhase); Vee._threads.AutoPhase = nil end
-    if not Vee.AutoPhase then return end
-    Vee._threads.AutoPhase = task.spawn(function()
-        local Network
-        pcall(function() Network = require(ReplicatedStorage.Modules.Network.Network) end)
-        while Vee.AutoPhase do
-            task.wait(0.5)
-            if not Network then pcall(function() Network = require(ReplicatedStorage.Modules.Network.Network) end) end
-            local c = LocalPlayer.Character
-            local kf = GetKillersFolder()
-            if Network and c and c.Name == "Veeronica" and kf then
-                for _, k in ipairs(kf:GetChildren()) do
-                    if not Vee.AutoPhase then break end
-                    local h = k:FindFirstChildOfClass("Humanoid")
-                    if h and h.Health > 0 then
-                        pcall(function()
-                            Network:FireServerConnection(LocalPlayer.Name .. "SkatePhase", "REMOTE_EVENT", k)
-                        end)
-                        local m = Vee_GetModule()
-                        task.wait((m and m.Sk8PhaseTime or 3) + 0.6)
-                    end
-                end
-            end
-        end
-    end)
 end
 
 --═══════════════════════════════════════════════════════════════════
@@ -2011,7 +1903,7 @@ local function SA_Install()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- NORMAL AIM (was Manual Aim)
+-- NORMAL AIM
 --═══════════════════════════════════════════════════════════════════
 local NormalAim = {
     Enabled=false, Method="Camera Lock", TargetType="Auto",
@@ -2207,17 +2099,13 @@ _G.Godsaken = {
     Vee = {
         SetAutoTrick     = function(v) Vee.AutoTrick=v; if v then VeerATStart() else VeerATStop() end end,
         SetSkateControl  = function(v) Vee.SkateControl=v; Vee_SkateControl(v) end,
-        SetAntiRebound   = function(v) Vee.AntiRebound=v; if v then Vee_RunAntiRebound() end end,
-        SetUnlimitedSk8  = function(v) Vee.UnlimitedSk8=v; if v then Vee_RunUnlimitedSk8() end end,
-        SetAutoFarmSk8   = function(v) Vee.AutoFarmSk8=v; Vee_RunAutoFarmSk8() end,
-        SetCustomStats   = function(v) Vee.CustomStats=v; Vee_ApplyStats() end,
+        SetCustomStats   = function(v) Vee.CustomStats=v; Vee_ApplyStats(true) end,
         SetSk8Speed      = function(v) Vee.Sk8Speed=tonumber(v) or 1.15; Vee_ApplyStats() end,
         SetTrickSpeed    = function(v) Vee.Sk8TrickAirborneSpeed=tonumber(v) or 1.42; Vee_ApplyStats() end,
         SetBumpPower     = function(v) Vee.Sk8BumpPower=tonumber(v) or 11.9; Vee_ApplyStats() end,
         SetTrickStamina  = function(v) Vee.Sk8TrickStamina=tonumber(v) or 4; Vee_ApplyStats() end,
         SetTrickCooldown = function(v) Vee.Sk8TrickCooldown=tonumber(v) or 1; Vee_ApplyStats() end,
-        SetSk8Everywhere = function(v) Vee.Sk8Everywhere=v; Vee_RunSk8Everywhere(v) end,
-        SetAutoPhase     = function(v) Vee.AutoPhase=v; Vee_RunAutoPhase() end,
+        ForceApply       = function() Vee_ApplyStats(true) end,
     },
     HitboxExpander = {
         Enable  = function()
@@ -2276,11 +2164,11 @@ Library.NotifySide = "Right"
 
 local Window = Library:CreateWindow({
     Title = "C00lsaken",
-    Footer = "REDLINE  |  v2.4",
+    Footer = "REDLINE  |  v2.5",
     ToggleKeybind = Enum.KeyCode.RightControl,
     Center = true, AutoShow = true, Resizable = true,
     ShowCustomCursor = false, MobileButtonsSide = "Right",
-    Icon = "rbxassetid://123123975685239",
+    Icon = "123123975685239",
 })
 
 local Tabs = {
@@ -2459,18 +2347,9 @@ VeeBox:AddToggle("Vee_AutoTrick_T", { Text="Auto Trick", Default=false,
     Callback=function(v) Vee.AutoTrick=v; if v then VeerATStart() else VeerATStop() end end })
 VeeBox:AddToggle("Vee_SkateCtrl_T", { Text="Skate Control", Default=false,
     Callback=function(v) Vee.SkateControl=v; Vee_SkateControl(v) end })
-VeeBox:AddToggle("Vee_AntiReb_T", { Text="Anti Rebound", Default=false,
-    Callback=function(v) Vee.AntiRebound=v; if v then Vee_RunAntiRebound() end end })
-VeeBox:AddToggle("Vee_UnlimSk8_T", { Text="Unlimited Sk8", Default=false,
-    Callback=function(v) Vee.UnlimitedSk8=v; if v then Vee_RunUnlimitedSk8() end end })
-VeeBox:AddToggle("Vee_FarmSk8_T", { Text="Auto Farm Sk8", Default=false,
-    Callback=function(v) Vee.AutoFarmSk8=v; Vee_RunAutoFarmSk8() end })
-VeeBox:AddToggle("Vee_Sk8Every_T", { Text="Sk8 Everywhere (rage/ban)", Default=false,
-    Callback=function(v) Vee.Sk8Everywhere=v; Vee_RunSk8Everywhere(v) end })
-VeeBox:AddToggle("Vee_AutoPhase_T", { Text="Auto Phase", Default=false,
-    Callback=function(v) Vee.AutoPhase=v; Vee_RunAutoPhase() end })
+VeeBox:AddDivider()
 VeeBox:AddToggle("Vee_Custom_T", { Text="Custom Stats", Default=false,
-    Callback=function(v) Vee.CustomStats=v; Vee_ApplyStats() end })
+    Callback=function(v) Vee.CustomStats=v; Vee_ApplyStats(true) end })
 VeeBox:AddSlider("Vee_Speed_S", { Text="Skate Speed", Default=1.15, Min=1, Max=10, Rounding=2,
     Callback=function(v) Vee.Sk8Speed=v; Vee_ApplyStats() end })
 VeeBox:AddSlider("Vee_Trick_S", { Text="Trick Boost Speed", Default=1.42, Min=1, Max=15, Rounding=2,
@@ -2481,6 +2360,12 @@ VeeBox:AddSlider("Vee_Stam_S", { Text="Stamina Per Trick", Default=4, Min=0, Max
     Callback=function(v) Vee.Sk8TrickStamina=v; Vee_ApplyStats() end })
 VeeBox:AddSlider("Vee_CD_S", { Text="Trick Cooldown", Default=1, Min=0, Max=5, Rounding=1,
     Callback=function(v) Vee.Sk8TrickCooldown=v; Vee_ApplyStats() end })
+VeeBox:AddButton({ Text="Force Apply Stats Now",
+    Func=function() Vee_ApplyStats(true)
+        if Library and Library.Notify then
+            Library:Notify({ Title = "Vee", Content = "Stats re-applied", Time = 2 })
+        end
+    end })
 
 --═══════════════════════════════════════════════════════════════════
 -- KILLER TAB
@@ -2672,7 +2557,7 @@ ThemeManager:ApplyToTab(Tabs.Appearance)
 local CB = Tabs.Credits:AddLeftGroupbox("CREDITS")
 CB:AddLabel({ Text = "Coding & Owner: c00lkid / random_dude", DoesWrap = true })
 CB:AddLabel({ Text = "Helpers: Viltrumite & Ivy", DoesWrap = true })
-CB:AddLabel({ Text = "v2.4: Auto Trick rewritten (button-based) + bug fixes", DoesWrap = true })
+CB:AddLabel({ Text = "v2.5: Vee simplified + stat change fixed + icon fix", DoesWrap = true })
 
 ThemeManager:LoadDefault()
 
@@ -2687,23 +2572,8 @@ Library:OnUnload(function()
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
 
-    -- Vee / Auto Trick / VEER cleanup
-    pcall(function()
-        Vee.AutoTrick = false
-        VeerATStop()
-        Vee.AutoFarmSk8 = false
-        Vee.Sk8Everywhere = false
-        Vee.AutoPhase = false
-        for _, t in pairs(Vee._threads) do pcall(task.cancel, t) end
-        Vee._threads = {}
-        for _, c in pairs(Vee._conns) do
-            if typeof(c) == "RBXScriptConnection" then
-                pcall(function() c:Disconnect() end)
-            end
-        end
-        Vee._conns = {}
-        Vee._util = nil
-    end)
+    Vee_StatsLoop = false
+    pcall(function() Vee.AutoTrick = false; VeerATStop() end)
 
     pcall(function()
         HitboxExpander.Enabled = false
@@ -2714,9 +2584,9 @@ Library:OnUnload(function()
 end)
 
 Library:Notify({
-    Title = "C00lsaken v2.4",
-    Description = "Auto Trick rewritten + bug fixes across Vee / Silent Aim / HBE / Normal Aim",
+    Title = "C00lsaken v2.5",
+    Description = "Vee simplified + stat change fixed + icon fix",
     Time = 4,
 })
 
-print("[C00lsaken v2.4] Loaded — Auto Trick button-based, all known bugs fixed.")
+print("[C00lsaken v2.5] Loaded — Vee simplified (Auto Trick / Skate Control / Custom Stats only).")
