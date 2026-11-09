@@ -1,11 +1,9 @@
 --[[
-    GODSAKEN UNIFIED v2.5 — REDLINE + MERGED
-    v2.5 changes:
-      - Vee simplified: only Auto Trick, Skate Control, Custom Stats
-      - Stat Change: robust multi-path module resolver + respawn/loop reapply
-      - Auto Trick: tightened trigger (per-connection fallback)
-      - Icon: rbxassetid:// prefix removed
-      - Removed: AntiRebound / UnlimitedSk8 / AutoFarmSk8 / Sk8Everywhere / AutoPhase
+    GODSAKEN UNIFIED v2.6 — REDLINE + MERGED
+    v2.6 changes:
+      - Vee stat change NO LONGER FREEZES (getgc cached, loop removed)
+      - Icon fixed: "123123975685239" (no rbxassetid:// prefix)
+      - Vee simplified: Auto Trick / Skate Control / Custom Stats only
 ]]
 
 local Players             = game:GetService("Players")
@@ -1491,7 +1489,7 @@ local function GS_Disable()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- VEE (simplified: Auto Trick, Skate Control, Custom Stats)
+-- VEE — CACHED STAT SYSTEM (v2.6 — no freeze)
 --═══════════════════════════════════════════════════════════════════
 local Vee = {
     AutoTrick = false,
@@ -1502,8 +1500,9 @@ local Vee = {
     Sk8BumpPower = 11.9,
     Sk8TrickStamina = 4,
     Sk8TrickCooldown = 1,
+    _moduleCache = nil,     -- nil = not scanned yet
+    _behaviorModule = nil,  -- cached require result
 }
-local Vee_StatsLoop = true
 
 local function Vee_GetBehaviorFolder()
     local a = ReplicatedStorage:FindFirstChild("Assets"); if not a then return nil end
@@ -1511,21 +1510,40 @@ local function Vee_GetBehaviorFolder()
     return s:FindFirstChild("Veeronica")
 end
 
+local function Vee_GetBehaviorModule()
+    if Vee._behaviorModule then return Vee._behaviorModule end
+    local folder = Vee_GetBehaviorFolder()
+    if not folder then return nil end
+    local behavior = folder:FindFirstChild("Behavior")
+    if not behavior then return nil end
+    local ok, m = pcall(function() return require(behavior) end)
+    if ok and type(m) == "table" then
+        Vee._behaviorModule = m
+        return m
+    end
+    return nil
+end
+
+-- Single getgc scan — cached until invalidated (toggle-on / respawn / force button)
 local function Vee_CollectModules()
     local out, seen = {}, {}
-    local vee = Vee_GetBehaviorFolder()
-    if vee then
-        local try = { vee:FindFirstChild("Behavior"), vee:FindFirstChild("Config"), vee }
-        for _, p in ipairs(try) do
-            if p and p:IsA("ModuleScript") then
-                local ok, m = pcall(function() return require(p) end)
-                if ok and type(m) == "table" and not seen[m] then
-                    seen[m] = true
-                    table.insert(out, m)
-                end
+    local behavior = Vee_GetBehaviorModule()
+    if behavior then
+        seen[behavior] = true
+        table.insert(out, behavior)
+    end
+    local folder = Vee_GetBehaviorFolder()
+    if folder then
+        local cfg = folder:FindFirstChild("Config")
+        if cfg and cfg:IsA("ModuleScript") then
+            local ok, m = pcall(function() return require(cfg) end)
+            if ok and type(m) == "table" and not seen[m] then
+                seen[m] = true
+                table.insert(out, m)
             end
         end
     end
+    -- One-time getgc fallback to catch game-cached copies
     if getgc then
         pcall(function()
             for _, t in pairs(getgc(true)) do
@@ -1538,22 +1556,29 @@ local function Vee_CollectModules()
             end
         end)
     end
+    Vee._moduleCache = out
     return out
 end
 
+local function Vee_EnsureCache()
+    if not Vee._moduleCache then Vee_CollectModules() end
+    return Vee._moduleCache
+end
+
 local function Vee_SetAll(key, val)
-    local mods = Vee_CollectModules()
+    local mods = Vee._moduleCache or Vee_EnsureCache()
     for _, m in ipairs(mods) do
         pcall(function() m[key] = val end)
         pcall(function() rawset(m, key, val) end)
     end
 end
 
-local _veeLastApply = 0
 local function Vee_ApplyStats(force)
-    local now = os.clock()
-    if not force and now - _veeLastApply < 0.2 then return end
-    _veeLastApply = now
+    if force then
+        Vee._moduleCache = nil
+        Vee._behaviorModule = nil
+    end
+    Vee_EnsureCache()
     if Vee.CustomStats then
         Vee_SetAll("Sk8Speed", Vee.Sk8Speed)
         Vee_SetAll("Sk8SpeedExhaust", Vee.Sk8Speed)
@@ -1576,42 +1601,33 @@ local function Vee_ApplyStats(force)
 end
 
 local function Vee_SkateControl(on)
-    local vee = Vee_GetBehaviorFolder()
-    if vee then
-        local p = vee:FindFirstChild("Behavior")
-        if p then
-            local ok, m = pcall(function() return require(p) end)
-            if ok and type(m) == "table" then
-                pcall(function() m.Sk8TurnControl = on and 6.5 or 0.65 end)
-            end
-        end
+    local m = Vee_GetBehaviorModule()
+    if m then
+        pcall(function() m.Sk8TurnControl = on and 6.5 or 0.65 end)
+        pcall(function() rawset(m, "Sk8TurnControl", on and 6.5 or 0.65) end)
     end
-    pcall(function()
-        if not getgc then return end
-        for _, v in pairs(getgc(true)) do
-            if type(v) == "table" then
-                if rawget(v, "Sk8TurnControl") ~= nil then
+    -- getgc scan only here (Skate Control is toggle-only, not a loop)
+    if getgc then
+        pcall(function()
+            for _, v in pairs(getgc(true)) do
+                if type(v) == "table" and rawget(v, "Sk8TurnControl") ~= nil then
                     pcall(function() v.Sk8TurnControl = on and 6.5 or 0.65 end)
                 end
             end
-        end
-    end)
+        end)
+    end
 end
 
--- Keep Stats fresh: re-apply on respawn + background loop
+-- Re-apply once per respawn (safe — not in a loop)
 LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(1.5)
-    if Vee.CustomStats then Vee_ApplyStats(true) end
-end)
-task.spawn(function()
-    while Vee_StatsLoop do
-        task.wait(1)
-        if Vee.CustomStats then pcall(Vee_ApplyStats) end
+    task.wait(2)
+    if Vee.CustomStats then
+        pcall(function() Vee_ApplyStats(true) end)
     end
 end)
 
 --═══════════════════════════════════════════════════════════════════
--- VEE AUTO TRICK (button-based, Cursedsaken-style)
+-- VEE AUTO TRICK (button-based)
 --═══════════════════════════════════════════════════════════════════
 local VeerState = { atRunning=false, atMonitors={}, atConn=nil, atRetry=nil }
 
@@ -2164,7 +2180,7 @@ Library.NotifySide = "Right"
 
 local Window = Library:CreateWindow({
     Title = "C00lsaken",
-    Footer = "REDLINE  |  v2.5",
+    Footer = "REDLINE  |  v2.6",
     ToggleKeybind = Enum.KeyCode.RightControl,
     Center = true, AutoShow = true, Resizable = true,
     ShowCustomCursor = false, MobileButtonsSide = "Right",
@@ -2351,17 +2367,18 @@ VeeBox:AddDivider()
 VeeBox:AddToggle("Vee_Custom_T", { Text="Custom Stats", Default=false,
     Callback=function(v) Vee.CustomStats=v; Vee_ApplyStats(true) end })
 VeeBox:AddSlider("Vee_Speed_S", { Text="Skate Speed", Default=1.15, Min=1, Max=10, Rounding=2,
-    Callback=function(v) Vee.Sk8Speed=v; Vee_ApplyStats() end })
+    Callback=function(v) Vee.Sk8Speed=v; if Vee.CustomStats then Vee_ApplyStats() end end })
 VeeBox:AddSlider("Vee_Trick_S", { Text="Trick Boost Speed", Default=1.42, Min=1, Max=15, Rounding=2,
-    Callback=function(v) Vee.Sk8TrickAirborneSpeed=v; Vee_ApplyStats() end })
+    Callback=function(v) Vee.Sk8TrickAirborneSpeed=v; if Vee.CustomStats then Vee_ApplyStats() end end })
 VeeBox:AddSlider("Vee_Bump_S", { Text="Bumper Knockback", Default=11.9, Min=10, Max=150, Rounding=1,
-    Callback=function(v) Vee.Sk8BumpPower=v; Vee_ApplyStats() end })
+    Callback=function(v) Vee.Sk8BumpPower=v; if Vee.CustomStats then Vee_ApplyStats() end end })
 VeeBox:AddSlider("Vee_Stam_S", { Text="Stamina Per Trick", Default=4, Min=0, Max=100, Rounding=0,
-    Callback=function(v) Vee.Sk8TrickStamina=v; Vee_ApplyStats() end })
+    Callback=function(v) Vee.Sk8TrickStamina=v; if Vee.CustomStats then Vee_ApplyStats() end end })
 VeeBox:AddSlider("Vee_CD_S", { Text="Trick Cooldown", Default=1, Min=0, Max=5, Rounding=1,
-    Callback=function(v) Vee.Sk8TrickCooldown=v; Vee_ApplyStats() end })
+    Callback=function(v) Vee.Sk8TrickCooldown=v; if Vee.CustomStats then Vee_ApplyStats() end end })
 VeeBox:AddButton({ Text="Force Apply Stats Now",
-    Func=function() Vee_ApplyStats(true)
+    Func=function()
+        Vee_ApplyStats(true)
         if Library and Library.Notify then
             Library:Notify({ Title = "Vee", Content = "Stats re-applied", Time = 2 })
         end
@@ -2438,7 +2455,7 @@ NABox:AddToggle("NA_Ping_T", { Text="Ping Prediction", Default=true,
 
 local NARight = Tabs.NormalAim:AddRightGroupbox("Notes")
 NARight:AddLabel({ Text="Per-frame aimbot. Enable to lock onto the target selected above. Use 'Single Target Mode' to stick to one target until it dies or leaves range.", DoesWrap=true })
-NARight:AddLabel({ Text="Smoothness: 1 = instant lock, 100 = slowest (most human-like). Prediction values above ~0.3 for fast targets may overshoot.", DoesWrap=true })
+NARight:AddLabel({ Text="Smoothness: 1 = instant lock, 100 = slowest (most human-like).", DoesWrap=true })
 
 --═══════════════════════════════════════════════════════════════════
 -- STAMINA TAB
@@ -2557,7 +2574,7 @@ ThemeManager:ApplyToTab(Tabs.Appearance)
 local CB = Tabs.Credits:AddLeftGroupbox("CREDITS")
 CB:AddLabel({ Text = "Coding & Owner: c00lkid / random_dude", DoesWrap = true })
 CB:AddLabel({ Text = "Helpers: Viltrumite & Ivy", DoesWrap = true })
-CB:AddLabel({ Text = "v2.5: Vee simplified + stat change fixed + icon fix", DoesWrap = true })
+CB:AddLabel({ Text = "v2.6: Vee stat freeze fixed + icon fixed", DoesWrap = true })
 
 ThemeManager:LoadDefault()
 
@@ -2572,7 +2589,6 @@ Library:OnUnload(function()
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
 
-    Vee_StatsLoop = false
     pcall(function() Vee.AutoTrick = false; VeerATStop() end)
 
     pcall(function()
@@ -2584,9 +2600,9 @@ Library:OnUnload(function()
 end)
 
 Library:Notify({
-    Title = "C00lsaken v2.5",
-    Description = "Vee simplified + stat change fixed + icon fix",
+    Title = "C00lsaken v2.6",
+    Description = "Vee stat freeze fixed — no more pauses",
     Time = 4,
 })
 
-print("[C00lsaken v2.5] Loaded — Vee simplified (Auto Trick / Skate Control / Custom Stats only).")
+print("[C00lsaken v2.6] Loaded — Vee stat change fixed (getgc cached, no loop).")
