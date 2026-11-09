@@ -1,10 +1,14 @@
 --[[
-    GODSAKEN UNIFIED v2.2 — REDLINE
+    GODSAKEN UNIFIED v2.3 — REDLINE + MERGED
     Fixes:
-      - Survivor Auto Aim: prediction now uses velocity only (was LookVector mixing)
-      - HDT: uses internal HDT.Speed/Duration/Delay that properly syncs from Settings
-    New:
-      - Gameplay tab: FPS Boost button (one-time) + Blue Hitbox loader button
+      - Survivor Auto Aim: prediction now uses velocity only
+      - HDT: uses internal HDT.Speed/Duration/Delay synced from Settings
+    New in v2.3:
+      - Vee (Veeronica) full option suite
+      - Hitbox Expander (Killer tab)
+      - Silent Aim (Survivor tab)
+      - Normal Aim (dedicated tab, formerly "Manual Aim")
+      - Obsidian logo updated
 ]]
 
 local Players             = game:GetService("Players")
@@ -14,6 +18,7 @@ local Workspace           = game:GetService("Workspace")
 local CoreGui             = game:GetService("CoreGui")
 local Lighting            = game:GetService("Lighting")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local UserInputService    = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
@@ -659,7 +664,7 @@ local function PA_Disable()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- HDT — FIXED: uses HDT.Speed/Duration/Delay that sync with Settings
+-- HDT
 --═══════════════════════════════════════════════════════════════════
 local HDT = {
     running = false, debounce = false, animConn = nil, watcher = nil,
@@ -694,10 +699,6 @@ local function HDT_Dash(killer)
     HDT.debounce = true
     local oWS, oAR = hum.WalkSpeed, hum.AutoRotate
     HDT.active = { hum=hum, walkSpeed=oWS, autoRotate=oAR }
-    if HDT.Debug then
-        print(string.format("[HDT] START Speed=%.1f Duration=%.2f Delay=%.3f",
-            HDT.Speed, HDT.Duration, HDT.Delay))
-    end
     hum.WalkSpeed, hum.AutoRotate = HDT.Speed, true
     local st = tick()
     local function stop()
@@ -709,7 +710,6 @@ local function HDT_Dash(killer)
                 hum.WalkSpeed = oWS; hum.AutoRotate = oAR
             end)
         end
-        if HDT.Debug then print("[HDT] STOP") end
     end
     pcall(function() RunService:UnbindFromRenderStep(HDT.bind) end)
     RunService:BindToRenderStep(HDT.bind, Enum.RenderPriority.Last.Value + 1, function()
@@ -730,11 +730,7 @@ local function HDT_OnAnim(track)
     local aid = track.Animation and track.Animation.AnimationId
     if not aid or not HDT_Anims[aid] then return end
     local k = HDT_Nearest()
-    if not k then
-        if HDT.Debug then print("[HDT] Block anim but no killer nearby") end
-        return
-    end
-    if HDT.Debug then print(string.format("[HDT] Block anim detected | killer=%s", k.Name)) end
+    if not k then return end
     task.delay(HDT.Delay, function() if HDT.running then HDT_Dash(k) end end)
 end
 
@@ -744,7 +740,6 @@ local function HDT_Attach()
     local anim = hum:FindFirstChildOfClass("Animator"); if not anim then return end
     if HDT.animConn then pcall(function() HDT.animConn:Disconnect() end) end
     HDT.animConn = anim.AnimationPlayed:Connect(HDT_OnAnim)
-    if HDT.Debug then print("[HDT] Attached") end
 end
 
 local function HDT_Enable()
@@ -788,11 +783,11 @@ local function HDT_SyncFromSettings()
 end
 local function HDT_ForceNow()
     local k = HDT_Nearest()
-    if k then HDT_Dash(k) else print("[HDT] No killer nearby") end
+    if k then HDT_Dash(k) end
 end
 
 --═══════════════════════════════════════════════════════════════════
--- SURVIVOR AUTO AIM — FIXED: velocity-only prediction
+-- SURVIVOR AUTO AIM
 --═══════════════════════════════════════════════════════════════════
 local Aim = { active=false, startT=0, lastTrig=0, hookDone=false, endT=0 }
 
@@ -901,10 +896,9 @@ RunService.RenderStepped:Connect(function()
     local hrp = char and char:FindFirstChild("HumanoidRootPart"); if not hrp then return end
     local h = char:FindFirstChildOfClass("Humanoid"); if h then h.AutoRotate = false end
 
-    -- FIXED prediction: velocity only, 1→10 scales 0.05s → 0.50s lead time
     local predN = math.clamp(Settings.AIM_Prediction, 1, 10)
     local vel = killer.AssemblyLinearVelocity or Vector3.new()
-    if vel.Magnitude > 50 then vel = vel.Unit * 50 end   -- cap
+    if vel.Magnitude > 50 then vel = vel.Unit * 50 end
     local leadTime = predN * 0.05
     local target = killer.Position + vel * leadTime
 
@@ -1500,6 +1494,554 @@ local function GS_Disable()
 end
 
 --═══════════════════════════════════════════════════════════════════
+-- VEE (VEERONICA)
+--═══════════════════════════════════════════════════════════════════
+local Vee = {
+    AutoTrick=false, SkateControl=false, AntiRebound=false,
+    UnlimitedSk8=false, AutoFarmSk8=false, CustomStats=false,
+    Sk8Speed=1.15, Sk8TrickAirborneSpeed=1.42, Sk8BumpPower=11.9,
+    Sk8TrickStamina=4, Sk8TrickCooldown=1,
+    Sk8Everywhere=false, AutoPhase=false,
+    _conns={}, _threads={}
+}
+
+local function Vee_GetModule()
+    local ok, m = pcall(function()
+        return require(ReplicatedStorage.Assets.Survivors.Veeronica.Behavior)
+    end)
+    return ok and m or nil
+end
+
+local function Vee_SetStat(key, val)
+    local module = Vee_GetModule()
+    if module then module[key] = val end
+    pcall(function()
+        if not getgc then return end
+        for _, v in pairs(getgc(true)) do
+            if type(v) == "table" and rawget(v, "DisplayName") == "Veeronica" then
+                v[key] = val
+            end
+        end
+    end)
+end
+
+local function Vee_ApplyStats()
+    local module = Vee_GetModule()
+    if not module then return end
+    if Vee.CustomStats then
+        Vee_SetStat("Sk8Speed", Vee.Sk8Speed)
+        Vee_SetStat("Sk8SpeedExhaust", Vee.Sk8Speed)
+        Vee_SetStat("Sk8TrickAirborneSpeed", Vee.Sk8TrickAirborneSpeed)
+        Vee_SetStat("Sk8BumpPower", Vee.Sk8BumpPower)
+        Vee_SetStat("Sk8BumpChargedPower", Vee.Sk8BumpPower + 3.1)
+        Vee_SetStat("Sk8TrickStamina", Vee.Sk8TrickStamina)
+        Vee_SetStat("Sk8TrickStaminaNerfed", Vee.Sk8TrickStamina)
+        Vee_SetStat("Sk8TrickCooldown", Vee.Sk8TrickCooldown)
+    else
+        Vee_SetStat("Sk8Speed", 1.15); Vee_SetStat("Sk8SpeedExhaust", 1.15)
+        Vee_SetStat("Sk8TrickAirborneSpeed", 1.42); Vee_SetStat("Sk8BumpPower", 11.9)
+        Vee_SetStat("Sk8BumpChargedPower", 15)
+        Vee_SetStat("Sk8TrickStamina", 10); Vee_SetStat("Sk8TrickStaminaNerfed", 4)
+        Vee_SetStat("Sk8TrickCooldown", 1)
+    end
+end
+
+local function Vee_SkateControl(on)
+    local module = Vee_GetModule()
+    if module then module.Sk8TurnControl = on and 6.5 or 0.65 end
+    pcall(function()
+        if not getgc then return end
+        for _, v in pairs(getgc(true)) do
+            if type(v) == "table" and rawget(v, "Sk8TurnControl") then
+                v.Sk8TurnControl = on and 6.5 or 0.65
+            end
+        end
+    end)
+end
+
+local function Vee_RunAutoTrick()
+    if Vee._threads.AutoTrick then pcall(task.cancel, Vee._threads.AutoTrick); Vee._threads.AutoTrick = nil end
+    if not Vee.AutoTrick then return end
+    Vee._threads.AutoTrick = task.spawn(function()
+        while Vee.AutoTrick do
+            task.wait()
+            local c = LocalPlayer.Character
+            if c and c.Name == "Veeronica" then
+                local hl = c:FindFirstChild("Highlight")
+                if hl and hl.Adornee == c then
+                    if not UserInputService.TouchEnabled or UserInputService.MouseEnabled then
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+                        task.wait(0.05)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+                    else
+                        pcall(function()
+                            local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                            local main = pg and pg:FindFirstChild("MainUI")
+                            local sb = main and main:FindFirstChild("SprintingButton")
+                            if sb and getconnections then
+                                for _, cc in pairs(getconnections(sb.MouseButton1Down)) do cc:Fire() end
+                                task.wait(0.05)
+                                for _, cc in pairs(getconnections(sb.MouseButton1Up)) do cc:Fire() end
+                                for _, cc in pairs(getconnections(sb.Activated)) do cc:Fire() end
+                            end
+                        end)
+                    end
+                    task.wait(0.1)
+                end
+            end
+        end
+    end)
+end
+
+local function Vee_RunAntiRebound()
+    if Vee._conns.AntiRebound then return end
+    if not hookmetamethod then return end
+    pcall(function()
+        local old
+        old = hookmetamethod(game, "__namecall", function(self, ...)
+            if getnamecallmethod() == "FireServer" and self == NetworkEvent then
+                local args = {...}
+                local n = tostring(args[1])
+                if n:find("SkateRebound") then return end
+                if n:find("StopSkate") and type(args[2]) == "table" then
+                    for _, v in ipairs(args[2]) do
+                        if typeof(v) == "Instance" then
+                            NetworkEvent:FireServer(LocalPlayer.Character.Name .. "StopSkate", {buffer.fromstring("\"Manual\"")})
+                            return
+                        end
+                    end
+                end
+            end
+            return old(self, ...)
+        end)
+    end)
+    Vee._conns.AntiRebound = true
+end
+
+local function Vee_RunUnlimitedSk8()
+    if Vee._conns.UnlimitedSk8 then return end
+    Vee._conns.UnlimitedSk8 = RunService.Heartbeat:Connect(function()
+        if not Vee.UnlimitedSk8 then return end
+        local c = LocalPlayer.Character
+        local hrp = c and c:FindFirstChild("HumanoidRootPart")
+        if not hrp or not hrp:FindFirstChild("SkatePointer") then return end
+        pcall(function()
+            local sp = require(ReplicatedStorage.Systems.Character.Game.Sprinting)
+            if sp then sp.Stamina = sp.MaxStamina end
+        end)
+    end)
+end
+
+local function Vee_RunAutoFarmSk8()
+    if Vee._threads.AutoFarmSk8 then pcall(task.cancel, Vee._threads.AutoFarmSk8); Vee._threads.AutoFarmSk8 = nil end
+    if not Vee.AutoFarmSk8 then return end
+    Vee._threads.AutoFarmSk8 = task.spawn(function()
+        while Vee.AutoFarmSk8 do
+            if NetworkEvent then
+                pcall(function() NetworkEvent:FireServer(LocalPlayer.Name .. "SkateTrick", {}) end)
+            end
+            task.wait(0.5)
+        end
+    end)
+end
+
+local function Vee_RunSk8Everywhere(on)
+    if not on then
+        if Vee._threads.Sk8Everywhere then pcall(task.cancel, Vee._threads.Sk8Everywhere); Vee._threads.Sk8Everywhere = nil end
+        local m = Vee_GetModule()
+        if m and m.Abilities and m.Abilities.Sk8 and m.Abilities.Sk8.__orig then
+            m.Abilities.Sk8.Callback = m.Abilities.Sk8.__orig
+            m.Abilities.Sk8.__orig = nil
+            m.Abilities.Sk8.__bypass = nil
+        end
+        return
+    end
+    local function bypass(t)
+        if type(t) ~= "table" then return end
+        local sk8 = t.Sk8
+        if type(sk8) ~= "table" or sk8.__bypass then return end
+        if type(sk8.Callback) ~= "function" then return end
+        sk8.__orig = sk8.Callback
+        sk8.__bypass = true
+        sk8.Callback = function(a, b) if b == "BAD" then b = nil end return sk8.__orig(a, b) end
+    end
+    local function util()
+        local ok, u = pcall(function() return require(ReplicatedStorage.Modules.Utilities.Util) end)
+        return ok and u or nil
+    end
+    local function getActor()
+        local u = util()
+        if not u or type(u.GetActor) ~= "function" then return nil end
+        local ok, a = pcall(u.GetActor, u, LocalPlayer)
+        return ok and a or nil
+    end
+    bypass((Vee_GetModule() or {}).Abilities)
+    local a = getActor()
+    if a and a.Behavior and a.Behavior.Abilities then bypass(a.Behavior.Abilities) end
+    if a and a.State then a.State.InZone = true end
+    pcall(function() util():ToggleLockForAbilityIcon("Sk8", "NoCharges", false) end)
+    Vee._threads.Sk8Everywhere = task.spawn(function()
+        while Vee.Sk8Everywhere do
+            task.wait(0.5)
+            bypass((Vee_GetModule() or {}).Abilities)
+            local a2 = getActor()
+            if a2 then
+                if a2.Behavior and a2.Behavior.Abilities then bypass(a2.Behavior.Abilities) end
+                if a2.State then a2.State.InZone = true end
+            end
+            pcall(function() util():ToggleLockForAbilityIcon("Sk8", "NoCharges", false) end)
+        end
+    end)
+end
+
+local function Vee_RunAutoPhase()
+    if Vee._threads.AutoPhase then pcall(task.cancel, Vee._threads.AutoPhase); Vee._threads.AutoPhase = nil end
+    if not Vee.AutoPhase then return end
+    Vee._threads.AutoPhase = task.spawn(function()
+        local Network
+        pcall(function() Network = require(ReplicatedStorage.Modules.Network.Network) end)
+        while Vee.AutoPhase do
+            task.wait(0.5)
+            if not Network then pcall(function() Network = require(ReplicatedStorage.Modules.Network.Network) end) end
+            local c = LocalPlayer.Character
+            local kf = GetKillersFolder()
+            if Network and c and c.Name == "Veeronica" and kf then
+                for _, k in ipairs(kf:GetChildren()) do
+                    if not Vee.AutoPhase then break end
+                    local h = k:FindFirstChildOfClass("Humanoid")
+                    if h and h.Health > 0 then
+                        pcall(function()
+                            Network:FireServerConnection(LocalPlayer.Name .. "SkatePhase", "REMOTE_EVENT", k)
+                        end)
+                        local m = Vee_GetModule()
+                        task.wait((m and m.Sk8PhaseTime or 3) + 0.6)
+                    end
+                end
+            end
+        end
+    end)
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- HITBOX EXPANDER
+--═══════════════════════════════════════════════════════════════════
+local HitboxExpander = {
+    Enabled=false, TargetMode="Distance", Distance=10,
+    _running=false, _thread=nil
+}
+
+local function HBE_GetNearestTarget(root)
+    local hb = HitboxExpander
+    local huge = hb.TargetMode == "Lowest HP" and math.huge or hb.Distance
+    local best = nil
+    local folders = {}
+    local pf = Workspace:FindFirstChild("Players")
+    if pf then
+        local kf = pf:FindFirstChild("Killers")
+        local sf = pf:FindFirstChild("Survivors")
+        if kf then table.insert(folders, kf) end
+        if sf then table.insert(folders, sf) end
+    end
+    for _, folder in ipairs(folders) do
+        for _, m in ipairs(folder:GetChildren()) do
+            if m:IsA("Model") and m ~= LocalPlayer.Character then
+                local hrp = m:FindFirstChild("HumanoidRootPart")
+                local hum = m:FindFirstChildOfClass("Humanoid")
+                if hrp and hum and hum.Health > 0 then
+                    local dist = (hrp.Position - root.Position).Magnitude
+                    if dist <= hb.Distance then
+                        if hb.TargetMode == "Distance" then
+                            if dist < huge then huge = dist; best = m end
+                        else
+                            if hum.Health < huge then huge = hum.Health; best = m
+                            elseif hum.Health == huge and best then
+                                if dist < (best.HumanoidRootPart.Position - root.Position).Magnitude then best = m end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function HBE_ApplyVelocity()
+    if HitboxExpander._running then return end
+    HitboxExpander._running = true
+    HitboxExpander._thread = task.spawn(function()
+        while HitboxExpander.Enabled do
+            task.wait()
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if not hum or not root or hum.Health <= 0 then
+                task.wait(0.1)
+                continue
+            end
+            local target = HBE_GetNearestTarget(root)
+            if target then
+                local thrp = target:FindFirstChild("HumanoidRootPart")
+                if thrp then
+                    local ping = 0.05
+                    pcall(function() ping = math.max(LocalPlayer:GetNetworkPing()/2, 0.05) end)
+                    local desired = (thrp.Position + thrp.AssemblyLinearVelocity * (ping * 1.25) - root.Position) / (ping * 2)
+                    local old = root.AssemblyLinearVelocity
+                    root.AssemblyLinearVelocity = desired
+                    RunService.RenderStepped:Wait()
+                    if root and root.Parent then root.AssemblyLinearVelocity = old end
+                end
+            end
+        end
+        HitboxExpander._running = false
+    end)
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- SILENT AIM
+--═══════════════════════════════════════════════════════════════════
+local SilentAim = {
+    Enabled=false, Selected={}, LeadTime=0.15,
+    _installed=false, _velCache=setmetatable({}, {__mode="k"})
+}
+
+local function SA_SmoothVel(part)
+    local now = os.clock()
+    local v = part.AssemblyLinearVelocity
+    if v.Magnitude > 120 then v = Vector3.zero end
+    local c = SilentAim._velCache[part]
+    if not c then SilentAim._velCache[part] = {t=now, v=v}; return v end
+    c.v = c.v:Lerp(v, math.clamp(1 - math.exp(-math.max(now - c.t, 0.001) * 12), 0, 1))
+    c.t = now
+    return c.v
+end
+
+local function SA_GetFirstSurvivor()
+    local sf = GetSurvivorsFolder()
+    if not sf then return nil end
+    for _, m in ipairs(sf:GetChildren()) do
+        local hrp = m:FindFirstChild("HumanoidRootPart")
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then return m end
+    end
+    return nil
+end
+
+local function SA_GetNearestSurvivor(origin)
+    local sf = GetSurvivorsFolder()
+    if not sf then return nil end
+    local best, bd = nil, math.huge
+    for _, m in ipairs(sf:GetChildren()) do
+        local hrp = m:FindFirstChild("HumanoidRootPart")
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then
+            local d = (hrp.Position - origin).Magnitude
+            if d < bd then bd = d; best = m end
+        end
+    end
+    return best
+end
+
+local function SA_Predict(target)
+    if not target then return nil end
+    local hrp = target:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local lead = SilentAim.LeadTime
+    pcall(function() lead = lead + LocalPlayer:GetNetworkPing() * 0.5 end)
+    return hrp.Position + SA_SmoothVel(hrp) * lead
+end
+
+local function SA_CheckAbility(name)
+    return SilentAim.Enabled and SilentAim.Selected[name] == true
+end
+
+local function SA_GetPlayerCharName()
+    local c = LocalPlayer.Character
+    return c and (c:GetAttribute("CharacterName") or c.Name) or ""
+end
+
+local function SA_Install()
+    if SilentAim._installed then return end
+    if not hookfunction then return end
+    SilentAim._installed = true
+
+    pcall(function()
+        local GetPlayerMousePosition = require(ReplicatedStorage.Systems.Player.Miscellaneous.GetPlayerMousePosition)
+        local orig = GetPlayerMousePosition.GetMousePos
+        hookfunction(orig, function(...)
+            local cn = SA_GetPlayerCharName()
+            local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local originPos = root and root.Position or Vector3.zero
+
+            if cn == "Noli" and SA_CheckAbility("Void Star") then
+                local m = SA_GetNearestSurvivor(originPos)
+                if m then local pp = SA_Predict(m); if pp then return pp end end
+            end
+            if cn == "c00lkidd" and SA_CheckAbility("Corrupt Nature") then
+                local m = SA_GetNearestSurvivor(originPos)
+                if m then local pp = SA_Predict(m); if pp then return pp end end
+            end
+            if cn == "Sixer" and SA_CheckAbility("Infernal Cry") then
+                local m = SA_GetNearestSurvivor(originPos)
+                if m then local pp = SA_Predict(m); if pp then return pp end end
+            end
+            if cn == "Nosferatu" and SA_CheckAbility("Hunter's Feast") then
+                local m = SA_GetNearestSurvivor(originPos)
+                if m then local pp = SA_Predict(m); if pp then return pp end end
+            end
+            if cn == "JaneDoe" and SA_CheckAbility("Crystal Pitch") then
+                local m = SA_GetFirstSurvivor()
+                if m then local pp = SA_Predict(m); if pp then return pp end end
+            end
+            if cn == "Dusekkar" and SA_CheckAbility("Plasma Beam") then
+                local m = SA_GetFirstSurvivor()
+                if m then local pp = SA_Predict(m); if pp then return pp end end
+            end
+
+            return orig(...)
+        end)
+    end)
+
+    pcall(function()
+        local Network = require(ReplicatedStorage.Modules.Network.Network)
+        local orig = Network.FireServerConnection
+        hookfunction(orig, function(self, name, evt, ...)
+            if name == LocalPlayer.Name .. "AzureUpdateCameraLookVector" and evt == "UREMOTE_EVENT"
+               and SA_CheckAbility("Tentacles (Grab)") then
+                local args = table.pack(...)
+                if typeof(args[1]) == "Vector3" then
+                    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    local target = SA_GetNearestSurvivor(root and root.Position or Vector3.zero)
+                    if target then
+                        local pp = SA_Predict(target)
+                        if pp then args[1] = pp end
+                    end
+                end
+                return orig(self, name, evt, table.unpack(args, 1, args.n))
+            end
+            return orig(self, name, evt, ...)
+        end)
+    end)
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- NORMAL AIM (was Manual Aim)
+--═══════════════════════════════════════════════════════════════════
+local NormalAim = {
+    Enabled=false, Method="Camera Lock", TargetType="Auto",
+    WallCheck=false, SingleTarget=false,
+    Distance=20, Prediction=0.1, Smoothness=35,
+    Part="Head", PingComp=true,
+    _conn=nil, _currentTarget=nil
+}
+
+local function NA_GetAimPart(m)
+    if NormalAim.Part == "Head" then
+        return m:FindFirstChild("Head")
+    elseif NormalAim.Part == "Torso" then
+        return m:FindFirstChild("UpperTorso") or m:FindFirstChild("Torso")
+    end
+    return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart
+end
+
+local function NA_WallClear(cam, from, targetChar)
+    local targetPart = targetChar:FindFirstChild("HumanoidRootPart") or targetChar.PrimaryPart
+    if not targetPart then return true end
+    local p = RaycastParams.new()
+    p.FilterType = Enum.RaycastFilterType.Exclude
+    p.FilterDescendantsInstances = { LocalPlayer.Character, cam }
+    local hit = Workspace:Raycast(from, targetPart.Position - from, p)
+    if hit and not hit.Instance:IsDescendantOf(targetChar) then return false end
+    return true
+end
+
+local function NA_FindTarget()
+    local pf = Workspace:FindFirstChild("Players")
+    if not pf then return nil end
+    local folders = {}
+    if NormalAim.TargetType == "Auto" then
+        table.insert(folders, pf:FindFirstChild("Killers"))
+        table.insert(folders, pf:FindFirstChild("Survivors"))
+    elseif NormalAim.TargetType == "Killers" then
+        table.insert(folders, pf:FindFirstChild("Killers"))
+    else
+        table.insert(folders, pf:FindFirstChild("Survivors"))
+    end
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    local best, bd = nil, NormalAim.Distance
+    for _, folder in ipairs(folders) do
+        if folder then
+            for _, m in ipairs(folder:GetChildren()) do
+                if m:IsA("Model") and m ~= char then
+                    local hrp = m:FindFirstChild("HumanoidRootPart")
+                    local hum = m:FindFirstChildOfClass("Humanoid")
+                    if hrp and hum and hum.Health > 0 then
+                        local d = (hrp.Position - root.Position).Magnitude
+                        if d < bd then
+                            local cam = Workspace.CurrentCamera
+                            if not NormalAim.WallCheck or (cam and NA_WallClear(cam, cam.CFrame.Position, m)) then
+                                bd = d; best = m
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function NA_Start()
+    if NormalAim._conn then return end
+    NormalAim._conn = RunService.Heartbeat:Connect(function(dt)
+        if not NormalAim.Enabled then return end
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local cam = Workspace.CurrentCamera
+        if not hum or hum.Health <= 0 or not root or not cam then return end
+
+        local target
+        if NormalAim.SingleTarget and NormalAim._currentTarget
+           and NormalAim._currentTarget.Parent
+           and NormalAim._currentTarget:FindFirstChildOfClass("Humanoid")
+           and NormalAim._currentTarget:FindFirstChildOfClass("Humanoid").Health > 0 then
+            target = NormalAim._currentTarget
+        else
+            target = NA_FindTarget()
+            NormalAim._currentTarget = target
+        end
+        if not target then return end
+
+        local aimPart = NA_GetAimPart(target)
+        if not aimPart then return end
+
+        local pred = aimPart.Position + aimPart.AssemblyLinearVelocity * NormalAim.Prediction
+        if NormalAim.PingComp then
+            pcall(function() pred = pred + aimPart.AssemblyLinearVelocity * (LocalPlayer:GetNetworkPing() * 0.5) end)
+        end
+
+        local smooth = math.clamp(1 - math.exp(-dt / math.max(NormalAim.Smoothness/100, 0.02)), 0, 1)
+        if NormalAim.Method:find("Camera") then
+            cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, pred), smooth)
+        end
+        if NormalAim.Method:find("HumanoidRoot") then
+            local flat = Vector3.new(pred.X - root.Position.X, 0, pred.Z - root.Position.Z)
+            if flat.Magnitude > 0.01 then
+                root.CFrame = root.CFrame:Lerp(CFrame.lookAt(root.Position, root.Position + flat.Unit), smooth)
+            end
+        end
+    end)
+end
+
+local function NA_Stop()
+    if NormalAim._conn then NormalAim._conn:Disconnect(); NormalAim._conn = nil end
+    NormalAim._currentTarget = nil
+end
+
+--═══════════════════════════════════════════════════════════════════
 -- PUBLIC API
 --═══════════════════════════════════════════════════════════════════
 _G.Godsaken = {
@@ -1576,6 +2118,46 @@ _G.Godsaken = {
         SetGearDelay     = function(v) Settings.GS_GearDelay = _num(v, 0.03) end,
         SetLockDelay     = function(v) Settings.GS_LockDelay = _num(v, 0.08) end,
     },
+    Vee = {
+        SetAutoTrick     = function(v) Vee.AutoTrick=v; Vee_RunAutoTrick() end,
+        SetSkateControl  = function(v) Vee.SkateControl=v; Vee_SkateControl(v) end,
+        SetAntiRebound   = function(v) Vee.AntiRebound=v; if v then Vee_RunAntiRebound() end end,
+        SetUnlimitedSk8  = function(v) Vee.UnlimitedSk8=v; if v then Vee_RunUnlimitedSk8() end end,
+        SetAutoFarmSk8   = function(v) Vee.AutoFarmSk8=v; Vee_RunAutoFarmSk8() end,
+        SetCustomStats   = function(v) Vee.CustomStats=v; Vee_ApplyStats() end,
+        SetSk8Speed      = function(v) Vee.Sk8Speed=tonumber(v) or 1.15; Vee_ApplyStats() end,
+        SetTrickSpeed    = function(v) Vee.Sk8TrickAirborneSpeed=tonumber(v) or 1.42; Vee_ApplyStats() end,
+        SetBumpPower     = function(v) Vee.Sk8BumpPower=tonumber(v) or 11.9; Vee_ApplyStats() end,
+        SetTrickStamina  = function(v) Vee.Sk8TrickStamina=tonumber(v) or 4; Vee_ApplyStats() end,
+        SetTrickCooldown = function(v) Vee.Sk8TrickCooldown=tonumber(v) or 1; Vee_ApplyStats() end,
+        SetSk8Everywhere = function(v) Vee.Sk8Everywhere=v; Vee_RunSk8Everywhere(v) end,
+        SetAutoPhase     = function(v) Vee.AutoPhase=v; Vee_RunAutoPhase() end,
+    },
+    HitboxExpander = {
+        Enable  = function() HitboxExpander.Enabled=true; HBE_ApplyVelocity() end,
+        Disable = function() HitboxExpander.Enabled=false end,
+        SetTargetMode = function(m) HitboxExpander.TargetMode=m end,
+        SetDistance   = function(v) HitboxExpander.Distance=tonumber(v) or 10 end,
+    },
+    SilentAim = {
+        Enable  = function() SilentAim.Enabled=true; SA_Install() end,
+        Disable = function() SilentAim.Enabled=false end,
+        SetTargets = function(t) SilentAim.Selected = t end,
+        SetLead    = function(v) SilentAim.LeadTime=tonumber(v) or 0.15 end,
+    },
+    NormalAim = {
+        Enable  = function() NormalAim.Enabled=true; NA_Start() end,
+        Disable = function() NormalAim.Enabled=false; NA_Stop() end,
+        SetMethod      = function(v) NormalAim.Method=v end,
+        SetTargetType  = function(v) NormalAim.TargetType=v; NormalAim._currentTarget=nil end,
+        SetWallCheck   = function(v) NormalAim.WallCheck=v end,
+        SetSingleTarget= function(v) NormalAim.SingleTarget=v; if not v then NormalAim._currentTarget=nil end end,
+        SetDistance    = function(v) NormalAim.Distance=tonumber(v) or 20 end,
+        SetPrediction  = function(v) NormalAim.Prediction=tonumber(v) or 0.1 end,
+        SetSmoothness  = function(v) NormalAim.Smoothness=tonumber(v) or 35 end,
+        SetPart        = function(v) NormalAim.Part=v end,
+        SetPingComp    = function(v) NormalAim.PingComp=v end,
+    },
 }
 
 --═══════════════════════════════════════════════════════════════════
@@ -1602,16 +2184,18 @@ Library.NotifySide = "Right"
 
 local Window = Library:CreateWindow({
     Title = "C00lsaken",
-    Footer = "REDLINE  |  v2.2",
+    Footer = "REDLINE  |  v2.3",
     ToggleKeybind = Enum.KeyCode.RightControl,
     Center = true, AutoShow = true, Resizable = true,
     ShowCustomCursor = false, MobileButtonsSide = "Right",
+    Icon = "rbxassetid://123123975685239",
 })
 
 local Tabs = {
     AutoBlock = Window:AddTab("Auto Block", "shield"),
     Survivor  = Window:AddTab("Survivor", "swords"),
     Killer    = Window:AddTab("Killer", "crosshair"),
+    NormalAim = Window:AddTab("Normal Aim", "target"),
     Stamina   = Window:AddTab("Stamina", "zap"),
     AutoGen   = Window:AddTab("Auto Gen", "cpu"),
     Gameplay  = Window:AddTab("Gameplay", "gamepad-2"),
@@ -1676,7 +2260,6 @@ HDTBox:AddButton({
         pcall(function() HDTSliders.Speed:Set(HDT.Speed) end)
         pcall(function() HDTSliders.Delay:Set(HDT.Delay) end)
         pcall(function() HDTSliders.Duration:Set(HDT.Duration) end)
-        print(string.format("[HDT] Synced Speed=%.1f Delay=%.3f Duration=%.3f", HDT.Speed, HDT.Delay, HDT.Duration))
     end,
 })
 
@@ -1766,6 +2349,47 @@ SPat:AddToggle("PatDagger", { Text = "Two Time - Any Dagger",          Default =
 SPat:AddToggle("PatAxe",    { Text = "Jane Doe - Hatchet",             Default = true, Callback = function(v) Settings.AIM_OnAxe    = v end })
 SPat:AddToggle("PatShoot",  { Text = "Chance - Shoot / Oneshot / Gun", Default = true, Callback = function(v) Settings.AIM_OnShoot  = v end })
 
+local SilentBox = Tabs.Survivor:AddRightGroupbox("Silent Aim")
+SilentBox:AddDropdown("SA_Targets_D", {
+    Text = "Aim Target",
+    Values = { "Void Star", "Corrupt Nature", "Infernal Cry", "Hunter's Feast",
+               "Crystal Pitch", "Plasma Beam", "Tentacles (Grab)" },
+    Multi = true, Default = {},
+    Callback = function(v) SilentAim.Selected = v end,
+})
+SilentBox:AddToggle("SA_Enable_T", { Text="Enable Silent Aim", Default=false,
+    Callback=function(v) SilentAim.Enabled=v; if v then SA_Install() end end })
+SilentBox:AddSlider("SA_Lead_S", { Text="Lead (ms)", Default=150, Min=0, Max=500, Rounding=0,
+    Callback=function(v) SilentAim.LeadTime=v/1000 end })
+
+local VeeBox = Tabs.Survivor:AddRightGroupbox("Vee (Veeronica)")
+VeeBox:AddToggle("Vee_AutoTrick_T", { Text="Auto Trick", Default=false,
+    Callback=function(v) Vee.AutoTrick=v; Vee_RunAutoTrick() end })
+VeeBox:AddToggle("Vee_SkateCtrl_T", { Text="Skate Control", Default=false,
+    Callback=function(v) Vee.SkateControl=v; Vee_SkateControl(v) end })
+VeeBox:AddToggle("Vee_AntiReb_T", { Text="Anti Rebound", Default=false,
+    Callback=function(v) Vee.AntiRebound=v; if v then Vee_RunAntiRebound() end end })
+VeeBox:AddToggle("Vee_UnlimSk8_T", { Text="Unlimited Sk8", Default=false,
+    Callback=function(v) Vee.UnlimitedSk8=v; if v then Vee_RunUnlimitedSk8() end end })
+VeeBox:AddToggle("Vee_FarmSk8_T", { Text="Auto Farm Sk8", Default=false,
+    Callback=function(v) Vee.AutoFarmSk8=v; Vee_RunAutoFarmSk8() end })
+VeeBox:AddToggle("Vee_Sk8Every_T", { Text="Sk8 Everywhere (rage/ban)", Default=false,
+    Callback=function(v) Vee.Sk8Everywhere=v; Vee_RunSk8Everywhere(v) end })
+VeeBox:AddToggle("Vee_AutoPhase_T", { Text="Auto Phase", Default=false,
+    Callback=function(v) Vee.AutoPhase=v; Vee_RunAutoPhase() end })
+VeeBox:AddToggle("Vee_Custom_T", { Text="Custom Stats", Default=false,
+    Callback=function(v) Vee.CustomStats=v; Vee_ApplyStats() end })
+VeeBox:AddSlider("Vee_Speed_S", { Text="Skate Speed", Default=1.15, Min=1, Max=10, Rounding=2,
+    Callback=function(v) Vee.Sk8Speed=v; Vee_ApplyStats() end })
+VeeBox:AddSlider("Vee_Trick_S", { Text="Trick Boost Speed", Default=1.42, Min=1, Max=15, Rounding=2,
+    Callback=function(v) Vee.Sk8TrickAirborneSpeed=v; Vee_ApplyStats() end })
+VeeBox:AddSlider("Vee_Bump_S", { Text="Bumper Knockback", Default=11.9, Min=10, Max=150, Rounding=1,
+    Callback=function(v) Vee.Sk8BumpPower=v; Vee_ApplyStats() end })
+VeeBox:AddSlider("Vee_Stam_S", { Text="Stamina Per Trick", Default=4, Min=0, Max=100, Rounding=0,
+    Callback=function(v) Vee.Sk8TrickStamina=v; Vee_ApplyStats() end })
+VeeBox:AddSlider("Vee_CD_S", { Text="Trick Cooldown", Default=1, Min=0, Max=5, Rounding=1,
+    Callback=function(v) Vee.Sk8TrickCooldown=v; Vee_ApplyStats() end })
+
 --═══════════════════════════════════════════════════════════════════
 -- KILLER TAB
 --═══════════════════════════════════════════════════════════════════
@@ -1782,6 +2406,15 @@ AM1FacingBox:AddSlider("AM1_FX_S", { Text = "Facing X", Default = 9, Min = 1, Ma
 AM1FacingBox:AddSlider("AM1_FY_S", { Text = "Facing Y", Default = 10, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.AM1_FacingY = v; if Settings.AM1_FacingVisual then AM1_CreateFacingBox() end end })
 AM1FacingBox:AddSlider("AM1_FZ_S", { Text = "Facing Z", Default = 9, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.AM1_FacingZ = v; if Settings.AM1_FacingVisual then AM1_CreateFacingBox() end end })
 
+local HBEBox = Tabs.Killer:AddRightGroupbox("Hitbox Expander")
+HBEBox:AddToggle("HBE_Enable_T", { Text="Enable Hitbox Expander", Default=false,
+    Callback=function(v) HitboxExpander.Enabled=v; if v then HBE_ApplyVelocity() end end })
+HBEBox:AddDropdown("HBE_Mode_D", {
+    Text="Target Priority", Values={"Distance","Lowest HP"}, Default="Distance",
+    Multi=false, Callback=function(v) HitboxExpander.TargetMode=v end })
+HBEBox:AddSlider("HBE_Dist_S", { Text="Distance (studs)", Default=10, Min=1, Max=200, Rounding=0,
+    Callback=function(v) HitboxExpander.Distance=v end })
+
 local AM1Vis = Tabs.Killer:AddLeftGroupbox("Range Visual")
 AM1Vis:AddToggle("AM1_RVis_T", { Text = "Show Ring", Default = false, Callback = function(v) Settings.AM1_RangeVisual = v; if v and AM1.running then AM1_CreateRangeRing() else AM1_DestroyRangeRing() end end })
 AM1Vis:AddSlider("AM1_ROp_S", { Text = "Opacity", Default = 1, Min = 0, Max = 1, Rounding = 2, Callback = function(v) Settings.AM1_RangeOpacity = v; if Settings.AM1_RangeVisual and AM1.running then AM1_CreateRangeRing() end end })
@@ -1789,6 +2422,42 @@ AM1Vis:AddSlider("AM1_ROp_S", { Text = "Opacity", Default = 1, Min = 0, Max = 1,
 local AM1FVis = Tabs.Killer:AddRightGroupbox("Facing Visual")
 AM1FVis:AddToggle("AM1_FVis_T", { Text = "Show Box", Default = false, Callback = function(v) Settings.AM1_FacingVisual = v; if v and AM1.running then AM1_CreateFacingBox() else AM1_DestroyFacingBox() end end })
 AM1FVis:AddSlider("AM1_FOp_S", { Text = "Opacity", Default = 1, Min = 0, Max = 1, Rounding = 2, Callback = function(v) Settings.AM1_FacingOpacity = v; if Settings.AM1_FacingVisual and AM1.running then AM1_CreateFacingBox() end end })
+
+--═══════════════════════════════════════════════════════════════════
+-- NORMAL AIM TAB
+--═══════════════════════════════════════════════════════════════════
+local NABox = Tabs.NormalAim:AddLeftGroupbox("Normal Aim")
+NABox:AddToggle("NA_Enable_T", { Text="Enable Normal Aim", Default=false,
+    Callback=function(v) NormalAim.Enabled=v; if v then NA_Start() else NA_Stop() end end })
+NABox:AddDropdown("NA_Method_D", {
+    Text="Aim Method",
+    Values={"Camera Lock","HumanoidRoot Lock","HumanoidRoot Lock + Camera Lock"},
+    Default="Camera Lock", Multi=false,
+    Callback=function(v) NormalAim.Method=v end })
+NABox:AddDropdown("NA_Target_D", {
+    Text="Target Type", Values={"Auto","Killers","Survivors"},
+    Default="Auto", Multi=false,
+    Callback=function(v) NormalAim.TargetType=v; NormalAim._currentTarget=nil end })
+NABox:AddToggle("NA_Wall_T", { Text="Wall Check", Default=false,
+    Callback=function(v) NormalAim.WallCheck=v end })
+NABox:AddToggle("NA_Single_T", { Text="Single Target Mode", Default=false,
+    Callback=function(v) NormalAim.SingleTarget=v; if not v then NormalAim._currentTarget=nil end end })
+NABox:AddDropdown("NA_Part_D", {
+    Text="Aim Part", Values={"Head","Torso","HumanoidRootPart"},
+    Default="Head", Multi=false,
+    Callback=function(v) NormalAim.Part=v end })
+NABox:AddSlider("NA_Dist_S", { Text="Aim Distance (studs)", Default=20, Min=5, Max=500, Rounding=0,
+    Callback=function(v) NormalAim.Distance=v end })
+NABox:AddSlider("NA_Pred_S", { Text="Prediction", Default=0.1, Min=0, Max=2, Rounding=2,
+    Callback=function(v) NormalAim.Prediction=v end })
+NABox:AddSlider("NA_Smooth_S", { Text="Smoothness (higher = slower)", Default=35, Min=1, Max=100, Rounding=0,
+    Callback=function(v) NormalAim.Smoothness=v end })
+NABox:AddToggle("NA_Ping_T", { Text="Ping Prediction", Default=true,
+    Callback=function(v) NormalAim.PingComp=v end })
+
+local NARight = Tabs.NormalAim:AddRightGroupbox("Notes")
+NARight:AddLabel({ Text="Per-frame aimbot. Enable to lock onto the target selected above. Use 'Single Target Mode' to stick to one target until it dies or leaves range.", DoesWrap=true })
+NARight:AddLabel({ Text="Smoothness: 1 = instant lock, 100 = slowest (most human-like). Prediction values above ~0.3 for fast targets may overshoot.", DoesWrap=true })
 
 --═══════════════════════════════════════════════════════════════════
 -- STAMINA TAB
@@ -1834,7 +2503,7 @@ local LockBox = Tabs.AutoGen:AddLeftGroupbox("Lock")
 LockBox:AddSlider("GS_Lock_S", { Text = "Per-press delay (s)", Default = 0.08, Min = 0.02, Max = 0.5, Rounding = 3, Callback = function(v) Settings.GS_LockDelay = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- GAMEPLAY TAB (new)
+-- GAMEPLAY TAB
 --═══════════════════════════════════════════════════════════════════
 local GP = Tabs.Gameplay:AddLeftGroupbox("Performance")
 GP:AddButton({
@@ -1867,7 +2536,7 @@ GP:AddButton({
         end)
     end,
 })
-GP:AddLabel({ Text = "FPS Boost runs once — no toggle. Click again to re-apply after respawn.", DoesWrap = true })
+GP:AddLabel({ Text = "FPS Boost runs once — no toggle.", DoesWrap = true })
 
 local GP2 = Tabs.Gameplay:AddRightGroupbox("External Scripts")
 GP2:AddButton({
@@ -1907,6 +2576,7 @@ ThemeManager:ApplyToTab(Tabs.Appearance)
 local CB = Tabs.Credits:AddLeftGroupbox("CREDITS")
 CB:AddLabel({ Text = "Coding & Owner: c00lkid / random_dude", DoesWrap = true })
 CB:AddLabel({ Text = "Helpers: Viltrumite & Ivy", DoesWrap = true })
+CB:AddLabel({ Text = "v2.3: Vee / Silent Aim / Normal Aim / Hitbox Expander added", DoesWrap = true })
 
 ThemeManager:LoadDefault()
 
@@ -1920,12 +2590,16 @@ Library:OnUnload(function()
     pcall(function() AM1_Disable() end)
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
+    pcall(function() Vee.AutoTrick=false; Vee.AutoFarmSk8=false; Vee.Sk8Everywhere=false; Vee.AutoPhase=false end)
+    pcall(function() HitboxExpander.Enabled=false end)
+    pcall(function() SilentAim.Enabled=false end)
+    pcall(function() NormalAim.Enabled=false; NA_Stop() end)
 end)
 
 Library:Notify({
-    Title = "C00lsaken v2.2",
-    Description = "Survivor aim prediction + HDT fixed, Gameplay tab added",
+    Title = "C00lsaken v2.3",
+    Description = "Vee + Silent Aim + Normal Aim + Hitbox Expander merged",
     Time = 4,
 })
 
-print("[C00lsaken v2.2] Loaded.")
+print("[C00lsaken v2.3] Loaded with Vee / SilentAim / NormalAim / HitboxExpander.")
