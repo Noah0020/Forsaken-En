@@ -1,5 +1,5 @@
 --[[
-    GODSAKEN UNIFIED v2.3 — REDLINE + MERGED
+    GODSAKEN UNIFIED v2.4 — REDLINE + MERGED
     Fixes:
       - Survivor Auto Aim: prediction now uses velocity only
       - HDT: uses internal HDT.Speed/Duration/Delay synced from Settings
@@ -9,6 +9,13 @@
       - Silent Aim (Survivor tab)
       - Normal Aim (dedicated tab, formerly "Manual Aim")
       - Obsidian logo updated
+    v2.4 — Auto Trick rewritten (button-based, matches Cursedsaken) + bug fixes:
+      - AntiRebound: gated by toggle + re-installable
+      - UnlimitedSk8 / Sk8Everywhere: cached module, InZone reset on disable
+      - SilentAim: _installed only set after hooks succeed
+      - HitboxExpander: force-clears _running on disable
+      - NormalAim: removed no-op camera from ray filter
+      - Unload: full Vee/VeerState/HBE/SA teardown
 ]]
 
 local Players             = game:GetService("Players")
@@ -1502,7 +1509,7 @@ local Vee = {
     Sk8Speed=1.15, Sk8TrickAirborneSpeed=1.42, Sk8BumpPower=11.9,
     Sk8TrickStamina=4, Sk8TrickCooldown=1,
     Sk8Everywhere=false, AutoPhase=false,
-    _conns={}, _threads={}
+    _conns={}, _threads={}, _util=nil
 }
 
 local function Vee_GetModule()
@@ -1559,54 +1566,124 @@ local function Vee_SkateControl(on)
     end)
 end
 
-local function Vee_RunAutoTrick()
-    if Vee._threads.AutoTrick then pcall(task.cancel, Vee._threads.AutoTrick); Vee._threads.AutoTrick = nil end
-    if not Vee.AutoTrick then return end
-    Vee._threads.AutoTrick = task.spawn(function()
-        while Vee.AutoTrick do
-            task.wait()
-            local c = LocalPlayer.Character
-            if c and c.Name == "Veeronica" then
-                local hl = c:FindFirstChild("Highlight")
-                if hl and hl.Adornee == c then
-                    if not UserInputService.TouchEnabled or UserInputService.MouseEnabled then
-                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
-                        task.wait(0.05)
-                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
-                    else
-                        pcall(function()
-                            local pg = LocalPlayer:FindFirstChild("PlayerGui")
-                            local main = pg and pg:FindFirstChild("MainUI")
-                            local sb = main and main:FindFirstChild("SprintingButton")
-                            if sb and getconnections then
-                                for _, cc in pairs(getconnections(sb.MouseButton1Down)) do cc:Fire() end
-                                task.wait(0.05)
-                                for _, cc in pairs(getconnections(sb.MouseButton1Up)) do cc:Fire() end
-                                for _, cc in pairs(getconnections(sb.Activated)) do cc:Fire() end
-                            end
-                        end)
-                    end
-                    task.wait(0.1)
-                end
+--═══════════════════════════════════════════════════════════════════
+-- VEE AUTO TRICK (rewritten — button-based, matches Cursedsaken)
+--═══════════════════════════════════════════════════════════════════
+local VeerState = { atRunning=false, atMonitors={}, atConn=nil, atRetry=nil }
+
+local function VeerGetSprintBtn()
+    local ui = LocalPlayer:FindFirstChild("PlayerGui"); if not ui then return nil end
+    local m = ui:FindFirstChild("MainUI"); if not m then return nil end
+    return m:FindFirstChild("SprintingButton", true)
+end
+
+local function VeerTriggerSprint()
+    pcall(function()
+        local btn = VeerGetSprintBtn(); if not btn then return end
+        if getconnections and btn.MouseButton1Down then
+            local fired = false
+            for _, c in pairs(getconnections(btn.MouseButton1Down)) do
+                local ok = pcall(function()
+                    if c.Fire then c:Fire()
+                    elseif c.Function then c.Function() end
+                end)
+                if ok then fired = true; break end
             end
+            if fired then return end
+        end
+        pcall(function() btn:Activate() end)
+        pcall(function()
+            local V = VirtualInputManager
+            if V and V.SendMouseButtonEvent then
+                local x = btn.AbsolutePosition.X + btn.AbsoluteSize.X / 2
+                local y = btn.AbsolutePosition.Y + btn.AbsoluteSize.Y / 2
+                V:SendMouseButtonEvent(x, y, 0, true, game, 1)
+                task.wait(0.03)
+                V:SendMouseButtonEvent(x, y, 0, false, game, 1)
+            end
+        end)
+    end)
+end
+
+local function VeerATGetFolder()
+    local a = ReplicatedStorage:FindFirstChild("Assets"); if not a then return nil end
+    local s = a:FindFirstChild("Survivors"); if not s then return nil end
+    local v = s:FindFirstChild("Veeronica"); if not v then return nil end
+    return v:FindFirstChild("Behavior")
+end
+
+local function VeerATMonitor(h)
+    if not h or VeerState.atMonitors[h] then return end
+    local conns, prev = {}, false
+    local function check()
+        if not VeerState.atRunning then return end
+        if not h.Parent then
+            for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+            VeerState.atMonitors[h] = nil
+            return
+        end
+        local ad = h.Adornee
+        local ch = LocalPlayer.Character
+        local cur = (ad and ch and (ad == ch or ad:IsDescendantOf(ch))) and true or false
+        if cur and not prev then pcall(VeerTriggerSprint) end
+        prev = cur
+    end
+    pcall(function() table.insert(conns, h:GetPropertyChangedSignal("Adornee"):Connect(check)) end)
+    pcall(function() table.insert(conns, h.AncestryChanged:Connect(check)) end)
+    VeerState.atMonitors[h] = true
+    task.spawn(check)
+end
+
+local function VeerATAttach(f)
+    if not f then return false end
+    for _, o in ipairs(f:GetDescendants()) do
+        if o:IsA("Highlight") then pcall(VeerATMonitor, o) end
+    end
+    VeerState.atConn = f.DescendantAdded:Connect(function(c)
+        if c:IsA("Highlight") then pcall(VeerATMonitor, c) end
+    end)
+    return true
+end
+
+local function VeerATStart()
+    if VeerState.atRunning then return end
+    VeerState.atRunning = true
+    if VeerATAttach(VeerATGetFolder()) then return end
+    VeerState.atRetry = task.spawn(function()
+        while VeerState.atRunning do
+            task.wait(3)
+            if VeerATAttach(VeerATGetFolder()) then break end
         end
     end)
 end
 
+local function VeerATStop()
+    if not VeerState.atRunning then return end
+    VeerState.atRunning = false
+    if VeerState.atConn then pcall(function() VeerState.atConn:Disconnect() end); VeerState.atConn = nil end
+    if VeerState.atRetry then pcall(task.cancel, VeerState.atRetry); VeerState.atRetry = nil end
+    VeerState.atMonitors = {}
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- VEE — Anti Rebound / Unlimited Sk8 / Auto Farm Sk8 / Sk8 Everywhere / Auto Phase
+--═══════════════════════════════════════════════════════════════════
+
 local function Vee_RunAntiRebound()
-    if Vee._conns.AntiRebound then return end
+    if Vee._conns.AntiReboundHook then return end
     if not hookmetamethod then return end
     pcall(function()
         local old
         old = hookmetamethod(game, "__namecall", function(self, ...)
-            if getnamecallmethod() == "FireServer" and self == NetworkEvent then
+            if getnamecallmethod() == "FireServer" and self == NetworkEvent and Vee.AntiRebound then
                 local args = {...}
                 local n = tostring(args[1])
                 if n:find("SkateRebound") then return end
                 if n:find("StopSkate") and type(args[2]) == "table" then
                     for _, v in ipairs(args[2]) do
                         if typeof(v) == "Instance" then
-                            NetworkEvent:FireServer(LocalPlayer.Character.Name .. "StopSkate", {buffer.fromstring("\"Manual\"")})
+                            NetworkEvent:FireServer(LocalPlayer.Character.Name .. "StopSkate",
+                                { buffer.fromstring("\"Manual\"") })
                             return
                         end
                     end
@@ -1615,20 +1692,20 @@ local function Vee_RunAntiRebound()
             return old(self, ...)
         end)
     end)
-    Vee._conns.AntiRebound = true
+    Vee._conns.AntiReboundHook = true
 end
 
 local function Vee_RunUnlimitedSk8()
     if Vee._conns.UnlimitedSk8 then return end
+    local sp
+    pcall(function() sp = require(ReplicatedStorage.Systems.Character.Game.Sprinting) end)
+    if not sp then return end
     Vee._conns.UnlimitedSk8 = RunService.Heartbeat:Connect(function()
         if not Vee.UnlimitedSk8 then return end
         local c = LocalPlayer.Character
         local hrp = c and c:FindFirstChild("HumanoidRootPart")
         if not hrp or not hrp:FindFirstChild("SkatePointer") then return end
-        pcall(function()
-            local sp = require(ReplicatedStorage.Systems.Character.Game.Sprinting)
-            if sp then sp.Stamina = sp.MaxStamina end
-        end)
+        pcall(function() sp.Stamina = sp.MaxStamina end)
     end)
 end
 
@@ -1654,8 +1731,19 @@ local function Vee_RunSk8Everywhere(on)
             m.Abilities.Sk8.__orig = nil
             m.Abilities.Sk8.__bypass = nil
         end
+        if Vee._util then
+            local ok, a = pcall(Vee._util.GetActor, Vee._util, LocalPlayer)
+            if ok and a and a.State then a.State.InZone = false end
+        end
         return
     end
+    if Vee._util == nil then
+        local ok, u = pcall(function()
+            return require(ReplicatedStorage.Modules.Utilities.Util)
+        end)
+        Vee._util = ok and u or false
+    end
+    local utilMod = Vee._util or nil
     local function bypass(t)
         if type(t) ~= "table" then return end
         local sk8 = t.Sk8
@@ -1665,21 +1753,18 @@ local function Vee_RunSk8Everywhere(on)
         sk8.__bypass = true
         sk8.Callback = function(a, b) if b == "BAD" then b = nil end return sk8.__orig(a, b) end
     end
-    local function util()
-        local ok, u = pcall(function() return require(ReplicatedStorage.Modules.Utilities.Util) end)
-        return ok and u or nil
-    end
     local function getActor()
-        local u = util()
-        if not u or type(u.GetActor) ~= "function" then return nil end
-        local ok, a = pcall(u.GetActor, u, LocalPlayer)
+        if not utilMod or type(utilMod.GetActor) ~= "function" then return nil end
+        local ok, a = pcall(utilMod.GetActor, utilMod, LocalPlayer)
         return ok and a or nil
     end
     bypass((Vee_GetModule() or {}).Abilities)
     local a = getActor()
     if a and a.Behavior and a.Behavior.Abilities then bypass(a.Behavior.Abilities) end
     if a and a.State then a.State.InZone = true end
-    pcall(function() util():ToggleLockForAbilityIcon("Sk8", "NoCharges", false) end)
+    if utilMod then
+        pcall(function() utilMod:ToggleLockForAbilityIcon("Sk8", "NoCharges", false) end)
+    end
     Vee._threads.Sk8Everywhere = task.spawn(function()
         while Vee.Sk8Everywhere do
             task.wait(0.5)
@@ -1689,7 +1774,9 @@ local function Vee_RunSk8Everywhere(on)
                 if a2.Behavior and a2.Behavior.Abilities then bypass(a2.Behavior.Abilities) end
                 if a2.State then a2.State.InZone = true end
             end
-            pcall(function() util():ToggleLockForAbilityIcon("Sk8", "NoCharges", false) end)
+            if utilMod then
+                pcall(function() utilMod:ToggleLockForAbilityIcon("Sk8", "NoCharges", false) end)
+            end
         end
     end)
 end
@@ -1863,9 +1950,7 @@ end
 local function SA_Install()
     if SilentAim._installed then return end
     if not hookfunction then return end
-    SilentAim._installed = true
-
-    pcall(function()
+    local ok1 = pcall(function()
         local GetPlayerMousePosition = require(ReplicatedStorage.Systems.Player.Miscellaneous.GetPlayerMousePosition)
         local orig = GetPlayerMousePosition.GetMousePos
         hookfunction(orig, function(...)
@@ -1897,12 +1982,11 @@ local function SA_Install()
                 local m = SA_GetFirstSurvivor()
                 if m then local pp = SA_Predict(m); if pp then return pp end end
             end
-
             return orig(...)
         end)
     end)
 
-    pcall(function()
+    local ok2 = pcall(function()
         local Network = require(ReplicatedStorage.Modules.Network.Network)
         local orig = Network.FireServerConnection
         hookfunction(orig, function(self, name, evt, ...)
@@ -1922,6 +2006,8 @@ local function SA_Install()
             return orig(self, name, evt, ...)
         end)
     end)
+
+    if ok1 or ok2 then SilentAim._installed = true end
 end
 
 --═══════════════════════════════════════════════════════════════════
@@ -1949,7 +2035,7 @@ local function NA_WallClear(cam, from, targetChar)
     if not targetPart then return true end
     local p = RaycastParams.new()
     p.FilterType = Enum.RaycastFilterType.Exclude
-    p.FilterDescendantsInstances = { LocalPlayer.Character, cam }
+    p.FilterDescendantsInstances = { LocalPlayer.Character }
     local hit = Workspace:Raycast(from, targetPart.Position - from, p)
     if hit and not hit.Instance:IsDescendantOf(targetChar) then return false end
     return true
@@ -2119,7 +2205,7 @@ _G.Godsaken = {
         SetLockDelay     = function(v) Settings.GS_LockDelay = _num(v, 0.08) end,
     },
     Vee = {
-        SetAutoTrick     = function(v) Vee.AutoTrick=v; Vee_RunAutoTrick() end,
+        SetAutoTrick     = function(v) Vee.AutoTrick=v; if v then VeerATStart() else VeerATStop() end end,
         SetSkateControl  = function(v) Vee.SkateControl=v; Vee_SkateControl(v) end,
         SetAntiRebound   = function(v) Vee.AntiRebound=v; if v then Vee_RunAntiRebound() end end,
         SetUnlimitedSk8  = function(v) Vee.UnlimitedSk8=v; if v then Vee_RunUnlimitedSk8() end end,
@@ -2134,8 +2220,14 @@ _G.Godsaken = {
         SetAutoPhase     = function(v) Vee.AutoPhase=v; Vee_RunAutoPhase() end,
     },
     HitboxExpander = {
-        Enable  = function() HitboxExpander.Enabled=true; HBE_ApplyVelocity() end,
-        Disable = function() HitboxExpander.Enabled=false end,
+        Enable  = function()
+            HitboxExpander.Enabled = true
+            if not HitboxExpander._running then HBE_ApplyVelocity() end
+        end,
+        Disable = function()
+            HitboxExpander.Enabled = false
+            HitboxExpander._running = false
+        end,
         SetTargetMode = function(m) HitboxExpander.TargetMode=m end,
         SetDistance   = function(v) HitboxExpander.Distance=tonumber(v) or 10 end,
     },
@@ -2184,7 +2276,7 @@ Library.NotifySide = "Right"
 
 local Window = Library:CreateWindow({
     Title = "C00lsaken",
-    Footer = "REDLINE  |  v2.3",
+    Footer = "REDLINE  |  v2.4",
     ToggleKeybind = Enum.KeyCode.RightControl,
     Center = true, AutoShow = true, Resizable = true,
     ShowCustomCursor = false, MobileButtonsSide = "Right",
@@ -2364,7 +2456,7 @@ SilentBox:AddSlider("SA_Lead_S", { Text="Lead (ms)", Default=150, Min=0, Max=500
 
 local VeeBox = Tabs.Survivor:AddRightGroupbox("Vee (Veeronica)")
 VeeBox:AddToggle("Vee_AutoTrick_T", { Text="Auto Trick", Default=false,
-    Callback=function(v) Vee.AutoTrick=v; Vee_RunAutoTrick() end })
+    Callback=function(v) Vee.AutoTrick=v; if v then VeerATStart() else VeerATStop() end end })
 VeeBox:AddToggle("Vee_SkateCtrl_T", { Text="Skate Control", Default=false,
     Callback=function(v) Vee.SkateControl=v; Vee_SkateControl(v) end })
 VeeBox:AddToggle("Vee_AntiReb_T", { Text="Anti Rebound", Default=false,
@@ -2408,7 +2500,11 @@ AM1FacingBox:AddSlider("AM1_FZ_S", { Text = "Facing Z", Default = 9, Min = 1, Ma
 
 local HBEBox = Tabs.Killer:AddRightGroupbox("Hitbox Expander")
 HBEBox:AddToggle("HBE_Enable_T", { Text="Enable Hitbox Expander", Default=false,
-    Callback=function(v) HitboxExpander.Enabled=v; if v then HBE_ApplyVelocity() end end })
+    Callback=function(v)
+        HitboxExpander.Enabled = v
+        if v and not HitboxExpander._running then HBE_ApplyVelocity() end
+        if not v then HitboxExpander._running = false end
+    end })
 HBEBox:AddDropdown("HBE_Mode_D", {
     Text="Target Priority", Values={"Distance","Lowest HP"}, Default="Distance",
     Multi=false, Callback=function(v) HitboxExpander.TargetMode=v end })
@@ -2576,7 +2672,7 @@ ThemeManager:ApplyToTab(Tabs.Appearance)
 local CB = Tabs.Credits:AddLeftGroupbox("CREDITS")
 CB:AddLabel({ Text = "Coding & Owner: c00lkid / random_dude", DoesWrap = true })
 CB:AddLabel({ Text = "Helpers: Viltrumite & Ivy", DoesWrap = true })
-CB:AddLabel({ Text = "v2.3: Vee / Silent Aim / Normal Aim / Hitbox Expander added", DoesWrap = true })
+CB:AddLabel({ Text = "v2.4: Auto Trick rewritten (button-based) + bug fixes", DoesWrap = true })
 
 ThemeManager:LoadDefault()
 
@@ -2590,16 +2686,37 @@ Library:OnUnload(function()
     pcall(function() AM1_Disable() end)
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
-    pcall(function() Vee.AutoTrick=false; Vee.AutoFarmSk8=false; Vee.Sk8Everywhere=false; Vee.AutoPhase=false end)
-    pcall(function() HitboxExpander.Enabled=false end)
-    pcall(function() SilentAim.Enabled=false end)
-    pcall(function() NormalAim.Enabled=false; NA_Stop() end)
+
+    -- Vee / Auto Trick / VEER cleanup
+    pcall(function()
+        Vee.AutoTrick = false
+        VeerATStop()
+        Vee.AutoFarmSk8 = false
+        Vee.Sk8Everywhere = false
+        Vee.AutoPhase = false
+        for _, t in pairs(Vee._threads) do pcall(task.cancel, t) end
+        Vee._threads = {}
+        for _, c in pairs(Vee._conns) do
+            if typeof(c) == "RBXScriptConnection" then
+                pcall(function() c:Disconnect() end)
+            end
+        end
+        Vee._conns = {}
+        Vee._util = nil
+    end)
+
+    pcall(function()
+        HitboxExpander.Enabled = false
+        HitboxExpander._running = false
+    end)
+    pcall(function() SilentAim.Enabled = false end)
+    pcall(function() NormalAim.Enabled = false; NA_Stop() end)
 end)
 
 Library:Notify({
-    Title = "C00lsaken v2.3",
-    Description = "Vee + Silent Aim + Normal Aim + Hitbox Expander merged",
+    Title = "C00lsaken v2.4",
+    Description = "Auto Trick rewritten + bug fixes across Vee / Silent Aim / HBE / Normal Aim",
     Time = 4,
 })
 
-print("[C00lsaken v2.3] Loaded with Vee / SilentAim / NormalAim / HitboxExpander.")
+print("[C00lsaken v2.4] Loaded — Auto Trick button-based, all known bugs fixed.")
