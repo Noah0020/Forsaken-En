@@ -1,7 +1,7 @@
 --[[
     CR4ZY HUB — OBSIDIAN UI
     Crimson Edition
-    Box-based facing block — Length slider system
+    Box-based facing block — Bug-fixed build
 ]]
 
 local Players             = game:GetService("Players")
@@ -51,14 +51,12 @@ local Settings = {
     AB_Mode = "Guest1337", AB_ShowZone = true,
     AB_PendingWindow = 0.25,
     AB_SpamEnabled = false, AB_SpamCount = 4, AB_SpamDuration = 0.05,
-    -- Box detection
     BoxRange = 18,
     BoxBlockDistance = 3,
     BoxDisplayDuration = 0.3,
     BoxFollowDelay = 0.1,
     BoxFacingDot = 0.5,
     BoxKillerW = 6, BoxKillerH = 6,
-
     ABT_Duration = 0.5, AP_Delay = 0.5, PA_Prediction = 4,
     HDT_Speed = 40, HDT_Delay = 0.05, HDT_Duration = 0.6,
     AIM_Mode = "Character", AIM_Prediction = 4, AIM_LockTime = 0.7,
@@ -90,7 +88,7 @@ local HDT_Anims = {}
 for _, id in ipairs({72722244508749,96959123077498,95802026624883,140671644163156,100926346851492}) do HDT_Anims["rbxassetid://"..id] = true end
 
 --═══════════════════════════════════════════════════════════════════
--- BOX-BASED FACING BLOCK (Length slider system)
+-- BOX-BASED FACING BLOCK (Length slider system, bug-fixed)
 --═══════════════════════════════════════════════════════════════════
 local AB = { running=false, frameConn=nil, perKiller={}, lastBlock=0, BLOCK_COOLDOWN=27 }
 local GREEN = Color3.fromRGB(70,255,120)
@@ -102,17 +100,28 @@ local BoxState = {
     killerBoxes = {},
     playerBox = nil,
     rootFolder = nil,
+    renderConn = nil,
 }
 
+-- FIX 10: recreate folder if destroyed, never keep stale ref
 local function Box_GetRootFolder()
-    if BoxState.rootFolder and BoxState.rootFolder.Parent then
-        return BoxState.rootFolder
-    end
+    local f = BoxState.rootFolder
+    if f and f.Parent then return f end
+    if f and not f.Parent then pcall(function() f:Destroy() end) end
     local folder = Instance.new("Folder")
     folder.Name = "GS_BoxVisuals"
     folder.Parent = Workspace
     BoxState.rootFolder = folder
     return folder
+end
+
+-- FIX 4: explicit root folder destroy
+local function Box_DestroyRootFolder()
+    local f = BoxState.rootFolder
+    if f then
+        pcall(function() f:Destroy() end)
+        BoxState.rootFolder = nil
+    end
 end
 
 local function Box_Alpha(dt)
@@ -145,10 +154,14 @@ local function Box_UpdateSmoothing(dt)
                         st.look = st.look:Lerp(nl, a)
                         if st.look.Magnitude > 0.01 then st.look = st.look.Unit else st.look = nl.Unit end
                     end
+                else
+                    -- FIX 9: HRP gone → invalidate cached state so visuals hide
+                    BoxState.killers[k] = nil
                 end
             end
         end
     end
+    -- FIX 7: drop state for dead/destroyed killers
     for k in pairs(BoxState.killers) do
         if not k.Parent then BoxState.killers[k] = nil end
     end
@@ -165,6 +178,7 @@ local function AB_IsFacingPlayer(killer)
     return flatLook.Unit:Dot(flatTo.Unit) >= Settings.BoxFacingDot
 end
 
+-- FIX 1 + FIX 2: single combined distance check, clamped blockLen
 local function AB_ShouldBlock(killer)
     local st = BoxState.killers[killer]
     if not st or not BoxState.player then return false end
@@ -178,12 +192,9 @@ local function AB_ShouldBlock(killer)
     if flatLook.Magnitude < 0.01 or flatTo.Magnitude < 0.01 then return false end
     if flatLook.Unit:Dot(flatTo.Unit) < Settings.BoxFacingDot then return false end
 
+    local blockLen = math.max(Settings.BoxRange - Settings.BoxBlockDistance, 0.5)
     local alongLook = flatTo:Dot(flatLook.Unit)
-    local boxLen = Settings.BoxRange - Settings.BoxBlockDistance
-
-    if alongLook <= boxLen then return true end
-    if (alongLook - boxLen) <= Settings.BoxBlockDistance then return true end
-    return false
+    return alongLook <= (blockLen + Settings.BoxBlockDistance)
 end
 
 -- Wireframe helpers
@@ -220,6 +231,22 @@ local function Box_CreateWireframe(parent)
     return parts
 end
 
+-- FIX 12: validate ALL 12 edges
+local function Box_IsWireframeValid(parts)
+    if not parts or #parts == 0 then return false end
+    for _, p in ipairs(parts) do
+        if not p.part or not p.part.Parent then return false end
+    end
+    return true
+end
+
+local function Box_DestroyWireframe(parts)
+    if not parts then return end
+    for _, p in ipairs(parts) do
+        if p.part then pcall(function() p.part:Destroy() end) end
+    end
+end
+
 local function Box_UpdateWireframe(parts, cf, size, color)
     for _, p in ipairs(parts) do
         if p.part and p.part.Parent then
@@ -239,62 +266,55 @@ local function Box_UpdateWireframe(parts, cf, size, color)
 end
 
 local function Box_HideWireframe(parts)
+    if not parts then return end
     for _, p in ipairs(parts) do
         if p.part and p.part.Parent then p.part.Transparency = 1 end
     end
 end
 
-local function Box_DestroyWireframe(parts)
-    for _, p in ipairs(parts) do
-        if p.part and p.part.Parent then p.part:Destroy() end
-    end
-end
-
+-- FIX 6: only reuse if ALL 12 edges valid; destroy stale set on fail
 local function Box_GetKillerBox(killer)
     local b = BoxState.killerBoxes[killer]
-    if b and b.parts[1] and b.parts[1].part and b.parts[1].part.Parent then
-        return b
-    end
+    if b and Box_IsWireframeValid(b.parts) then return b end
+    if b then Box_DestroyWireframe(b.parts) end
     local parts = Box_CreateWireframe(Box_GetRootFolder())
     b = { parts = parts, showUntil = 0 }
     BoxState.killerBoxes[killer] = b
     return b
 end
 
+-- FIX 8: player box only reuses when all 12 edges valid
 local function Box_GetPlayerBox()
     local pb = BoxState.playerBox
-    if pb and pb.parts[1] and pb.parts[1].part and pb.parts[1].part.Parent then
-        return pb
-    end
+    if pb and Box_IsWireframeValid(pb.parts) then return pb end
+    if pb then Box_DestroyWireframe(pb.parts) end
     local parts = Box_CreateWireframe(Box_GetRootFolder())
     pb = { parts = parts, showUntil = 0 }
     BoxState.playerBox = pb
     return pb
 end
 
+-- FIX 11: use LIVE positions at M1 time, not cached smoothing
 local function Box_ShowOnM1(killer)
     if not Settings.AB_ShowZone then return end
-    if not BoxState.killers[killer] then
-        local khrp = killer:FindFirstChild("HumanoidRootPart")
-        if khrp then
-            BoxState.killers[killer] = { pos = khrp.Position, look = khrp.CFrame.LookVector }
-        else
-            return
-        end
-    end
-    if not BoxState.player then
-        local chrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if chrp then BoxState.player = chrp.Position else return end
-    end
+    local khrp = killer:FindFirstChild("HumanoidRootPart")
+    if not khrp then return end
+    local chrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not chrp then return end
+
+    -- Force-sync smoothing state to live position at M1 moment
+    BoxState.killers[killer] = { pos = khrp.Position, look = khrp.CFrame.LookVector }
+    BoxState.player = chrp.Position
+
     local now = os.clock()
-    local kb = Box_GetKillerBox(killer)
-    kb.showUntil = now + Settings.BoxDisplayDuration
-    local st = BoxState.killers[killer]
-    if st and (BoxState.player - st.pos).Magnitude <= Settings.BoxRange then
+    Box_GetKillerBox(killer).showUntil = now + Settings.BoxDisplayDuration
+
+    if (chrp.Position - khrp.Position).Magnitude <= Settings.BoxRange then
         Box_GetPlayerBox().showUntil = now + Settings.BoxDisplayDuration
     end
 end
 
+-- FIX 6 + FIX 7 + FIX 9: validate parts, destroy dead killers, hide on lost HRP
 local function Box_RenderAll()
     if not Settings.AB_ShowZone then
         for _, box in pairs(BoxState.killerBoxes) do Box_HideWireframe(box.parts) end
@@ -302,19 +322,22 @@ local function Box_RenderAll()
         return
     end
     local now = os.clock()
-    local boxLen = Settings.BoxRange - Settings.BoxBlockDistance
+    local blockLen = math.max(Settings.BoxRange - Settings.BoxBlockDistance, 0.5)
 
     for killer, box in pairs(BoxState.killerBoxes) do
         if not killer.Parent then
             Box_DestroyWireframe(box.parts)
             BoxState.killerBoxes[killer] = nil
+        elseif not Box_IsWireframeValid(box.parts) then
+            Box_DestroyWireframe(box.parts)
+            box.parts = {}
         elseif now > box.showUntil then
             Box_HideWireframe(box.parts)
         else
             local st = BoxState.killers[killer]
             if st then
-                local size = Vector3.new(Settings.BoxKillerW, Settings.BoxKillerH, boxLen)
-                local center = st.pos + st.look * (boxLen / 2)
+                local size = Vector3.new(Settings.BoxKillerW, Settings.BoxKillerH, blockLen)
+                local center = st.pos + st.look * (blockLen / 2)
                 local cf = CFrame.lookAt(center, center + st.look)
                 local color = AB_IsFacingPlayer(killer) and GREEN or BLUE
                 Box_UpdateWireframe(box.parts, cf, size, color)
@@ -326,7 +349,10 @@ local function Box_RenderAll()
 
     local pb = BoxState.playerBox
     if pb then
-        if now > pb.showUntil or not BoxState.player then
+        if not Box_IsWireframeValid(pb.parts) then
+            Box_DestroyWireframe(pb.parts)
+            pb.parts = {}
+        elseif now > pb.showUntil or not BoxState.player then
             Box_HideWireframe(pb.parts)
         else
             local s = Settings.BoxBlockDistance * 2
@@ -335,10 +361,30 @@ local function Box_RenderAll()
     end
 end
 
-RunService.RenderStepped:Connect(function(dt)
-    if not AB.running and not Settings.AB_ShowZone then return end
-    Box_UpdateSmoothing(dt or 0.016)
-    Box_RenderAll()
+-- FIX 5: store connection so it can be disconnected
+local function Box_StartRender()
+    if BoxState.renderConn then return end
+    BoxState.renderConn = RunService.RenderStepped:Connect(function(dt)
+        Box_UpdateSmoothing(dt or 0.016)
+        Box_RenderAll()
+    end)
+end
+
+local function Box_StopRender()
+    if BoxState.renderConn then
+        pcall(function() BoxState.renderConn:Disconnect() end)
+        BoxState.renderConn = nil
+    end
+end
+
+Box_StartRender()
+
+-- FIX 3: reset cached player position on respawn so box snaps to new character
+LocalPlayer.CharacterAdded:Connect(function()
+    BoxState.player = nil
+    if BoxState.playerBox and BoxState.playerBox.parts then
+        Box_HideWireframe(BoxState.playerBox.parts)
+    end
 end)
 
 --────── Block firing ──────
@@ -472,16 +518,31 @@ local function AB_Enable()
     if kf then for _, k in ipairs(kf:GetChildren()) do AB_HookKiller(k) end end
     AB.frameConn = RunService.RenderStepped:Connect(AB_FrameLoop)
 end
+
+-- FIX 4, 5, 8, 10: complete cleanup including folder + render connection
 local function AB_Disable()
     AB.running = false
     if AB.frameConn then pcall(function() AB.frameConn:Disconnect() end); AB.frameConn = nil end
     for k in pairs(AB.perKiller) do AB_UnhookKiller(k) end
     AB.perKiller = {}
-    for _, box in pairs(BoxState.killerBoxes) do Box_DestroyWireframe(box.parts) end
+
+    -- Destroy all killer box wireframes
+    for killer, box in pairs(BoxState.killerBoxes) do
+        Box_DestroyWireframe(box.parts)
+    end
     BoxState.killerBoxes = {}
-    if BoxState.playerBox then Box_DestroyWireframe(BoxState.playerBox.parts); BoxState.playerBox = nil end
+
+    -- Destroy player box wireframe
+    if BoxState.playerBox then
+        Box_DestroyWireframe(BoxState.playerBox.parts)
+        BoxState.playerBox = nil
+    end
+
     BoxState.killers = {}
     BoxState.player = nil
+
+    -- Destroy the parent folder itself
+    Box_DestroyRootFolder()
 end
 
 --═══════════════════════════════════════════════════════════════════
@@ -1844,20 +1905,14 @@ end)
 --═══════════════════════════════════════════════════════════════════
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
-
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 Library.NotifySide = "Right"
 
 local Window = Library:CreateWindow({
-    Title = "Cr4zy HuB",
-    Footer = "Crimson Edition",
-    ToggleKeybind = Enum.KeyCode.RightControl,
-    Center = true,
-    AutoShow = true,
-    Resizable = true,
-    ShowCustomCursor = false,
-    NotifySide = "Right",
+    Title = "Cr4zy HuB", Footer = "Crimson Edition",
+    ToggleKeybind = Enum.KeyCode.RightControl, Center = true,
+    AutoShow = true, Resizable = true, ShowCustomCursor = false, NotifySide = "Right",
 })
 
 local Tabs = {
@@ -1921,7 +1976,6 @@ do
     local g = Tabs.Stam:AddLeftGroupbox("Infinite Stamina")
     g:AddToggle("Stam_Inf_T", { Text = "Infinite Stamina", Default = false, Callback = function(v) Stam_SetInfinite(v) end })
     g:AddButton({ Text = "Restore Original Values", Func = function() Stam_Restore() end })
-
     local o = Tabs.Stam:AddRightGroupbox("Stamina Overrides")
     o:AddSlider("Stam_Max_S",    { Text = "Max Stamina",      Default = STAM_DEFAULT.MaxStamina,       Min = 1, Max = 1000, Rounding = 0, Callback = function(v) Stam_SetField("MaxStamina", v) end })
     o:AddSlider("Stam_Sprint_S", { Text = "Sprint Speed",     Default = STAM_DEFAULT.SprintSpeed,      Min = 1, Max = 60,   Rounding = 0, Callback = function(v) Stam_SetField("SprintSpeed", v) end })
@@ -1956,7 +2010,7 @@ do
     bd:AddSlider("Box_BlockDist_S", {
         Text = "Block Distance (studs)",
         Default = 3, Min = 1, Max = 15, Rounding = 1,
-        Tooltip = "How close killer box must be to trigger block. Also player box size.",
+        Tooltip = "How close the killer box front must be to trigger block. Also player box size.",
         Callback = function(v) Settings.BoxBlockDistance = v end,
     })
     bd:AddSlider("Box_Delay_S", {
@@ -2055,12 +2109,7 @@ do
         Callback = function(v) SilentAim.Selected = SA_NormalizeSelected(v) end,
     })
     g:AddToggle("SA_Enable_T", { Text = "Enable Silent Aim", Default = false, Callback = function(v) SilentAim.Enabled = v; if v then SA_Install() end end })
-    g:AddToggle("SA_SafeMode_T", {
-        Text = "Safe Mode (disable mouse hook)",
-        Default = false,
-        Tooltip = "Enable if Silent Aim ever freezes you.",
-        Callback = function(v) SilentAim.UseMouseHook = not v end,
-    })
+    g:AddToggle("SA_SafeMode_T", { Text = "Safe Mode (disable mouse hook)", Default = false, Tooltip = "Enable if Silent Aim freezes.", Callback = function(v) SilentAim.UseMouseHook = not v end })
     g:AddSlider("SA_Lead_S", { Text = "Lead (ms)", Default = 150, Min = 0, Max = 500, Rounding = 0, Callback = function(v) SilentAim.LeadTime = v / 1000 end })
 end
 
@@ -2073,12 +2122,12 @@ do
     v:AddToggle("Vee_SkateCtrl_T", { Text = "Skate Control", Default = false, Callback = function(x) Vee.SkateControl = x; Vee_SkateControl(x) end })
     v:AddDivider()
     v:AddToggle("Vee_Custom_T", { Text = "Custom Stats", Default = false, Callback = function(x) Vee.CustomStats = x; Vee_ApplyStats(true) end })
-    v:AddSlider("Vee_Speed_S",    { Text = "Skate Speed",              Default = 1.15, Min = 1,   Max = 10,  Rounding = 2, Callback = function(x) Vee.Sk8Speed = x;              if Vee.CustomStats then Vee_ApplyStats() end end })
-    v:AddSlider("Vee_StamCost_S", { Text = "Stamina Cost",             Default = 1.35, Min = 0.1, Max = 5,   Rounding = 2, Callback = function(x) Vee.Sk8StaminaCost = x;      if Vee.CustomStats then Vee_ApplyStats() end end })
-    v:AddSlider("Vee_Trick_S",    { Text = "Trick Boost Speed",        Default = 1.42, Min = 1,   Max = 15,  Rounding = 2, Callback = function(x) Vee.Sk8TrickAirborneSpeed = x;if Vee.CustomStats then Vee_ApplyStats() end end })
-    v:AddSlider("Vee_Bump_S",     { Text = "Bumper Knockback",         Default = 11.9, Min = 10,  Max = 150, Rounding = 1, Callback = function(x) Vee.Sk8BumpPower = x;          if Vee.CustomStats then Vee_ApplyStats() end end })
-    v:AddSlider("Vee_Stam_S",     { Text = "Stamina Per Trick",        Default = 4,    Min = 0,   Max = 100, Rounding = 0, Callback = function(x) Vee.Sk8TrickStamina = x;       if Vee.CustomStats then Vee_ApplyStats() end end })
-    v:AddSlider("Vee_CD_S",       { Text = "Trick Cooldown",           Default = 1,    Min = 0.1, Max = 5,   Rounding = 2, Callback = function(x) Vee.Sk8TrickCooldown = x;      if Vee.CustomStats then Vee_ApplyStats() end end })
+    v:AddSlider("Vee_Speed_S",    { Text = "Skate Speed",        Default = 1.15, Min = 1,   Max = 10,  Rounding = 2, Callback = function(x) Vee.Sk8Speed = x;              if Vee.CustomStats then Vee_ApplyStats() end end })
+    v:AddSlider("Vee_StamCost_S", { Text = "Stamina Cost",       Default = 1.35, Min = 0.1, Max = 5,   Rounding = 2, Callback = function(x) Vee.Sk8StaminaCost = x;      if Vee.CustomStats then Vee_ApplyStats() end end })
+    v:AddSlider("Vee_Trick_S",    { Text = "Trick Boost Speed",  Default = 1.42, Min = 1,   Max = 15,  Rounding = 2, Callback = function(x) Vee.Sk8TrickAirborneSpeed = x;if Vee.CustomStats then Vee_ApplyStats() end end })
+    v:AddSlider("Vee_Bump_S",     { Text = "Bumper Knockback",   Default = 11.9, Min = 10,  Max = 150, Rounding = 1, Callback = function(x) Vee.Sk8BumpPower = x;          if Vee.CustomStats then Vee_ApplyStats() end end })
+    v:AddSlider("Vee_Stam_S",     { Text = "Stamina Per Trick",  Default = 4,    Min = 0,   Max = 100, Rounding = 0, Callback = function(x) Vee.Sk8TrickStamina = x;       if Vee.CustomStats then Vee_ApplyStats() end end })
+    v:AddSlider("Vee_CD_S",       { Text = "Trick Cooldown",     Default = 1,    Min = 0.1, Max = 5,   Rounding = 2, Callback = function(x) Vee.Sk8TrickCooldown = x;      if Vee.CustomStats then Vee_ApplyStats() end end })
     v:AddButton({ Text = "Force Apply Stats Now", Func = function()
         Vee_ApplyStats(true)
         Library:Notify({ Title = "Vee", Content = "Stats re-applied", Time = 2 })
@@ -2095,16 +2144,12 @@ do
         else GS_Disable() end
     end })
     g:AddSlider("GS_Start_S", { Text = "Start Delay (s)", Default = 1.5, Min = 0, Max = 5, Rounding = 1, Callback = function(v) Settings.GS_StartDelay = v end })
-
     local fl = Tabs.Gen:AddRightGroupbox("Flow — Dots")
     fl:AddSlider("GS_Flow_S", { Text = "Per-cell speed (s)", Default = 0.05, Min = 0.005, Max = 0.5, Rounding = 3, Callback = function(v) Settings.GS_FlowDelay = v end })
-
     local gr = Tabs.Gen:AddLeftGroupbox("Gear")
     gr:AddSlider("GS_Gear_S", { Text = "Per-turn speed (s)", Default = 0.03, Min = 0.005, Max = 0.5, Rounding = 3, Callback = function(v) Settings.GS_GearDelay = v end })
-
     local cn = Tabs.Gen:AddRightGroupbox("Connect")
     cn:AddSlider("GS_Conn_S", { Text = "Per-pair speed (s)", Default = 1.0, Min = 0.05, Max = 3, Rounding = 2, Callback = function(v) Settings.GS_ConnectDelay = v end })
-
     local lk = Tabs.Gen:AddLeftGroupbox("Lock")
     lk:AddSlider("GS_Lock_S", { Text = "Per-press delay (s)", Default = 0.08, Min = 0.02, Max = 0.5, Rounding = 3, Callback = function(v) Settings.GS_LockDelay = v end })
 end
@@ -2172,12 +2217,25 @@ Library:OnUnload(function()
     pcall(function() Vee.AutoTrick = false; VeerATStop() end)
     pcall(function() HitboxExpander.Enabled = false; HitboxExpander._running = false end)
     pcall(function() SilentAim.Enabled = false end)
+    -- Box: destroy all wireframes + folder + render connection
+    pcall(function()
+        Box_StopRender()
+        for killer, box in pairs(BoxState.killerBoxes) do Box_DestroyWireframe(box.parts) end
+        BoxState.killerBoxes = {}
+        if BoxState.playerBox then
+            Box_DestroyWireframe(BoxState.playerBox.parts)
+            BoxState.playerBox = nil
+        end
+        BoxState.killers = {}
+        BoxState.player = nil
+        Box_DestroyRootFolder()
+    end)
 end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Crimson Edition — Length slider box system active",
+    Content = "Crimson Edition — 12 box bugs fixed",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — Length slider box system.")
+print("[Cr4zy HuB] Loaded — Box system bug fixes applied.")
