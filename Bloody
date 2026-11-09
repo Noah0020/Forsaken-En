@@ -1,9 +1,12 @@
 --[[
-    GODSAKEN UNIFIED v2.6 — REDLINE + MERGED
-    v2.6 changes:
-      - Vee stat change NO LONGER FREEZES (getgc cached, loop removed)
-      - Icon fixed: "123123975685239" (no rbxassetid:// prefix)
-      - Vee simplified: Auto Trick / Skate Control / Custom Stats only
+    GODSAKEN UNIFIED v2.8 — REDLINE + MERGED
+    v2.8 changes:
+      - Auto Trick: LEGIT PACING — only fires when the game shows the
+        trick-zone highlight on us (near wall) AND skating. Fires at
+        TrickInterval (default 1.0s = natural cooldown).
+        No more debuff-sound spam, no more 12Hz trick sound.
+      - Vee stat change: getgc cached (no freeze)
+      - Icon: "123123975685239"
 ]]
 
 local Players             = game:GetService("Players")
@@ -1489,7 +1492,7 @@ local function GS_Disable()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- VEE — CACHED STAT SYSTEM (v2.6 — no freeze)
+-- VEE — CACHED STAT SYSTEM
 --═══════════════════════════════════════════════════════════════════
 local Vee = {
     AutoTrick = false,
@@ -1500,8 +1503,8 @@ local Vee = {
     Sk8BumpPower = 11.9,
     Sk8TrickStamina = 4,
     Sk8TrickCooldown = 1,
-    _moduleCache = nil,     -- nil = not scanned yet
-    _behaviorModule = nil,  -- cached require result
+    _moduleCache = nil,
+    _behaviorModule = nil,
 }
 
 local function Vee_GetBehaviorFolder()
@@ -1524,7 +1527,6 @@ local function Vee_GetBehaviorModule()
     return nil
 end
 
--- Single getgc scan — cached until invalidated (toggle-on / respawn / force button)
 local function Vee_CollectModules()
     local out, seen = {}, {}
     local behavior = Vee_GetBehaviorModule()
@@ -1543,7 +1545,6 @@ local function Vee_CollectModules()
             end
         end
     end
-    -- One-time getgc fallback to catch game-cached copies
     if getgc then
         pcall(function()
             for _, t in pairs(getgc(true)) do
@@ -1606,7 +1607,6 @@ local function Vee_SkateControl(on)
         pcall(function() m.Sk8TurnControl = on and 6.5 or 0.65 end)
         pcall(function() rawset(m, "Sk8TurnControl", on and 6.5 or 0.65) end)
     end
-    -- getgc scan only here (Skate Control is toggle-only, not a loop)
     if getgc then
         pcall(function()
             for _, v in pairs(getgc(true)) do
@@ -1618,7 +1618,6 @@ local function Vee_SkateControl(on)
     end
 end
 
--- Re-apply once per respawn (safe — not in a loop)
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(2)
     if Vee.CustomStats then
@@ -1627,84 +1626,147 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 --═══════════════════════════════════════════════════════════════════
--- VEE AUTO TRICK (button-based)
+-- VEE AUTO TRICK (v2.8 — legit pacing: only when in trick zone + cooldown)
 --═══════════════════════════════════════════════════════════════════
-local VeerState = { atRunning=false, atMonitors={}, atConn=nil, atRetry=nil }
+local VeerState = {
+    atRunning = false,
+    atLoop = nil,
+    sprintBtn = nil,
+    sprintConn = nil,
+    TrickInterval = 1.0,     -- seconds between tricks (default = natural cooldown)
+    RequireWallCheck = true, -- extra raycast safety: never fire if no wall nearby
+    lastFireAt = 0,
+}
 
-local function VeerGetSprintBtn()
+local function VeerGetSprintBtnCached()
+    if VeerState.sprintBtn and VeerState.sprintBtn.Parent then
+        return VeerState.sprintBtn
+    end
+    VeerState.sprintBtn = nil
     local ui = LocalPlayer:FindFirstChild("PlayerGui"); if not ui then return nil end
     local m = ui:FindFirstChild("MainUI"); if not m then return nil end
-    return m:FindFirstChild("SprintingButton", true)
+    local btn = m:FindFirstChild("SprintingButton", true)
+    VeerState.sprintBtn = btn
+    return btn
 end
 
-local function VeerTriggerSprint()
-    pcall(function()
-        local btn = VeerGetSprintBtn(); if not btn then return end
-        if getconnections and btn.MouseButton1Down then
-            for _, c in pairs(getconnections(btn.MouseButton1Down)) do
-                if pcall(function() c.Function() end) then return end
+local function VeerGetSprintConn()
+    local btn = VeerGetSprintBtnCached()
+    if not btn then VeerState.sprintConn = nil; return nil end
+    if VeerState.sprintConn then
+        local ok = pcall(function() return VeerState.sprintConn.Connected end)
+        if ok and VeerState.sprintConn.Connected ~= false then
+            return VeerState.sprintConn
+        end
+    end
+    VeerState.sprintConn = nil
+    if not getconnections then return nil end
+    local sig = btn.MouseButton1Down
+    if not sig then return nil end
+    for _, c in pairs(getconnections(sig)) do
+        if c.Function then
+            VeerState.sprintConn = c
+            return c
+        end
+    end
+    return nil
+end
+
+-- Fire the sprint button (trick). Returns true if we were able to fire.
+local function VeerFireTrick()
+    local conn = VeerGetSprintConn()
+    if conn then
+        if pcall(function() conn.Function() end) then return true end
+        VeerState.sprintConn = nil
+    end
+    local btn = VeerGetSprintBtnCached()
+    if btn then
+        if pcall(function() btn:Activate() end) then return true end
+    end
+    return false
+end
+
+-- Raycast wall check — 4 directions, small radius
+local function VeerHasNearbyWall()
+    if not VeerState.RequireWallCheck then return true end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local p = RaycastParams.new()
+    p.FilterType = Enum.RaycastFilterType.Exclude
+    p.FilterDescendantsInstances = { char }
+    local dirs = {
+        hrp.CFrame.LookVector,
+        -hrp.CFrame.LookVector,
+        hrp.CFrame.RightVector,
+        -hrp.CFrame.RightVector,
+    }
+    local origin = hrp.Position
+    for _, d in ipairs(dirs) do
+        local hit = Workspace:Raycast(origin, d * 5, p)
+        if hit and hit.Instance and hit.Instance.CanCollide then
+            return true
+        end
+    end
+    return false
+end
+
+-- "Trick zone" = the game itself shows a trick-Highlight on our character
+-- (means we're near a wall AND skating). This is what Cursedsaken originally
+-- hooked — we use it as ground truth so we never fire a "no wall" trick.
+local function VeerHasTrickHighlight()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local folder = Vee_GetBehaviorFolder()
+    if not folder then return false end
+    for _, d in ipairs(folder:GetDescendants()) do
+        if d:IsA("Highlight") then
+            local ad = d.Adornee
+            if ad == char or (ad and ad:IsDescendantOf(char)) then
+                return true
             end
         end
-        pcall(function() btn:Activate() end)
-        pcall(function()
-            local V = VirtualInputManager
-            if V and V.SendMouseButtonEvent then
-                local x = btn.AbsolutePosition.X + btn.AbsoluteSize.X / 2
-                local y = btn.AbsolutePosition.Y + btn.AbsoluteSize.Y / 2
-                V:SendMouseButtonEvent(x, y, 0, true, game, 1)
-                task.wait(0.03)
-                V:SendMouseButtonEvent(x, y, 0, false, game, 1)
-            end
-        end)
-    end)
-end
-
-local function VeerATGetFolder()
-    local vee = Vee_GetBehaviorFolder()
-    return vee and vee:FindFirstChild("Behavior")
-end
-
-local function VeerATMonitor(h)
-    if not h or VeerState.atMonitors[h] then return end
-    local conns, prev = {}, false
-    local function check()
-        if not VeerState.atRunning then return end
-        if not h.Parent then
-            for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-            VeerState.atMonitors[h] = nil
-            return
-        end
-        local ad = h.Adornee
-        local ch = LocalPlayer.Character
-        local cur = (ad and ch and (ad == ch or ad:IsDescendantOf(ch))) and true or false
-        if cur and not prev then pcall(VeerTriggerSprint) end
-        prev = cur
     end
-    pcall(function() table.insert(conns, h:GetPropertyChangedSignal("Adornee"):Connect(check)) end)
-    pcall(function() table.insert(conns, h.AncestryChanged:Connect(check)) end)
-    VeerState.atMonitors[h] = true
-    task.spawn(check)
+    return false
 end
 
-local function VeerATAttach(f)
-    if not f then return false end
-    for _, o in ipairs(f:GetDescendants()) do
-        if o:IsA("Highlight") then pcall(VeerATMonitor, o) end
-    end
-    VeerState.atConn = f.DescendantAdded:Connect(function(c)
-        if c:IsA("Highlight") then pcall(VeerATMonitor, c) end
-    end)
+-- Full readiness check
+local function VeerIsTrickPossible()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local cn = char:GetAttribute("CharacterName") or char.Name
+    if cn ~= "Veeronica" then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    -- Must be skating
+    if not hrp:FindFirstChild("SkatePointer") then return false end
+    -- Game must be signalling a valid trick zone
+    if not VeerHasTrickHighlight() then return false end
+    -- Belt-and-suspenders: verify a wall is actually nearby
+    if not VeerHasNearbyWall() then return false end
     return true
 end
 
 local function VeerATStart()
     if VeerState.atRunning then return end
     VeerState.atRunning = true
-    if VeerATAttach(VeerATGetFolder()) then return end
-    VeerState.atRetry = task.spawn(function()
+    VeerState.lastFireAt = 0
+    task.spawn(function()
+        VeerGetSprintBtnCached()
+        VeerGetSprintConn()
+    end)
+    VeerState.atLoop = task.spawn(function()
         while VeerState.atRunning do
-            task.wait(3)
-            if VeerATAttach(VeerATGetFolder()) then break end
+            local now = tick()
+            local interval = math.max(0.1, tonumber(VeerState.TrickInterval) or 1.0)
+            if now - VeerState.lastFireAt >= interval then
+                if VeerIsTrickPossible() then
+                    if VeerFireTrick() then
+                        VeerState.lastFireAt = now
+                    end
+                end
+            end
+            task.wait(0.03)
         end
     end)
 end
@@ -1712,9 +1774,7 @@ end
 local function VeerATStop()
     if not VeerState.atRunning then return end
     VeerState.atRunning = false
-    if VeerState.atConn then pcall(function() VeerState.atConn:Disconnect() end); VeerState.atConn = nil end
-    if VeerState.atRetry then pcall(task.cancel, VeerState.atRetry); VeerState.atRetry = nil end
-    VeerState.atMonitors = {}
+    if VeerState.atLoop then pcall(task.cancel, VeerState.atLoop); VeerState.atLoop = nil end
 end
 
 --═══════════════════════════════════════════════════════════════════
@@ -2113,15 +2173,17 @@ _G.Godsaken = {
         SetLockDelay     = function(v) Settings.GS_LockDelay = _num(v, 0.08) end,
     },
     Vee = {
-        SetAutoTrick     = function(v) Vee.AutoTrick=v; if v then VeerATStart() else VeerATStop() end end,
-        SetSkateControl  = function(v) Vee.SkateControl=v; Vee_SkateControl(v) end,
-        SetCustomStats   = function(v) Vee.CustomStats=v; Vee_ApplyStats(true) end,
-        SetSk8Speed      = function(v) Vee.Sk8Speed=tonumber(v) or 1.15; Vee_ApplyStats() end,
-        SetTrickSpeed    = function(v) Vee.Sk8TrickAirborneSpeed=tonumber(v) or 1.42; Vee_ApplyStats() end,
-        SetBumpPower     = function(v) Vee.Sk8BumpPower=tonumber(v) or 11.9; Vee_ApplyStats() end,
-        SetTrickStamina  = function(v) Vee.Sk8TrickStamina=tonumber(v) or 4; Vee_ApplyStats() end,
-        SetTrickCooldown = function(v) Vee.Sk8TrickCooldown=tonumber(v) or 1; Vee_ApplyStats() end,
-        ForceApply       = function() Vee_ApplyStats(true) end,
+        SetAutoTrick        = function(v) Vee.AutoTrick=v; if v then VeerATStart() else VeerATStop() end end,
+        SetTrickInterval    = function(v) VeerState.TrickInterval=tonumber(v) or 1.0 end,
+        SetRequireWallCheck = function(v) VeerState.RequireWallCheck = v and true or false end,
+        SetSkateControl     = function(v) Vee.SkateControl=v; Vee_SkateControl(v) end,
+        SetCustomStats      = function(v) Vee.CustomStats=v; Vee_ApplyStats(true) end,
+        SetSk8Speed         = function(v) Vee.Sk8Speed=tonumber(v) or 1.15; Vee_ApplyStats() end,
+        SetTrickSpeed       = function(v) Vee.Sk8TrickAirborneSpeed=tonumber(v) or 1.42; Vee_ApplyStats() end,
+        SetBumpPower        = function(v) Vee.Sk8BumpPower=tonumber(v) or 11.9; Vee_ApplyStats() end,
+        SetTrickStamina     = function(v) Vee.Sk8TrickStamina=tonumber(v) or 4; Vee_ApplyStats() end,
+        SetTrickCooldown    = function(v) Vee.Sk8TrickCooldown=tonumber(v) or 1; Vee_ApplyStats() end,
+        ForceApply          = function() Vee_ApplyStats(true) end,
     },
     HitboxExpander = {
         Enable  = function()
@@ -2180,7 +2242,7 @@ Library.NotifySide = "Right"
 
 local Window = Library:CreateWindow({
     Title = "C00lsaken",
-    Footer = "REDLINE  |  v2.6",
+    Footer = "REDLINE  |  v2.8",
     ToggleKeybind = Enum.KeyCode.RightControl,
     Center = true, AutoShow = true, Resizable = true,
     ShowCustomCursor = false, MobileButtonsSide = "Right",
@@ -2361,6 +2423,14 @@ SilentBox:AddSlider("SA_Lead_S", { Text="Lead (ms)", Default=150, Min=0, Max=500
 local VeeBox = Tabs.Survivor:AddRightGroupbox("Vee (Veeronica)")
 VeeBox:AddToggle("Vee_AutoTrick_T", { Text="Auto Trick", Default=false,
     Callback=function(v) Vee.AutoTrick=v; if v then VeerATStart() else VeerATStop() end end })
+VeeBox:AddSlider("Vee_TrickInt_S", {
+    Text="Trick Interval (s, 1.0 = legit)",
+    Default=1.0, Min=0.15, Max=3, Rounding=2,
+    Callback=function(v) VeerState.TrickInterval = v end })
+VeeBox:AddToggle("Vee_WallCheck_T", { Text="Require Wall Check", Default=true,
+    Callback=function(v) VeerState.RequireWallCheck = v end })
+VeeBox:AddLabel({ Text="Auto Trick only fires when the game shows the trick-zone highlight on you AND a wall is nearby. Fires at TrickInterval. Default 1.0s = natural cooldown, sounds legit.", DoesWrap=true })
+VeeBox:AddDivider()
 VeeBox:AddToggle("Vee_SkateCtrl_T", { Text="Skate Control", Default=false,
     Callback=function(v) Vee.SkateControl=v; Vee_SkateControl(v) end })
 VeeBox:AddDivider()
@@ -2374,7 +2444,7 @@ VeeBox:AddSlider("Vee_Bump_S", { Text="Bumper Knockback", Default=11.9, Min=10, 
     Callback=function(v) Vee.Sk8BumpPower=v; if Vee.CustomStats then Vee_ApplyStats() end end })
 VeeBox:AddSlider("Vee_Stam_S", { Text="Stamina Per Trick", Default=4, Min=0, Max=100, Rounding=0,
     Callback=function(v) Vee.Sk8TrickStamina=v; if Vee.CustomStats then Vee_ApplyStats() end end })
-VeeBox:AddSlider("Vee_CD_S", { Text="Trick Cooldown", Default=1, Min=0, Max=5, Rounding=1,
+VeeBox:AddSlider("Vee_CD_S", { Text="Trick Cooldown (stat)", Default=1, Min=0, Max=5, Rounding=1,
     Callback=function(v) Vee.Sk8TrickCooldown=v; if Vee.CustomStats then Vee_ApplyStats() end end })
 VeeBox:AddButton({ Text="Force Apply Stats Now",
     Func=function()
@@ -2454,8 +2524,7 @@ NABox:AddToggle("NA_Ping_T", { Text="Ping Prediction", Default=true,
     Callback=function(v) NormalAim.PingComp=v end })
 
 local NARight = Tabs.NormalAim:AddRightGroupbox("Notes")
-NARight:AddLabel({ Text="Per-frame aimbot. Enable to lock onto the target selected above. Use 'Single Target Mode' to stick to one target until it dies or leaves range.", DoesWrap=true })
-NARight:AddLabel({ Text="Smoothness: 1 = instant lock, 100 = slowest (most human-like).", DoesWrap=true })
+NARight:AddLabel({ Text="Per-frame aimbot. Enable to lock onto the target selected above.", DoesWrap=true })
 
 --═══════════════════════════════════════════════════════════════════
 -- STAMINA TAB
@@ -2574,7 +2643,7 @@ ThemeManager:ApplyToTab(Tabs.Appearance)
 local CB = Tabs.Credits:AddLeftGroupbox("CREDITS")
 CB:AddLabel({ Text = "Coding & Owner: c00lkid / random_dude", DoesWrap = true })
 CB:AddLabel({ Text = "Helpers: Viltrumite & Ivy", DoesWrap = true })
-CB:AddLabel({ Text = "v2.6: Vee stat freeze fixed + icon fixed", DoesWrap = true })
+CB:AddLabel({ Text = "v2.8: Auto Trick legit pacing (trick-zone + wall + interval)", DoesWrap = true })
 
 ThemeManager:LoadDefault()
 
@@ -2588,21 +2657,16 @@ Library:OnUnload(function()
     pcall(function() AM1_Disable() end)
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
-
     pcall(function() Vee.AutoTrick = false; VeerATStop() end)
-
-    pcall(function()
-        HitboxExpander.Enabled = false
-        HitboxExpander._running = false
-    end)
+    pcall(function() HitboxExpander.Enabled = false; HitboxExpander._running = false end)
     pcall(function() SilentAim.Enabled = false end)
     pcall(function() NormalAim.Enabled = false; NA_Stop() end)
 end)
 
 Library:Notify({
-    Title = "C00lsaken v2.6",
-    Description = "Vee stat freeze fixed — no more pauses",
+    Title = "C00lsaken v2.8",
+    Description = "Auto Trick: legit-paced (no more sound spam)",
     Time = 4,
 })
 
-print("[C00lsaken v2.6] Loaded — Vee stat change fixed (getgc cached, no loop).")
+print("[C00lsaken v2.8] Loaded — Auto Trick fires at ~1/s only when legit.")
