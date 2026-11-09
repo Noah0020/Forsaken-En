@@ -1,6 +1,7 @@
 --[[
     CR4ZY HUB — OBSIDIAN UI
     Crimson Edition
+    Silent Aim freeze-fixed
 ]]
 
 local Players             = game:GetService("Players")
@@ -1603,12 +1604,53 @@ local function HBE_ApplyVelocity()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- SILENT AIM
+-- SILENT AIM (freeze-fixed)
 --═══════════════════════════════════════════════════════════════════
-local SilentAim = { Enabled=false, Selected={}, LeadTime=0.15, _installed=false, _velCache=setmetatable({}, {__mode="k"}) }
+local SilentAim = {
+    Enabled = false,
+    Selected = {},
+    LeadTime = 0.15,
+    UseMouseHook = true,
+    _installed = false,
+    _mouseHookOk = false,
+    _velCache = setmetatable({}, {__mode="k"}),
+    _busy = false,
+    _lastCompute = 0,
+    _activeUntil = 0,
+}
+
+local SA_COMPUTE_INTERVAL = 0.05
+local SA_ACTIVE_WINDOW    = 0.15
+
+local SA_PingCache = 0
+task.spawn(function()
+    while true do
+        pcall(function() SA_PingCache = LocalPlayer:GetNetworkPing() or 0 end)
+        task.wait(1)
+    end
+end)
+
+local function SA_Arm() SilentAim._activeUntil = os.clock() + SA_ACTIVE_WINDOW end
+local function SA_IsArmed() return os.clock() < SilentAim._activeUntil end
+
+local function SA_NormalizeSelected(v)
+    local out = {}
+    if type(v) ~= "table" then return out end
+    for k, val in pairs(v) do
+        if type(k) == "number" and type(val) == "string" then
+            out[val] = true
+        elseif type(k) == "string" and (val == true or val == 1) then
+            out[k] = true
+        end
+    end
+    return out
+end
+
 local function SA_SmoothVel(part)
+    if not part or not part.Parent then return Vector3.zero end
     local now = os.clock()
-    local v = part.AssemblyLinearVelocity
+    local ok, v = pcall(function() return part.AssemblyLinearVelocity end)
+    if not ok or not v then return Vector3.zero end
     if v.Magnitude > 120 then v = Vector3.zero end
     local c = SilentAim._velCache[part]
     if not c then SilentAim._velCache[part] = {t=now, v=v}; return v end
@@ -1616,74 +1658,140 @@ local function SA_SmoothVel(part)
     c.t = now
     return c.v
 end
+
 local function SA_GetFirstSurvivor()
     local sf = GetSurvivorsFolder(); if not sf then return nil end
     for _, m in ipairs(sf:GetChildren()) do
-        local hrp = m:FindFirstChild("HumanoidRootPart")
+        local ok, hrp = pcall(function() return m:FindFirstChild("HumanoidRootPart") end)
         local hum = m:FindFirstChildOfClass("Humanoid")
-        if hrp and hum and hum.Health > 0 then return m end
+        if ok and hrp and hum and hum.Health > 0 then return m end
     end
     return nil
 end
+
 local function SA_GetNearestSurvivor(origin)
     local sf = GetSurvivorsFolder(); if not sf then return nil end
     local best, bd = nil, math.huge
     for _, m in ipairs(sf:GetChildren()) do
-        local hrp = m:FindFirstChild("HumanoidRootPart")
+        local ok, hrp = pcall(function() return m:FindFirstChild("HumanoidRootPart") end)
         local hum = m:FindFirstChildOfClass("Humanoid")
-        if hrp and hum and hum.Health > 0 then
+        if ok and hrp and hum and hum.Health > 0 then
             local d = (hrp.Position - origin).Magnitude
             if d < bd then bd = d; best = m end
         end
     end
     return best
 end
+
 local function SA_Predict(target)
-    if not target then return nil end
-    local hrp = target:FindFirstChild("HumanoidRootPart"); if not hrp then return nil end
-    local lead = SilentAim.LeadTime
-    pcall(function() lead = lead + LocalPlayer:GetNetworkPing() * 0.5 end)
-    return hrp.Position + SA_SmoothVel(hrp) * lead
+    if not target or not target.Parent then return nil end
+    local ok, hrp = pcall(function() return target:FindFirstChild("HumanoidRootPart") end)
+    if not ok or not hrp then return nil end
+    local lead = SilentAim.LeadTime + SA_PingCache * 0.5
+    local ok2, pos = pcall(function() return hrp.Position + SA_SmoothVel(hrp) * lead end)
+    return ok2 and pos or nil
 end
-local function SA_CheckAbility(name) return SilentAim.Enabled and SilentAim.Selected[name] == true end
-local function SA_GetPlayerCharName() local c = LocalPlayer.Character; return c and (c:GetAttribute("CharacterName") or c.Name) or "" end
+
+local function SA_CheckAbility(name)
+    if not SilentAim.Enabled then return false end
+    local sel = SilentAim.Selected
+    if type(sel) ~= "table" then return false end
+    return sel[name] == true
+end
+
+local function SA_GetPlayerCharName()
+    local c = LocalPlayer.Character
+    if not c then return "" end
+    local ok, attr = pcall(function() return c:GetAttribute("CharacterName") end)
+    return (ok and attr) or c.Name or ""
+end
+
+local function SA_ResolveTarget()
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    local originPos = root.Position
+    local cn = SA_GetPlayerCharName()
+    if cn == "Noli"       and SA_CheckAbility("Void Star")      then return SA_Predict(SA_GetNearestSurvivor(originPos)) end
+    if cn == "c00lkidd"   and SA_CheckAbility("Corrupt Nature") then return SA_Predict(SA_GetNearestSurvivor(originPos)) end
+    if cn == "Sixer"      and SA_CheckAbility("Infernal Cry")   then return SA_Predict(SA_GetNearestSurvivor(originPos)) end
+    if cn == "Nosferatu"  and SA_CheckAbility("Hunter's Feast") then return SA_Predict(SA_GetNearestSurvivor(originPos)) end
+    if cn == "JaneDoe"    and SA_CheckAbility("Crystal Pitch")  then return SA_Predict(SA_GetFirstSurvivor()) end
+    if cn == "Dusekkar"   and SA_CheckAbility("Plasma Beam")    then return SA_Predict(SA_GetFirstSurvivor()) end
+    return nil
+end
+
 local function SA_Install()
     if SilentAim._installed then return end
     if not hookfunction then return end
+
     local ok1 = pcall(function()
-        local GetPlayerMousePosition = require(ReplicatedStorage.Systems.Player.Miscellaneous.GetPlayerMousePosition)
-        local orig = GetPlayerMousePosition.GetMousePos
+        local mod = require(ReplicatedStorage.Systems.Player.Miscellaneous.GetPlayerMousePosition)
+        local orig = mod.GetMousePos
+        if type(orig) ~= "function" then return end
         hookfunction(orig, function(...)
-            local cn = SA_GetPlayerCharName()
-            local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            local originPos = root and root.Position or Vector3.zero
-            if cn == "Noli" and SA_CheckAbility("Void Star") then local m = SA_GetNearestSurvivor(originPos); if m then local pp = SA_Predict(m); if pp then return pp end end end
-            if cn == "c00lkidd" and SA_CheckAbility("Corrupt Nature") then local m = SA_GetNearestSurvivor(originPos); if m then local pp = SA_Predict(m); if pp then return pp end end end
-            if cn == "Sixer" and SA_CheckAbility("Infernal Cry") then local m = SA_GetNearestSurvivor(originPos); if m then local pp = SA_Predict(m); if pp then return pp end end end
-            if cn == "Nosferatu" and SA_CheckAbility("Hunter's Feast") then local m = SA_GetNearestSurvivor(originPos); if m then local pp = SA_Predict(m); if pp then return pp end end end
-            if cn == "JaneDoe" and SA_CheckAbility("Crystal Pitch") then local m = SA_GetFirstSurvivor(); if m then local pp = SA_Predict(m); if pp then return pp end end end
-            if cn == "Dusekkar" and SA_CheckAbility("Plasma Beam") then local m = SA_GetFirstSurvivor(); if m then local pp = SA_Predict(m); if pp then return pp end end end
+            if not SilentAim.Enabled or not SilentAim.UseMouseHook or SilentAim._busy then
+                return orig(...)
+            end
+            local now = os.clock()
+            if not SA_IsArmed() and (now - SilentAim._lastCompute) < SA_COMPUTE_INTERVAL then
+                return orig(...)
+            end
+            SilentAim._lastCompute = now
+            SilentAim._busy = true
+            local okCall, result = pcall(SA_ResolveTarget)
+            SilentAim._busy = false
+            if okCall and typeof(result) == "Vector3" then return result end
             return orig(...)
         end)
+        SilentAim._mouseHookOk = true
     end)
+
     local ok2 = pcall(function()
         local Network = require(ReplicatedStorage.Modules.Network.Network)
         local orig = Network.FireServerConnection
+        if type(orig) ~= "function" then return end
         hookfunction(orig, function(self, name, evt, ...)
-            if name == LocalPlayer.Name .. "AzureUpdateCameraLookVector" and evt == "UREMOTE_EVENT" and SA_CheckAbility("Tentacles (Grab)") then
-                local args = table.pack(...)
-                if typeof(args[1]) == "Vector3" then
-                    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    local target = SA_GetNearestSurvivor(root and root.Position or Vector3.zero)
-                    if target then local pp = SA_Predict(target); if pp then args[1] = pp end end
+            if SilentAim.Enabled then
+                pcall(function()
+                    if evt == "UREMOTE_EVENT" and type(name) == "string" then
+                        local l = name:lower()
+                        if l:find("ability", 1, true) or l:find("slash", 1, true)
+                           or l:find("shoot", 1, true) or l:find("cast", 1, true)
+                           or l:find("star", 1, true) then
+                            SA_Arm()
+                        end
+                    end
+                end)
+                if name == LocalPlayer.Name .. "AzureUpdateCameraLookVector"
+                   and evt == "UREMOTE_EVENT"
+                   and SA_CheckAbility("Tentacles (Grab)") then
+                    local args = table.pack(...)
+                    if typeof(args[1]) == "Vector3" then
+                        local ok3, pp = pcall(function()
+                            local char = LocalPlayer.Character
+                            local root = char and char:FindFirstChild("HumanoidRootPart")
+                            return SA_Predict(SA_GetNearestSurvivor(root and root.Position or Vector3.zero))
+                        end)
+                        if ok3 and pp then args[1] = pp end
+                    end
+                    return orig(self, name, evt, table.unpack(args, 1, args.n))
                 end
-                return orig(self, name, evt, table.unpack(args, 1, args.n))
             end
             return orig(self, name, evt, ...)
         end)
     end)
+
     if ok1 or ok2 then SilentAim._installed = true end
 end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed or not SilentAim.Enabled then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+       or input.UserInputType == Enum.UserInputType.Touch then
+        SA_Arm()
+    end
+end)
 
 --═══════════════════════════════════════════════════════════════════
 -- OBSIDIAN UI
@@ -1866,9 +1974,15 @@ do
         Values = { "Void Star", "Corrupt Nature", "Infernal Cry", "Hunter's Feast",
                    "Crystal Pitch", "Plasma Beam", "Tentacles (Grab)" },
         Multi = true, Default = {},
-        Callback = function(v) SilentAim.Selected = v end,
+        Callback = function(v) SilentAim.Selected = SA_NormalizeSelected(v) end,
     })
     g:AddToggle("SA_Enable_T", { Text = "Enable Silent Aim", Default = false, Callback = function(v) SilentAim.Enabled = v; if v then SA_Install() end end })
+    g:AddToggle("SA_SafeMode_T", {
+        Text = "Safe Mode (disable mouse hook)",
+        Default = false,
+        Tooltip = "Enable if Silent Aim ever freezes you. Tentacles override still works.",
+        Callback = function(v) SilentAim.UseMouseHook = not v end,
+    })
     g:AddSlider("SA_Lead_S", { Text = "Lead (ms)", Default = 150, Min = 0, Max = 500, Rounding = 0, Callback = function(v) SilentAim.LeadTime = v / 1000 end })
 end
 
@@ -1956,8 +2070,9 @@ _G.Godsaken = {
     SilentAim = {
         Enable=function() SilentAim.Enabled=true; SA_Install() end,
         Disable=function() SilentAim.Enabled=false end,
-        SetTargets=function(t) SilentAim.Selected=t end,
+        SetTargets=function(t) SilentAim.Selected=SA_NormalizeSelected(t) end,
         SetLead=function(v) SilentAim.LeadTime=tonumber(v) or 0.15 end,
+        SetSafeMode=function(v) SilentAim.UseMouseHook = not v end,
     },
 }
 
@@ -1978,8 +2093,8 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Crimson Edition — 9 tabs ready",
+    Content = "Crimson Edition — Silent Aim freeze-fixed",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — Obsidian UI, all features wired.")
+print("[Cr4zy HuB] Loaded — Obsidian UI, Silent Aim fixed.")
