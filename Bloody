@@ -43,8 +43,7 @@ local Settings = {
     AB_Mode = "Guest1337", AB_ShowZone = true,
     AB_PendingWindow = 0.25,
     AB_SpamEnabled = false, AB_SpamCount = 4, AB_SpamDuration = 0.05,
-    BoxRange = 18,
-    BoxBlockDistance = 3,
+    BoxRange = 22,
     BoxDisplayDuration = 0.3,
     BoxFollowDelay = 0.1,
     BoxFacingDot = 0.5,
@@ -52,7 +51,9 @@ local Settings = {
     BoxFastDot = 0.3,
     BoxAntiBait = true,
     BoxTurnRate = 1.5,
-    BoxKillerW = 6, BoxKillerH = 6,
+    BoxExpandScale = 1.5,
+    BoxKillerW = 6, BoxKillerH = 6, BoxKillerL = 9,
+    BoxPlayerW = 5,
     ABT_Duration = 0.5, AP_Delay = 0.5, PA_Prediction = 4,
     HDT_Speed = 40, HDT_Delay = 0.05, HDT_Duration = 0.6,
     AIM_Mode = "Character", AIM_Prediction = 4, AIM_LockTime = 0.7,
@@ -125,28 +126,31 @@ local function Box_UpdateSmoothing(dt)
                 local khrp = k:FindFirstChild("HumanoidRootPart")
                 if khrp then
                     local st = BoxState.killers[k]
+                    local nl = khrp.CFrame.LookVector
                     if not st then
-                        st = { pos = khrp.Position, look = khrp.CFrame.LookVector,
-                               facingDot = 0, lastFacingDot = 0, turnRate = 0 }
+                        st = { pos = khrp.Position, look = nl,
+                               prevLook = nl, turnRate = 0, turnDir = 0 }
                         BoxState.killers[k] = st
                     else
                         local a = Box_Alpha(dt)
                         st.pos = st.pos:Lerp(khrp.Position, a)
-                        local nl = khrp.CFrame.LookVector
                         st.look = st.look:Lerp(nl, a)
                         if st.look.Magnitude > 0.01 then st.look = st.look.Unit else st.look = nl.Unit end
                     end
-                    if BoxState.player then
-                        local toPlayer = BoxState.player - st.pos
-                        local fl = Vector3.new(st.look.X, 0, st.look.Z)
-                        local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
-                        if fl.Magnitude > 0.01 and ft.Magnitude > 0.01 then
-                            local dot = fl.Unit:Dot(ft.Unit)
-                            st.lastFacingDot = st.facingDot or dot
-                            st.facingDot = dot
-                            st.turnRate = (st.facingDot - st.lastFacingDot) / math.max(dt, 0.001)
-                        end
+                    local prevFlat = Vector3.new(st.prevLook.X, 0, st.prevLook.Z)
+                    local currFlat = Vector3.new(nl.X, 0, nl.Z)
+                    if prevFlat.Magnitude > 0.01 and currFlat.Magnitude > 0.01 then
+                        prevFlat = prevFlat.Unit
+                        currFlat = currFlat.Unit
+                        local angle = math.acos(math.clamp(prevFlat:Dot(currFlat), -1, 1))
+                        st.turnRate = angle / math.max(dt, 0.001)
+                        local right = Vector3.new(-prevFlat.Z, 0, prevFlat.X)
+                        local turnDot = (currFlat - prevFlat):Dot(right)
+                        st.turnDir = turnDot > 0.01 and 1 or (turnDot < -0.01 and -1 or 0)
+                    else
+                        st.turnRate = 0; st.turnDir = 0
                     end
+                    st.prevLook = nl
                 else
                     BoxState.killers[k] = nil
                 end
@@ -156,6 +160,16 @@ local function Box_UpdateSmoothing(dt)
     for k in pairs(BoxState.killers) do
         if not k.Parent then BoxState.killers[k] = nil end
     end
+end
+
+local function Box_GetExpansion(st)
+    if not Settings.BoxAntiBait then return 0, 0 end
+    if not st or not st.turnRate or not st.turnDir then return 0, 0 end
+    if st.turnRate <= Settings.BoxTurnRate or st.turnDir == 0 then return 0, 0 end
+    local expandW = (st.turnRate - Settings.BoxTurnRate) * Settings.BoxExpandScale
+    expandW = math.min(expandW, Settings.BoxKillerL)
+    if expandW < 0.1 then return 0, 0 end
+    return expandW, st.turnDir
 end
 
 local function AB_IsFacingPlayer(killer)
@@ -169,6 +183,39 @@ local function AB_IsFacingPlayer(killer)
     return fl.Unit:Dot(ft.Unit) >= Settings.BoxFacingDot
 end
 
+local function Box_OverlapsPlayer(killer)
+    local st = BoxState.killers[killer]
+    if not st or not BoxState.player then return false end
+
+    local lookFlat = Vector3.new(st.look.X, 0, st.look.Z)
+    if lookFlat.Magnitude < 0.01 then return false end
+    lookFlat = lookFlat.Unit
+    local right = Vector3.new(-lookFlat.Z, 0, lookFlat.X)
+
+    local halfW = Settings.BoxKillerW / 2
+    local halfH = Settings.BoxKillerH / 2
+    local halfL = Settings.BoxKillerL / 2
+
+    local boxCenter = st.pos + lookFlat * halfL
+
+    local expandW, expandDir = Box_GetExpansion(st)
+    if expandW > 0 then
+        boxCenter = boxCenter + right * (expandDir * expandW / 2)
+    end
+    local effectiveHalfW = halfW + expandW / 2
+
+    local rel = BoxState.player - boxCenter
+    local localX = rel:Dot(right)
+    local localZ = rel:Dot(lookFlat)
+    local localY = rel.Y
+
+    local pHalf = Settings.BoxPlayerW / 2
+
+    return math.abs(localX) <= effectiveHalfW + pHalf
+       and math.abs(localY) <= halfH + pHalf
+       and math.abs(localZ) <= halfL + pHalf
+end
+
 local function AB_ShouldBlock(killer)
     local st = BoxState.killers[killer]
     if not st or not BoxState.player then return false end
@@ -177,33 +224,21 @@ local function AB_ShouldBlock(killer)
     local dist = toPlayer.Magnitude
     if dist > Settings.BoxRange or dist < 0.5 then return false end
 
-    local fl = Vector3.new(st.look.X, 0, st.look.Z)
-    local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
-    if fl.Magnitude < 0.01 or ft.Magnitude < 0.01 then return false end
-    local facingDot = fl.Unit:Dot(ft.Unit)
-
     local khrp = killer:FindFirstChild("HumanoidRootPart")
     if khrp then
         local kv = khrp.AssemblyLinearVelocity
         if kv.Magnitude > Settings.BoxFastThreshold then
             local fv = Vector3.new(kv.X, 0, kv.Z)
-            if fv.Magnitude > 0.5 and fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then
-                return false
+            local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
+            if fv.Magnitude > 0.5 and ft.Magnitude > 0.1 then
+                if fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then
+                    return false
+                end
             end
         end
     end
 
-    local blockLen = math.max(Settings.BoxRange - Settings.BoxBlockDistance, 0.5)
-    local alongLook = ft:Dot(fl.Unit)
-    if alongLook > (blockLen + Settings.BoxBlockDistance) then return false end
-
-    if facingDot >= Settings.BoxFacingDot then return true end
-
-    if Settings.BoxAntiBait and st.turnRate and st.turnRate > Settings.BoxTurnRate then
-        if facingDot >= 0.15 then return true end
-    end
-
-    return false
+    return Box_OverlapsPlayer(killer)
 end
 
 local _WIRE = nil
@@ -305,9 +340,10 @@ local function Box_ShowOnM1(killer)
     if existing then
         existing.pos = khrp.Position
         existing.look = khrp.CFrame.LookVector
+        existing.prevLook = khrp.CFrame.LookVector
     else
         BoxState.killers[killer] = { pos = khrp.Position, look = khrp.CFrame.LookVector,
-                                     facingDot = 0, lastFacingDot = 0, turnRate = 0 }
+                                     prevLook = khrp.CFrame.LookVector, turnRate = 0, turnDir = 0 }
     end
     BoxState.player = chrp.Position
     local now = os.clock()
@@ -324,7 +360,6 @@ local function Box_RenderAll()
         return
     end
     local now = os.clock()
-    local blockLen = math.max(Settings.BoxRange - Settings.BoxBlockDistance, 0.5)
 
     for killer, box in pairs(BoxState.killerBoxes) do
         if not killer.Parent then
@@ -337,9 +372,26 @@ local function Box_RenderAll()
         else
             local st = BoxState.killers[killer]
             if st then
-                local size = Vector3.new(Settings.BoxKillerW, Settings.BoxKillerH, blockLen)
-                local center = st.pos + st.look * (blockLen / 2)
-                local cf = CFrame.lookAt(center, center + st.look)
+                local lookFlat = Vector3.new(st.look.X, 0, st.look.Z)
+                if lookFlat.Magnitude < 0.01 then lookFlat = Vector3.new(0, 0, -1) end
+                lookFlat = lookFlat.Unit
+                local right = Vector3.new(-lookFlat.Z, 0, lookFlat.X)
+
+                local halfL = Settings.BoxKillerL / 2
+                local halfH = Settings.BoxKillerH / 2
+                local baseW = Settings.BoxKillerW
+
+                local boxCenter = st.pos + lookFlat * halfL
+                local effectiveW = baseW
+
+                local expandW, expandDir = Box_GetExpansion(st)
+                if expandW > 0 then
+                    boxCenter = boxCenter + right * (expandDir * expandW / 2)
+                    effectiveW = baseW + expandW
+                end
+
+                local size = Vector3.new(effectiveW, halfH * 2, halfL * 2)
+                local cf = CFrame.lookAt(boxCenter, boxCenter + lookFlat)
                 local color = AB_IsFacingPlayer(killer) and GREEN or BLUE
                 Box_UpdateWireframe(box.parts, cf, size, color)
             else
@@ -355,8 +407,8 @@ local function Box_RenderAll()
         elseif now > pb.showUntil or not BoxState.player then
             Box_HideWireframe(pb.parts)
         else
-            local s = Settings.BoxBlockDistance * 2
-            Box_UpdateWireframe(pb.parts, CFrame.new(BoxState.player), Vector3.new(s,s,s), BLUE)
+            local s = Settings.BoxPlayerW
+            Box_UpdateWireframe(pb.parts, CFrame.new(BoxState.player), Vector3.new(s, s, s), BLUE)
         end
     end
 end
@@ -708,11 +760,13 @@ local function PA_Disable()
     PA.looking = false; PA.lookStarted = nil
 end
 
---═══ HDT ═══
+--═══ HDT (rebuilt) ═══
 local HDT = {
-    running = false, debounce = false, animConn = nil, watcher = nil,
-    charConn = nil, bind = "GS_HDT_", dashId = 0,
-    Speed = Settings.HDT_Speed, Duration = Settings.HDT_Duration, Delay = Settings.HDT_Delay,
+    running=false, debounce=false, animConn=nil, watcher=nil,
+    charConn=nil, bind="GS_HDT_", dashId=0,
+    Speed = Settings.HDT_Speed,
+    Duration = Settings.HDT_Duration,
+    Delay = Settings.HDT_Delay,
 }
 
 local function HDT_Nearest()
@@ -744,6 +798,8 @@ local function HDT_Dash(killer)
     local thisBind = HDT.bind .. tostring(HDT.dashId)
     local startT = tick()
     local active = true
+    local speed = HDT.Speed
+    local duration = HDT.Duration
 
     local bv = Instance.new("BodyVelocity")
     bv.Name = "GS_HDT_BV"
@@ -751,9 +807,7 @@ local function HDT_Dash(killer)
     bv.Velocity = Vector3.zero
     bv.Parent = hrp
 
-    local oldWS = hum.WalkSpeed
-    local oldAR = hum.AutoRotate
-    hum.WalkSpeed = HDT.Speed
+    local oldAuto = hum.AutoRotate
     hum.AutoRotate = false
 
     local function stop()
@@ -762,34 +816,30 @@ local function HDT_Dash(killer)
         HDT.debounce = false
         pcall(function() RunService:UnbindFromRenderStep(thisBind) end)
         if bv and bv.Parent then bv:Destroy() end
-        if hum and hum.Parent then
-            pcall(function() hum.WalkSpeed = oldWS end)
-            pcall(function() hum.AutoRotate = oldAR end)
-        end
+        if hum and hum.Parent then pcall(function() hum.AutoRotate = oldAuto end) end
     end
 
     pcall(function() RunService:UnbindFromRenderStep(thisBind) end)
-    RunService:BindToRenderStep(thisBind, Enum.RenderPriority.Camera.Value, function()
+    RunService:BindToRenderStep(thisBind, Enum.RenderPriority.Camera.Value + 1, function()
         if not active then return end
         if not hrp.Parent or not hum.Parent or hum.Health <= 0 then stop(); return end
         if not kr.Parent then stop(); return end
-        if tick() - startT > HDT.Duration then stop(); return end
+        if tick() - startT > duration then stop(); return end
 
         local toK = kr.Position - hrp.Position
         local flat = Vector3.new(toK.X, 0, toK.Z)
         if flat.Magnitude < 1 then stop(); return end
 
         if bv and bv.Parent then
-            bv.Velocity = flat.Unit * HDT.Speed
+            bv.Velocity = flat.Unit * speed
         end
-        if hum.WalkSpeed ~= HDT.Speed then hum.WalkSpeed = HDT.Speed end
         if hum.AutoRotate then hum.AutoRotate = false end
         pcall(function()
             hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(kr.Position.X, hrp.Position.Y, kr.Position.Z))
         end)
     end)
 
-    task.delay(HDT.Duration + 0.2, stop)
+    task.delay(duration + 0.3, stop)
 end
 
 local function HDT_OnAnim(track)
@@ -1871,8 +1921,7 @@ end
 
 do
     local bd = Tabs.Box:AddLeftGroupbox("Box Detection")
-    bd:AddSlider("Box_Range_S", { Text = "Total Range (studs)", Default = 18, Min = 5, Max = 50, Rounding = 1, Callback = function(v) Settings.BoxRange = v end })
-    bd:AddSlider("Box_BlockDist_S", { Text = "Block Distance (studs)", Default = 3, Min = 1, Max = 15, Rounding = 1, Callback = function(v) Settings.BoxBlockDistance = v end })
+    bd:AddSlider("Box_Range_S", { Text = "Max Range (studs)", Default = 22, Min = 5, Max = 50, Rounding = 1, Callback = function(v) Settings.BoxRange = v end })
     bd:AddSlider("Box_Delay_S", { Text = "Follow Delay (s)", Default = 0.1, Min = 0.01, Max = 0.5, Rounding = 2, Callback = function(v) Settings.BoxFollowDelay = v end })
     bd:AddSlider("Box_Dot_S", { Text = "Facing Threshold", Default = 0.5, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.BoxFacingDot = v end })
     bd:AddSlider("Box_FastThresh_S", { Text = "Fast Velocity Threshold", Default = 15, Min = 5, Max = 40, Rounding = 0, Callback = function(v) Settings.BoxFastThreshold = v end })
@@ -1880,13 +1929,28 @@ do
     bd:AddSlider("Box_ShowDur_S", { Text = "M1 Show Duration (s)", Default = 0.3, Min = 0.1, Max = 0.7, Rounding = 2, Callback = function(v) Settings.BoxDisplayDuration = v end })
     bd:AddToggle("Box_ShowVis_T", { Text = "Show Box Visuals", Default = true, Callback = function(v) Settings.AB_ShowZone = v end })
 
-    local ab = Tabs.Box:AddRightGroupbox("Box Anti Bait")
-    ab:AddToggle("Box_AntiBait_T", { Text = "Enable Box Anti Bait", Default = true, Tooltip = "Blocks when killer box is rotating toward you rapidly.", Callback = function(v) Settings.BoxAntiBait = v end })
-    ab:AddSlider("Box_TurnRate_S", { Text = "Turn Rate Threshold", Default = 1.5, Min = 0.3, Max = 5, Rounding = 2, Tooltip = "Higher = must turn faster to trigger. Lower = more sensitive.", Callback = function(v) Settings.BoxTurnRate = v end })
+    local dim = Tabs.Box:AddRightGroupbox("Box Sizes")
+    dim:AddSlider("Box_KW_S", { Text = "Killer Width",  Default = 6, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.BoxKillerW = v end })
+    dim:AddSlider("Box_KH_S", { Text = "Killer Height", Default = 6, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.BoxKillerH = v end })
+    dim:AddSlider("Box_KL_S", { Text = "Killer Length", Default = 9, Min = 1, Max = 40, Rounding = 1, Callback = function(v) Settings.BoxKillerL = v end })
+    dim:AddSlider("Box_PW_S", { Text = "Player Width",  Default = 5, Min = 1, Max = 20, Rounding = 1, Callback = function(v) Settings.BoxPlayerW = v end })
 
-    local dim = Tabs.Box:AddRightGroupbox("Killer Box Dimensions")
-    dim:AddSlider("Box_KW_S", { Text = "Width",  Default = 6, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.BoxKillerW = v end })
-    dim:AddSlider("Box_KH_S", { Text = "Height", Default = 6, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.BoxKillerH = v end })
+    local ab = Tabs.Box:AddLeftGroupbox("Box Anti Bait")
+    ab:AddToggle("Box_AntiBait_T", {
+        Text = "Enable Box Anti Bait", Default = true,
+        Tooltip = "When killer turns fast, killer box widens on the turning side to catch flicks.",
+        Callback = function(v) Settings.BoxAntiBait = v end
+    })
+    ab:AddSlider("Box_TurnRate_S", {
+        Text = "Turn Rate Threshold (rad/s)", Default = 1.5, Min = 0.3, Max = 5, Rounding = 2,
+        Tooltip = "Higher = must turn faster to trigger. 1.5 ≈ 86°/s.",
+        Callback = function(v) Settings.BoxTurnRate = v end
+    })
+    ab:AddSlider("Box_ExpandScale_S", {
+        Text = "Expansion Scale", Default = 1.5, Min = 0.5, Max = 5, Rounding = 2,
+        Tooltip = "How aggressively the box widens per unit of turn rate.",
+        Callback = function(v) Settings.BoxExpandScale = v end
+    })
 
     local m1 = Tabs.Box:AddLeftGroupbox("Auto M1")
     m1:AddToggle("AM1_Enable_T",     { Text = "Enable Auto M1",               Default = false, Callback = function(v) if v then AM1_Enable() else AM1_Disable() end end })
@@ -1911,9 +1975,9 @@ end
 do
     local h = Tabs.HDTABT:AddLeftGroupbox("HDT")
     h:AddToggle("HDT_T",       { Text = "Enable HDT", Default = false, Callback = function(v) if v then HDT_Enable() else HDT_Disable() end end })
-    h:AddSlider("HDT_Spd",     { Text = "Speed",    Default = 40,   Min = 5,    Max = 500, Rounding = 0, Callback = function(v) HDT_SetSpeed(v)    end })
-    h:AddSlider("HDT_Delay_S", { Text = "Delay",    Default = 0.05, Min = 0,    Max = 2,   Rounding = 3, Callback = function(v) HDT_SetDelay(v)    end })
-    h:AddSlider("HDT_Dur_S",   { Text = "Duration", Default = 0.6,  Min = 0.05, Max = 3,   Rounding = 3, Callback = function(v) HDT_SetDuration(v) end })
+    h:AddSlider("HDT_Spd",     { Text = "Speed (studs/s)", Default = 40,   Min = 5,    Max = 500, Rounding = 0, Callback = function(v) HDT_SetSpeed(v)    end })
+    h:AddSlider("HDT_Delay_S", { Text = "Delay",           Default = 0.05, Min = 0,    Max = 2,   Rounding = 3, Callback = function(v) HDT_SetDelay(v)    end })
+    h:AddSlider("HDT_Dur_S",   { Text = "Duration",        Default = 0.6,  Min = 0.05, Max = 3,   Rounding = 3, Callback = function(v) HDT_SetDuration(v) end })
     h:AddButton({ Text = "Force HDT Now", Func = function() HDT_ForceNow() end })
 
     local a = Tabs.HDTABT:AddRightGroupbox("Anti Bait")
@@ -2015,8 +2079,11 @@ _G.Godsaken = {
         Disable=function() HitboxExpander.Enabled=false; HitboxExpander._running=false end,
     },
     Box = {
-        SetRange=function(v) Settings.BoxRange = tonumber(v) or 18 end,
-        SetBlockDistance=function(v) Settings.BoxBlockDistance = tonumber(v) or 3 end,
+        SetRange=function(v) Settings.BoxRange = tonumber(v) or 22 end,
+        SetKillerW=function(v) Settings.BoxKillerW = tonumber(v) or 6 end,
+        SetKillerH=function(v) Settings.BoxKillerH = tonumber(v) or 6 end,
+        SetKillerL=function(v) Settings.BoxKillerL = tonumber(v) or 9 end,
+        SetPlayerW=function(v) Settings.BoxPlayerW = tonumber(v) or 5 end,
         SetShowDuration=function(v) Settings.BoxDisplayDuration = tonumber(v) or 0.3 end,
         SetDelay=function(v) Settings.BoxFollowDelay = tonumber(v) or 0.1 end,
         SetDot=function(v) Settings.BoxFacingDot = tonumber(v) or 0.5 end,
@@ -2024,6 +2091,7 @@ _G.Godsaken = {
         SetFastDot=function(v) Settings.BoxFastDot = tonumber(v) or 0.3 end,
         SetAntiBait=function(v) Settings.BoxAntiBait = v and true or false end,
         SetTurnRate=function(v) Settings.BoxTurnRate = tonumber(v) or 1.5 end,
+        SetExpandScale=function(v) Settings.BoxExpandScale = tonumber(v) or 1.5 end,
     },
 }
 
@@ -2055,7 +2123,7 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Crimson Edition — HDT rewrite + Box Anti Bait",
+    Content = "Crimson Edition — Box sizes + Anti-Bait expansion + HDT rebuild",
     Time = 4,
 })
 
