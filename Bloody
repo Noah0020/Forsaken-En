@@ -43,17 +43,15 @@ local Settings = {
     AB_Mode = "Guest1337", AB_ShowZone = true,
     AB_PendingWindow = 0.25,
     AB_SpamEnabled = false, AB_SpamCount = 4, AB_SpamDuration = 0.05,
-    BoxRange = 18,
-    BoxBlockDistance = 3,
-    BoxDisplayDuration = 0.3,
+    BoxRange = 20,
     BoxFollowDelay = 0.1,
-    BoxFacingDot = 0.5,
-    BoxFastThreshold = 15,
-    BoxFastDot = 0.3,
-    BoxAntiBait = true,
-    BoxTurnRate = 1.5,
-    BoxKillerW = 6, BoxKillerH = 6, BoxKillerL = 15,
-    BoxPlayerW = 6,
+    BoxCount = 3,
+    BoxArc = 120,
+    BoxLength = 9,
+    BoxWidth = 4,
+    BoxHeight = 1.5,
+    BoxMinFacing = 0.2,
+    BoxPlayerW = 4,
     HDT_Enabled = false, HDT_Speed = 40, HDT_Duration = 0.6,
     ABT_Duration = 0.5, AP_Delay = 0.5, PA_Prediction = 4,
     AIM_Mode = "Character", AIM_Prediction = 4, AIM_LockTime = 0.7,
@@ -87,7 +85,7 @@ local BLUE  = Color3.fromRGB(80,150,255)
 
 local BoxState = {
     killers = {}, player = nil,
-    killerBoxes = {}, playerBox = nil,
+    killerBoxSets = {}, playerBox = nil,
     rootFolder = nil, renderConn = nil,
 }
 
@@ -116,6 +114,8 @@ local function Box_UpdateSmoothing(dt)
     if hrp then
         if not BoxState.player then BoxState.player = hrp.Position
         else BoxState.player = BoxState.player:Lerp(hrp.Position, Box_Alpha(dt)) end
+    else
+        BoxState.player = nil
     end
     local kf = GetKillersFolder()
     if kf then
@@ -125,8 +125,7 @@ local function Box_UpdateSmoothing(dt)
                 if khrp then
                     local st = BoxState.killers[k]
                     if not st then
-                        st = { pos = khrp.Position, look = khrp.CFrame.LookVector,
-                               facingDot = 0, lastFacingDot = 0, turnRate = 0 }
+                        st = { pos = khrp.Position, look = khrp.CFrame.LookVector }
                         BoxState.killers[k] = st
                     else
                         local a = Box_Alpha(dt)
@@ -134,17 +133,6 @@ local function Box_UpdateSmoothing(dt)
                         local nl = khrp.CFrame.LookVector
                         st.look = st.look:Lerp(nl, a)
                         if st.look.Magnitude > 0.01 then st.look = st.look.Unit else st.look = nl.Unit end
-                    end
-                    if BoxState.player then
-                        local toPlayer = BoxState.player - st.pos
-                        local fl = Vector3.new(st.look.X, 0, st.look.Z)
-                        local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
-                        if fl.Magnitude > 0.01 and ft.Magnitude > 0.01 then
-                            local dot = fl.Unit:Dot(ft.Unit)
-                            st.lastFacingDot = st.facingDot or dot
-                            st.facingDot = dot
-                            st.turnRate = (st.facingDot - st.lastFacingDot) / math.max(dt, 0.001)
-                        end
                     end
                 else
                     BoxState.killers[k] = nil
@@ -157,52 +145,66 @@ local function Box_UpdateSmoothing(dt)
     end
 end
 
-local function AB_IsFacingPlayer(killer)
+local function AB_IsPlayerInFront(killer)
     local st = BoxState.killers[killer]
     if not st or not BoxState.player then return false end
     local toPlayer = BoxState.player - st.pos
-    if toPlayer.Magnitude < 0.5 then return false end
-    local fl = Vector3.new(st.look.X, 0, st.look.Z)
-    local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
-    if fl.Magnitude < 0.01 or ft.Magnitude < 0.01 then return false end
-    return fl.Unit:Dot(ft.Unit) >= Settings.BoxFacingDot
+    local flatTo = Vector3.new(toPlayer.X, 0, toPlayer.Z)
+    if flatTo.Magnitude < 0.5 then return false end
+    if flatTo.Magnitude > Settings.BoxRange then return false end
+    local flatLook = Vector3.new(st.look.X, 0, st.look.Z)
+    if flatLook.Magnitude < 0.01 then return false end
+    return flatLook.Unit:Dot(flatTo.Unit) >= Settings.BoxMinFacing
 end
 
-local function AB_ShouldBlock(killer)
+local function Box_GetFanDir(look, index, total)
+    if total <= 1 then
+        local flat = Vector3.new(look.X, 0, look.Z)
+        if flat.Magnitude < 0.01 then return Vector3.new(0, 0, -1) end
+        return flat.Unit
+    end
+    local t = (index - 1) / (total - 1)
+    local angle = math.rad((t - 0.5) * Settings.BoxArc)
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
+    flat = flat.Unit
+    local c, s = math.cos(angle), math.sin(angle)
+    return Vector3.new(flat.X * c - flat.Z * s, 0, flat.X * s + flat.Z * c)
+end
+
+local function AB_IsPlayerConnected(killer)
     local st = BoxState.killers[killer]
     if not st or not BoxState.player then return false end
+    local halfW = Settings.BoxWidth / 2
+    local halfH = Settings.BoxHeight / 2
+    local halfL = Settings.BoxLength / 2
+    local pHalf = Settings.BoxPlayerW / 2
+    local count = math.clamp(math.floor(Settings.BoxCount), 1, 10)
 
-    local toPlayer = BoxState.player - st.pos
-    local dist = toPlayer.Magnitude
-    if dist > Settings.BoxRange or dist < 0.5 then return false end
-
-    local fl = Vector3.new(st.look.X, 0, st.look.Z)
-    local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
-    if fl.Magnitude < 0.01 or ft.Magnitude < 0.01 then return false end
-    local facingDot = fl.Unit:Dot(ft.Unit)
-
-    local khrp = killer:FindFirstChild("HumanoidRootPart")
-    if khrp then
-        local kv = khrp.AssemblyLinearVelocity
-        if kv.Magnitude > Settings.BoxFastThreshold then
-            local fv = Vector3.new(kv.X, 0, kv.Z)
-            if fv.Magnitude > 0.5 and fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then
-                return false
+    for i = 1, count do
+        local dir = Box_GetFanDir(st.look, i, count)
+        if dir.Magnitude > 0.01 then
+            dir = dir.Unit
+            local boxCenter = st.pos + dir * halfL
+            local right = Vector3.new(-dir.Z, 0, dir.X)
+            local rel = BoxState.player - boxCenter
+            local localX = rel:Dot(right)
+            local localY = rel.Y
+            local localZ = rel.Dot and rel:Dot(dir) or rel:Dot(dir)
+            if math.abs(localX) <= halfW + pHalf
+               and math.abs(localY) <= halfH + pHalf
+               and math.abs(localZ) <= halfL + pHalf then
+                return true
             end
         end
     end
-
-    local blockLen = math.max(Settings.BoxRange - Settings.BoxBlockDistance, 0.5)
-    local alongLook = ft:Dot(fl.Unit)
-    if alongLook > (blockLen + Settings.BoxBlockDistance) then return false end
-
-    if facingDot >= Settings.BoxFacingDot then return true end
-
-    if Settings.BoxAntiBait and st.turnRate and st.turnRate > Settings.BoxTurnRate then
-        if facingDot >= 0.15 then return true end
-    end
-
     return false
+end
+
+local function AB_ShouldBlock(killer)
+    if not AB_IsPlayerInFront(killer) then return false end
+    if not AB_IsPlayerConnected(killer) then return false end
+    return true
 end
 
 local _WIRE = nil
@@ -274,88 +276,102 @@ local function Box_HideWireframe(parts)
     end
 end
 
-local function Box_GetKillerBox(killer)
-    local b = BoxState.killerBoxes[killer]
-    if b and Box_IsWireframeValid(b.parts) then return b end
-    if b then Box_DestroyWireframe(b.parts) end
-    local parts = Box_CreateWireframe(Box_GetRootFolder())
-    b = { parts = parts, showUntil = 0 }
-    BoxState.killerBoxes[killer] = b
-    return b
-end
-
 local function Box_GetPlayerBox()
     local pb = BoxState.playerBox
     if pb and Box_IsWireframeValid(pb.parts) then return pb end
     if pb then Box_DestroyWireframe(pb.parts) end
     local parts = Box_CreateWireframe(Box_GetRootFolder())
-    pb = { parts = parts, showUntil = 0 }
+    pb = { parts = parts }
     BoxState.playerBox = pb
     return pb
 end
 
-local function Box_ShowOnM1(killer)
-    if not Settings.AB_ShowZone then return end
-    local khrp = killer:FindFirstChild("HumanoidRootPart")
-    if not khrp then return end
-    local chrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not chrp then return end
-    local existing = BoxState.killers[killer]
-    if existing then
-        existing.pos = khrp.Position
-        existing.look = khrp.CFrame.LookVector
-    else
-        BoxState.killers[killer] = { pos = khrp.Position, look = khrp.CFrame.LookVector,
-                                     facingDot = 0, lastFacingDot = 0, turnRate = 0 }
+local function Box_GetKillerBoxSet(killer, count)
+    local set = BoxState.killerBoxSets[killer]
+    if set and #set.boxes == count then
+        local allValid = true
+        for _, b in ipairs(set.boxes) do
+            if not Box_IsWireframeValid(b.parts) then allValid = false; break end
+        end
+        if allValid then return set end
     end
-    BoxState.player = chrp.Position
-    local now = os.clock()
-    Box_GetKillerBox(killer).showUntil = now + Settings.BoxDisplayDuration
-    if (chrp.Position - khrp.Position).Magnitude <= Settings.BoxRange then
-        Box_GetPlayerBox().showUntil = now + Settings.BoxDisplayDuration
+    if set then
+        for _, b in ipairs(set.boxes) do Box_DestroyWireframe(b.parts) end
     end
+    local boxes = {}
+    for i = 1, count do
+        boxes[i] = { parts = Box_CreateWireframe(Box_GetRootFolder()) }
+    end
+    set = { boxes = boxes }
+    BoxState.killerBoxSets[killer] = set
+    return set
 end
 
 local function Box_RenderAll()
     if not Settings.AB_ShowZone then
-        for _, box in pairs(BoxState.killerBoxes) do Box_HideWireframe(box.parts) end
+        for _, set in pairs(BoxState.killerBoxSets) do
+            for _, b in ipairs(set.boxes) do Box_HideWireframe(b.parts) end
+        end
         if BoxState.playerBox then Box_HideWireframe(BoxState.playerBox.parts) end
         return
     end
-    local now = os.clock()
 
-    for killer, box in pairs(BoxState.killerBoxes) do
+    for killer, set in pairs(BoxState.killerBoxSets) do
         if not killer.Parent then
-            Box_DestroyWireframe(box.parts)
-            BoxState.killerBoxes[killer] = nil
-        elseif not Box_IsWireframeValid(box.parts) then
-            Box_DestroyWireframe(box.parts); box.parts = {}
-        elseif now > box.showUntil then
-            Box_HideWireframe(box.parts)
-        else
+            for _, b in ipairs(set.boxes) do Box_DestroyWireframe(b.parts) end
+            BoxState.killerBoxSets[killer] = nil
+        end
+    end
+
+    local kf = GetKillersFolder()
+    if not kf or not BoxState.player then
+        for _, set in pairs(BoxState.killerBoxSets) do
+            for _, b in ipairs(set.boxes) do Box_HideWireframe(b.parts) end
+        end
+        if BoxState.playerBox then Box_HideWireframe(BoxState.playerBox.parts) end
+        return
+    end
+
+    local count = math.clamp(math.floor(Settings.BoxCount), 1, 10)
+    local size = Vector3.new(Settings.BoxWidth, Settings.BoxHeight, Settings.BoxLength)
+    local halfL = Settings.BoxLength / 2
+    local anyKillerVisible = false
+
+    for _, killer in ipairs(kf:GetChildren()) do
+        if killer:IsA("Model") and killer.Parent then
             local st = BoxState.killers[killer]
-            if st then
-                local size = Vector3.new(Settings.BoxKillerW, Settings.BoxKillerH, Settings.BoxKillerL)
-                local center = st.pos + st.look * (Settings.BoxKillerL / 2)
-                local cf = CFrame.lookAt(center, center + st.look)
-                local color = AB_IsFacingPlayer(killer) and GREEN or BLUE
-                Box_UpdateWireframe(box.parts, cf, size, color)
-            else
-                Box_HideWireframe(box.parts)
+            local visible = AB_IsPlayerInFront(killer)
+            if not visible then
+                local set = BoxState.killerBoxSets[killer]
+                if set then
+                    for _, b in ipairs(set.boxes) do Box_HideWireframe(b.parts) end
+                end
+            elseif st then
+                anyKillerVisible = true
+                local set = Box_GetKillerBoxSet(killer, count)
+                local connected = AB_IsPlayerConnected(killer)
+                local color = connected and GREEN or BLUE
+                for i = 1, count do
+                    local dir = Box_GetFanDir(st.look, i, count)
+                    if dir.Magnitude > 0.01 then
+                        dir = dir.Unit
+                        local boxCenter = st.pos + dir * halfL
+                        local cf = CFrame.lookAt(boxCenter, boxCenter + dir)
+                        Box_UpdateWireframe(set.boxes[i].parts, cf, size, color)
+                    else
+                        Box_HideWireframe(set.boxes[i].parts)
+                    end
+                end
             end
         end
     end
 
-    local pb = BoxState.playerBox
-    if pb then
-        if not Box_IsWireframeValid(pb.parts) then
-            Box_DestroyWireframe(pb.parts); pb.parts = {}
-        elseif now > pb.showUntil or not BoxState.player then
-            Box_HideWireframe(pb.parts)
-        else
-            local s = Settings.BoxPlayerW
-            Box_UpdateWireframe(pb.parts, CFrame.new(BoxState.player), Vector3.new(s,s,s), BLUE)
-        end
+    if anyKillerVisible then
+        local pb = Box_GetPlayerBox()
+        local s = Settings.BoxPlayerW
+        Box_UpdateWireframe(pb.parts, CFrame.new(BoxState.player), Vector3.new(s, s, s), BLUE)
+    elseif BoxState.playerBox then
+        Box_HideWireframe(BoxState.playerBox.parts)
     end
 end
 
@@ -438,7 +454,7 @@ end
 
 local function AB_Fire() if Settings.AB_SpamEnabled then AB_FireSpam() else AB_FireBlock() end end
 
---═══ HDT (BodyVelocity + BodyGyro on HRP only) ═══
+--═══ HDT (BodyVelocity + BodyGyro) ═══
 local HDT = {
     running = false,
     debounce = false,
@@ -524,7 +540,6 @@ local function HDT_SetDuration(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 
 local function AB_TryFire(killer)
     local st = AB.perKiller[killer]
     if not st or st.pendingUntil <= 0 or tick() > st.pendingUntil then return end
-    Box_ShowOnM1(killer)
     if not AB_IsBlockReady() then return end
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -601,8 +616,10 @@ local function AB_Disable()
     if AB.frameConn then pcall(function() AB.frameConn:Disconnect() end); AB.frameConn = nil end
     for k in pairs(AB.perKiller) do AB_UnhookKiller(k) end
     AB.perKiller = {}
-    for killer, box in pairs(BoxState.killerBoxes) do Box_DestroyWireframe(box.parts) end
-    BoxState.killerBoxes = {}
+    for killer, set in pairs(BoxState.killerBoxSets) do
+        for _, b in ipairs(set.boxes) do Box_DestroyWireframe(b.parts) end
+    end
+    BoxState.killerBoxSets = {}
     if BoxState.playerBox then
         Box_DestroyWireframe(BoxState.playerBox.parts)
         BoxState.playerBox = nil
@@ -1853,7 +1870,7 @@ do
     h:AddToggle("HDT_Enabled_T", { Text = "Enable HDT", Default = false, Tooltip = "Dashes toward killer when Auto Block fires. 27s cooldown.", Callback = function(v) Settings.HDT_Enabled = v end })
     h:AddSlider("HDT_Speed_S",   { Text = "Dash Speed (studs/s)", Default = 40,   Min = 5,    Max = 500, Rounding = 0, Callback = function(v) HDT_SetSpeed(v)    end })
     h:AddSlider("HDT_Duration_S",{ Text = "Dash Duration (s)",    Default = 0.6,  Min = 0.05, Max = 3,   Rounding = 3, Callback = function(v) HDT_SetDuration(v) end })
-    h:AddLabel({ Text = "BodyVelocity + BodyGyro on HumanoidRootPart only — no WalkSpeed, no PrimaryPart, no extra parts.", DoesWrap = true })
+    h:AddLabel({ Text = "BodyVelocity + BodyGyro on HumanoidRootPart only.", DoesWrap = true })
 
     local a = Tabs.AutoBlock:AddRightGroupbox("Anti Bait")
     a:AddToggle("ABT_T",   { Text = "Enable Anti Bait", Default = false, Callback = function(v) if v then ABT_Enable() else ABT_Disable() end end })
@@ -1861,25 +1878,54 @@ do
 end
 
 do
-    local bd = Tabs.Box:AddLeftGroupbox("Box Detection")
-    bd:AddSlider("Box_Range_S", { Text = "Total Range (studs)", Default = 18, Min = 5, Max = 50, Rounding = 1, Callback = function(v) Settings.BoxRange = v end })
-    bd:AddSlider("Box_BlockDist_S", { Text = "Block Distance (studs)", Default = 3, Min = 1, Max = 15, Rounding = 1, Callback = function(v) Settings.BoxBlockDistance = v end })
-    bd:AddSlider("Box_Delay_S", { Text = "Follow Delay (s)", Default = 0.1, Min = 0.01, Max = 0.5, Rounding = 2, Callback = function(v) Settings.BoxFollowDelay = v end })
-    bd:AddSlider("Box_Dot_S", { Text = "Facing Threshold", Default = 0.5, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.BoxFacingDot = v end })
-    bd:AddSlider("Box_FastThresh_S", { Text = "Fast Velocity Threshold", Default = 15, Min = 5, Max = 40, Rounding = 0, Callback = function(v) Settings.BoxFastThreshold = v end })
-    bd:AddSlider("Box_FastDot_S", { Text = "Fast Move Toward Dot", Default = 0.3, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.BoxFastDot = v end })
-    bd:AddSlider("Box_ShowDur_S", { Text = "M1 Show Duration (s)", Default = 0.3, Min = 0.1, Max = 0.7, Rounding = 2, Callback = function(v) Settings.BoxDisplayDuration = v end })
-    bd:AddToggle("Box_ShowVis_T", { Text = "Show Box Visuals", Default = true, Callback = function(v) Settings.AB_ShowZone = v end })
-
-    local ab = Tabs.Box:AddRightGroupbox("Box Anti Bait")
-    ab:AddToggle("Box_AntiBait_T", { Text = "Enable Box Anti Bait", Default = true, Tooltip = "Blocks when killer box is rotating toward you rapidly.", Callback = function(v) Settings.BoxAntiBait = v end })
-    ab:AddSlider("Box_TurnRate_S", { Text = "Turn Rate Threshold", Default = 1.5, Min = 0.3, Max = 5, Rounding = 2, Tooltip = "Higher = must turn faster to trigger.", Callback = function(v) Settings.BoxTurnRate = v end })
+    local bd = Tabs.Box:AddLeftGroupbox("Box Fan")
+    bd:AddSlider("Box_Count_S", {
+        Text = "Box Count (1-10)", Default = 3, Min = 1, Max = 10, Rounding = 0,
+        Tooltip = "How many flat boxes fan out from the killer.",
+        Callback = function(v) Settings.BoxCount = math.clamp(math.floor(v or 3), 1, 10) end,
+    })
+    bd:AddSlider("Box_Arc_S", {
+        Text = "Fan Arc (degrees)", Default = 120, Min = 30, Max = 180, Rounding = 0,
+        Tooltip = "How wide the fan spreads. 180 = full half-circle in front.",
+        Callback = function(v) Settings.BoxArc = v end,
+    })
+    bd:AddSlider("Box_Range_S", {
+        Text = "Max Range (studs)", Default = 20, Min = 5, Max = 50, Rounding = 1,
+        Tooltip = "Boxes hide when player is further than this.",
+        Callback = function(v) Settings.BoxRange = v end,
+    })
+    bd:AddSlider("Box_MinFacing_S", {
+        Text = "Min Facing (dot)", Default = 0.2, Min = -0.5, Max = 1, Rounding = 2,
+        Tooltip = "Player must be this much in front of killer. 0 = 90° cone, 0.5 = 60°.",
+        Callback = function(v) Settings.BoxMinFacing = v end,
+    })
+    bd:AddSlider("Box_Delay_S", {
+        Text = "Follow Delay (s)", Default = 0.1, Min = 0.01, Max = 0.5, Rounding = 2,
+        Callback = function(v) Settings.BoxFollowDelay = v end,
+    })
+    bd:AddToggle("Box_ShowVis_T", {
+        Text = "Show Box Visuals", Default = true,
+        Callback = function(v) Settings.AB_ShowZone = v end,
+    })
 
     local dim = Tabs.Box:AddRightGroupbox("Box Dimensions")
-    dim:AddSlider("Box_KW_S", { Text = "Killer Width",  Default = 6, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.BoxKillerW = v end })
-    dim:AddSlider("Box_KH_S", { Text = "Killer Height", Default = 6, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.BoxKillerH = v end })
-    dim:AddSlider("Box_KL_S", { Text = "Killer Length", Default = 15, Min = 1, Max = 40, Rounding = 1, Callback = function(v) Settings.BoxKillerL = v end })
-    dim:AddSlider("Box_PW_S", { Text = "Player Width",  Default = 6, Min = 1, Max = 20, Rounding = 1, Callback = function(v) Settings.BoxPlayerW = v end })
+    dim:AddSlider("Box_Len_S", {
+        Text = "Length (Forsaken hitbox)", Default = 9, Min = 3, Max = 20, Rounding = 1,
+        Callback = function(v) Settings.BoxLength = v end,
+    })
+    dim:AddSlider("Box_Width_S", {
+        Text = "Width", Default = 4, Min = 1, Max = 20, Rounding = 1,
+        Callback = function(v) Settings.BoxWidth = v end,
+    })
+    dim:AddSlider("Box_Height_S", {
+        Text = "Height (flat)", Default = 1.5, Min = 0.5, Max = 10, Rounding = 1,
+        Tooltip = "Low = flat. Forsaken hitboxes are wide but short.",
+        Callback = function(v) Settings.BoxHeight = v end,
+    })
+    dim:AddSlider("Box_PlayerW_S", {
+        Text = "Player Box Width", Default = 4, Min = 1, Max = 20, Rounding = 1,
+        Callback = function(v) Settings.BoxPlayerW = v end,
+    })
 
     local m1 = Tabs.Box:AddLeftGroupbox("Auto M1")
     m1:AddToggle("AM1_Enable_T",     { Text = "Enable Auto M1",               Default = false, Callback = function(v) if v then AM1_Enable() else AM1_Disable() end end })
@@ -1999,14 +2045,15 @@ _G.Godsaken = {
         SetDuration=HDT_SetDuration,
     },
     Box = {
-        SetRange=function(v) Settings.BoxRange = tonumber(v) or 18 end,
-        SetBlockDistance=function(v) Settings.BoxBlockDistance = tonumber(v) or 3 end,
-        SetKillerW=function(v) Settings.BoxKillerW = tonumber(v) or 6 end,
-        SetKillerH=function(v) Settings.BoxKillerH = tonumber(v) or 6 end,
-        SetKillerL=function(v) Settings.BoxKillerL = tonumber(v) or 15 end,
-        SetPlayerW=function(v) Settings.BoxPlayerW = tonumber(v) or 6 end,
-        SetAntiBait=function(v) Settings.BoxAntiBait = v and true or false end,
-        SetTurnRate=function(v) Settings.BoxTurnRate = tonumber(v) or 1.5 end,
+        SetRange=function(v) Settings.BoxRange = tonumber(v) or 20 end,
+        SetDelay=function(v) Settings.BoxFollowDelay = tonumber(v) or 0.1 end,
+        SetCount=function(v) Settings.BoxCount = math.clamp(tonumber(v) or 3, 1, 10) end,
+        SetArc=function(v) Settings.BoxArc = tonumber(v) or 120 end,
+        SetLength=function(v) Settings.BoxLength = tonumber(v) or 9 end,
+        SetWidth=function(v) Settings.BoxWidth = tonumber(v) or 4 end,
+        SetHeight=function(v) Settings.BoxHeight = tonumber(v) or 1.5 end,
+        SetMinFacing=function(v) Settings.BoxMinFacing = tonumber(v) or 0.2 end,
+        SetPlayerW=function(v) Settings.BoxPlayerW = tonumber(v) or 4 end,
     },
 }
 
@@ -2023,8 +2070,10 @@ Library:OnUnload(function()
     pcall(function() HitboxExpander.Enabled = false; HitboxExpander._running = false end)
     pcall(function()
         Box_StopRender()
-        for killer, box in pairs(BoxState.killerBoxes) do Box_DestroyWireframe(box.parts) end
-        BoxState.killerBoxes = {}
+        for killer, set in pairs(BoxState.killerBoxSets) do
+            for _, b in ipairs(set.boxes) do Box_DestroyWireframe(b.parts) end
+        end
+        BoxState.killerBoxSets = {}
         if BoxState.playerBox then
             Box_DestroyWireframe(BoxState.playerBox.parts)
             BoxState.playerBox = nil
@@ -2037,8 +2086,8 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Old auto block restored + HDT BodyVelocity/BodyGyro only",
+    Content = "Box fan system loaded",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — old auto block + clean HDT.")
+print("[Cr4zy HuB] Loaded — box fan.")
