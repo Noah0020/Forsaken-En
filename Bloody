@@ -53,7 +53,11 @@ local Settings = {
     BoxHeight = 5,
     BoxMinFacing = 0.2,
     BoxPlayerW = 3,
-    BoxM1ForwardOffset = 0.5,
+    BoxM1Length = 7.5,
+    BoxM1Width = 4.5,
+    BoxM1Height = 4.5,
+    BoxPredictTime = 0.15,
+    BoxConnectShowDur = 0.4,
     HDT_Enabled = false, HDT_Speed = 40, HDT_Duration = 0.6,
     ABT_Duration = 0.5, AP_Delay = 0.5, PA_Prediction = 4,
     AIM_Mode = "Character", AIM_Prediction = 4, AIM_LockTime = 0.7,
@@ -90,6 +94,12 @@ local BoxState = {
     killers = {}, player = nil,
     killerBoxSets = {}, playerBox = nil,
     rootFolder = nil, renderConn = nil,
+}
+
+local ConnectState = {
+    active = {},
+    boxes = {},
+    debug = false,
 }
 
 local function Box_GetRootFolder()
@@ -204,25 +214,45 @@ local function AB_IsPlayerConnected(killer)
     return false
 end
 
-local function AB_M1LineHitsPlayer(killer)
-    local st = BoxState.killers[killer]
-    if not st or not BoxState.player then return false end
-    local lookFlat = Vector3.new(st.look.X, 0, st.look.Z)
-    if lookFlat.Magnitude < 0.01 then return false end
-    lookFlat = lookFlat.Unit
-    local right = Vector3.new(-lookFlat.Z, 0, lookFlat.X)
+local function Box_SpawnConnect(killer)
+    local khrp = killer:FindFirstChild("HumanoidRootPart")
+    if not khrp then return end
+    local now = tick()
+    ConnectState.active[killer] = {
+        pos = khrp.Position,
+        look = khrp.CFrame.LookVector,
+        vel = khrp.AssemblyLinearVelocity or Vector3.zero,
+        firedAt = now,
+        expireAt = now + Settings.BoxConnectShowDur,
+    }
+    if ConnectState.debug then
+        print(string.format("[Connect] M1 detected from %s at (%.1f, %.1f, %.1f)",
+            killer.Name, khrp.Position.X, khrp.Position.Y, khrp.Position.Z))
+    end
+end
 
-    local halfL = Settings.BoxLength / 2
-    local halfW = Settings.BoxWidth / 2
-    local halfH = Settings.BoxHeight / 2
+local function Box_ConnectHitsPlayer(killer)
+    local data = ConnectState.active[killer]
+    if not data then return false end
+    if tick() > data.expireAt then return false end
+    if not BoxState.player then return false end
+
+    local halfL = Settings.BoxM1Length / 2
+    local halfW = Settings.BoxM1Width / 2
+    local halfH = Settings.BoxM1Height / 2
     local pHalf = Settings.BoxPlayerW / 2
-    local forwardOff = Settings.BoxM1ForwardOffset or 0.5
 
-    local m1Center = st.pos + lookFlat * (forwardOff + halfL)
+    local predPos = data.pos + data.vel * Settings.BoxPredictTime
+    local flatLook = Vector3.new(data.look.X, 0, data.look.Z)
+    if flatLook.Magnitude < 0.01 then return false end
+    flatLook = flatLook.Unit
+    local right = Vector3.new(-flatLook.Z, 0, flatLook.X)
+
+    local m1Center = predPos + flatLook * halfL
     local rel = BoxState.player - m1Center
     local localX = rel:Dot(right)
     local localY = rel.Y
-    local localZ = rel:Dot(lookFlat)
+    local localZ = rel:Dot(flatLook)
 
     return math.abs(localX) <= halfW + pHalf
        and math.abs(localY) <= halfH + pHalf
@@ -230,20 +260,12 @@ local function AB_M1LineHitsPlayer(killer)
 end
 
 local function AB_ShouldBlock(killer)
+    if Settings.BoxMode == "Connect" then
+        return Box_ConnectHitsPlayer(killer)
+    end
     if not AB_IsPlayerInFront(killer) then return false end
     if not AB_IsPlayerConnected(killer) then return false end
-    if Settings.BoxMode == "Connect" then
-        return AB_M1LineHitsPlayer(killer)
-    end
     return true
-end
-
-local function Box_GetStateColor(killer)
-    if not AB_IsPlayerConnected(killer) then return BLUE end
-    if Settings.BoxMode == "Connect" and not AB_M1LineHitsPlayer(killer) then
-        return YELLOW
-    end
-    return GREEN
 end
 
 local _WIRE = nil
@@ -346,22 +368,62 @@ local function Box_GetKillerBoxSet(killer, count)
     return set
 end
 
-local function Box_RenderAll()
-    if not Settings.AB_ShowZone then
-        for _, set in pairs(BoxState.killerBoxSets) do
-            for _, b in ipairs(set.boxes) do Box_HideWireframe(b.parts) end
-        end
-        if BoxState.playerBox then Box_HideWireframe(BoxState.playerBox.parts) end
-        return
-    end
+local function Box_GetConnectBox(killer)
+    local box = ConnectState.boxes[killer]
+    if box and Box_IsWireframeValid(box.parts) then return box end
+    if box then Box_DestroyWireframe(box.parts) end
+    local parts = Box_CreateWireframe(Box_GetRootFolder())
+    box = { parts = parts }
+    ConnectState.boxes[killer] = box
+    return box
+end
 
-    for killer, set in pairs(BoxState.killerBoxSets) do
-        if not killer.Parent then
-            for _, b in ipairs(set.boxes) do Box_DestroyWireframe(b.parts) end
-            BoxState.killerBoxSets[killer] = nil
+local function Box_RenderConnectMode()
+    local now = tick()
+    for killer, data in pairs(ConnectState.active) do
+        local box = ConnectState.boxes[killer]
+        if not killer.Parent or now > data.expireAt then
+            ConnectState.active[killer] = nil
+            if box then Box_HideWireframe(box.parts) end
+        else
+            local b = Box_GetConnectBox(killer)
+            local predPos = data.pos + data.vel * Settings.BoxPredictTime
+            local flatLook = Vector3.new(data.look.X, 0, data.look.Z)
+            if flatLook.Magnitude > 0.01 then
+                flatLook = flatLook.Unit
+                local m1Center = predPos + flatLook * (Settings.BoxM1Length / 2)
+                local cf = CFrame.lookAt(m1Center, m1Center + flatLook)
+                local size = Vector3.new(Settings.BoxM1Width, Settings.BoxM1Height, Settings.BoxM1Length)
+                local hit = Box_ConnectHitsPlayer(killer)
+                local color = hit and GREEN or BLUE
+                Box_UpdateWireframe(b.parts, cf, size, color)
+            else
+                Box_HideWireframe(b.parts)
+            end
         end
     end
+    for killer, box in pairs(ConnectState.boxes) do
+        if not ConnectState.active[killer] then
+            Box_HideWireframe(box.parts)
+        end
+    end
+    if BoxState.playerBox then
+        Box_HideWireframe(BoxState.playerBox.parts)
+    end
+    if BoxState.player and Settings.AB_ShowZone then
+        local any = false
+        for killer in pairs(ConnectState.active) do
+            if killer.Parent then any = true; break end
+        end
+        if any then
+            local pb = Box_GetPlayerBox()
+            local s = Settings.BoxPlayerW
+            Box_UpdateWireframe(pb.parts, CFrame.new(BoxState.player), Vector3.new(s, s, s), BLUE)
+        end
+    end
+end
 
+local function Box_RenderFanMode()
     local kf = GetKillersFolder()
     if not kf or not BoxState.player then
         for _, set in pairs(BoxState.killerBoxSets) do
@@ -388,7 +450,8 @@ local function Box_RenderAll()
             elseif st then
                 anyVisible = true
                 local set = Box_GetKillerBoxSet(killer, count)
-                local color = Box_GetStateColor(killer)
+                local connected = AB_IsPlayerConnected(killer)
+                local color = connected and GREEN or BLUE
                 for i = 1, count do
                     local dir = Box_GetFanDir(st.look, i, count)
                     if dir.Magnitude > 0.01 then
@@ -408,18 +471,43 @@ local function Box_RenderAll()
         local pb = Box_GetPlayerBox()
         local s = Settings.BoxPlayerW
         local pbColor = BLUE
-        local kf2 = GetKillersFolder()
-        if kf2 then
-            for _, k in ipairs(kf2:GetChildren()) do
-                if AB_IsPlayerConnected(k) then
-                    pbColor = Box_GetStateColor(k)
-                    break
-                end
+        for _, k in ipairs(kf:GetChildren()) do
+            if AB_IsPlayerConnected(k) then
+                pbColor = GREEN
+                break
             end
         end
         Box_UpdateWireframe(pb.parts, CFrame.new(BoxState.player), Vector3.new(s, s, s), pbColor)
     elseif BoxState.playerBox then
         Box_HideWireframe(BoxState.playerBox.parts)
+    end
+end
+
+local function Box_RenderAll()
+    if not Settings.AB_ShowZone then
+        for _, set in pairs(BoxState.killerBoxSets) do
+            for _, b in ipairs(set.boxes) do Box_HideWireframe(b.parts) end
+        end
+        if BoxState.playerBox then Box_HideWireframe(BoxState.playerBox.parts) end
+        for _, box in pairs(ConnectState.boxes) do Box_HideWireframe(box.parts) end
+        return
+    end
+
+    for killer, set in pairs(BoxState.killerBoxSets) do
+        if not killer.Parent then
+            for _, b in ipairs(set.boxes) do Box_DestroyWireframe(b.parts) end
+            BoxState.killerBoxSets[killer] = nil
+        end
+    end
+
+    if Settings.BoxMode == "Connect" then
+        for _, set in pairs(BoxState.killerBoxSets) do
+            for _, b in ipairs(set.boxes) do Box_HideWireframe(b.parts) end
+        end
+        Box_RenderConnectMode()
+    else
+        for _, box in pairs(ConnectState.boxes) do Box_HideWireframe(box.parts) end
+        Box_RenderFanMode()
     end
 end
 
@@ -594,6 +682,9 @@ local function AB_TryFire(killer)
     if not hrp or not hrp.Parent then return end
     if not AB_ShouldBlock(killer) then return end
     st.pendingUntil = 0; st.lastFireAt = tick(); AB.lastBlock = tick()
+    if ConnectState.debug then
+        print(string.format("[Connect] Blocking %s (mode=%s)", killer.Name, Settings.BoxMode))
+    end
     AB_Fire()
     HDT_Fire(killer)
 end
@@ -607,6 +698,9 @@ local function AB_OnAttributeChanged(killer)
     if aLU <= st.lastAbility then return end
     st.lastAbility = aLU
     if st.baitFlag then st.baitFlag = false; return end
+    if Settings.BoxMode == "Connect" then
+        Box_SpawnConnect(killer)
+    end
     st.pendingUntil = tick() + Settings.AB_PendingWindow
     AB_TryFire(killer)
 end
@@ -669,6 +763,11 @@ local function AB_Disable()
         Box_DestroyWireframe(BoxState.playerBox.parts)
         BoxState.playerBox = nil
     end
+    for killer, box in pairs(ConnectState.boxes) do
+        Box_DestroyWireframe(box.parts)
+    end
+    ConnectState.boxes = {}
+    ConnectState.active = {}
     BoxState.killers = {}; BoxState.player = nil
     Box_DestroyRootFolder()
 end
@@ -1922,26 +2021,57 @@ do
 end
 
 do
-    local mode = Tabs.Box:AddLeftGroupbox("Box Mode")
+    local mode = Tabs.Box:AddLeftGroupbox("Box System")
     mode:AddDropdown("Box_Mode_D", {
-        Text = "Box System",
+        Text = "Active System",
         Values = {"Fan", "Connect"},
         Default = "Fan",
         Multi = false,
-        Tooltip = "Fan = static fan of boxes (original). Connect = boxes try to reach you; blocks only if the killer's forward M1 line covers you.",
-        Callback = function(v) Settings.BoxMode = v end,
+        Tooltip = "Fan = static grid of boxes. Connect = single M1 hitbox predictor, blocks only if M1 hitbox would reach you.",
+        Callback = function(v)
+            Settings.BoxMode = v
+            if ConnectState.debug then
+                print("[Box] Mode changed to " .. tostring(v))
+            end
+        end,
     })
-    mode:AddLabel({ Text = "Fan: any box touching you = block. Connect: box must touch you AND killer's M1 line must cover you (blue/yellow/green feedback).", DoesWrap = true })
+    mode:AddLabel({ Text = "Fan: static fan in front of killer. Connect: shows predicted M1 hitbox on each swing, blocks when it would land on you.", DoesWrap = true })
 
-    local bd = Tabs.Box:AddLeftGroupbox("Fan Settings")
+    local conn = Tabs.Box:AddRightGroupbox("Connect Mode Settings")
+    conn:AddSlider("Box_M1Len_S", {
+        Text = "M1 Hitbox Length", Default = 7.5, Min = 3, Max = 15, Rounding = 1,
+        Tooltip = "Forsaken M1 reach. Slasher ≈ 7.5, c00lkidd similar.",
+        Callback = function(v) Settings.BoxM1Length = v end,
+    })
+    conn:AddSlider("Box_M1Wid_S", {
+        Text = "M1 Hitbox Width", Default = 4.5, Min = 1, Max = 15, Rounding = 1,
+        Callback = function(v) Settings.BoxM1Width = v end,
+    })
+    conn:AddSlider("Box_M1Hei_S", {
+        Text = "M1 Hitbox Height", Default = 4.5, Min = 1, Max = 15, Rounding = 1,
+        Callback = function(v) Settings.BoxM1Height = v end,
+    })
+    conn:AddSlider("Box_PredTime_S", {
+        Text = "Prediction Time (s)", Default = 0.15, Min = 0, Max = 0.5, Rounding = 2,
+        Tooltip = "How far to predict killer position forward. Higher = account for killer running.",
+        Callback = function(v) Settings.BoxPredictTime = v end,
+    })
+    conn:AddSlider("Box_ConnShow_S", {
+        Text = "Box Show Duration (s)", Default = 0.4, Min = 0.1, Max = 1, Rounding = 2,
+        Callback = function(v) Settings.BoxConnectShowDur = v end,
+    })
+    conn:AddToggle("Box_ConnDebug_T", {
+        Text = "Debug (print M1 detection)", Default = false,
+        Callback = function(v) ConnectState.debug = v end,
+    })
+
+    local bd = Tabs.Box:AddLeftGroupbox("Fan Mode Settings")
     bd:AddSlider("Box_Count_S", {
         Text = "Box Count (1-10)", Default = 3, Min = 1, Max = 10, Rounding = 0,
-        Tooltip = "How many boxes fan out from the killer.",
         Callback = function(v) Settings.BoxCount = math.clamp(math.floor(v or 3), 1, 10) end,
     })
     bd:AddSlider("Box_Arc_S", {
         Text = "Fan Arc (degrees)", Default = 120, Min = 30, Max = 180, Rounding = 0,
-        Tooltip = "How wide the fan spreads. 180 = full half-circle.",
         Callback = function(v) Settings.BoxArc = v end,
     })
     bd:AddSlider("Box_Range_S", {
@@ -1950,7 +2080,6 @@ do
     })
     bd:AddSlider("Box_MinFacing_S", {
         Text = "Min Facing (dot)", Default = 0.2, Min = -0.5, Max = 1, Rounding = 2,
-        Tooltip = "0 = 90° cone, 0.5 = 60° cone. Player must be this much in front.",
         Callback = function(v) Settings.BoxMinFacing = v end,
     })
     bd:AddSlider("Box_Delay_S", {
@@ -1964,17 +2093,15 @@ do
 
     local dim = Tabs.Box:AddRightGroupbox("Box Dimensions")
     dim:AddSlider("Box_Len_S", {
-        Text = "Length (studs)", Default = 8, Min = 3, Max = 20, Rounding = 1,
-        Tooltip = "M1 hitbox reach. Slasher ≈ 7.5, c00lkidd slightly shorter.",
+        Text = "Length", Default = 8, Min = 3, Max = 20, Rounding = 1,
         Callback = function(v) Settings.BoxLength = v end,
     })
     dim:AddSlider("Box_Width_S", {
-        Text = "Width (studs)", Default = 5, Min = 1, Max = 20, Rounding = 1,
+        Text = "Width", Default = 5, Min = 1, Max = 20, Rounding = 1,
         Callback = function(v) Settings.BoxWidth = v end,
     })
     dim:AddSlider("Box_Height_S", {
         Text = "Height (flat)", Default = 5, Min = 0.5, Max = 20, Rounding = 1,
-        Tooltip = "Lower = flatter detection. M1 hitboxes are roughly player-height.",
         Callback = function(v) Settings.BoxHeight = v end,
     })
     dim:AddSlider("Box_PlayerW_S", {
@@ -2110,6 +2237,10 @@ _G.Godsaken = {
         SetHeight=function(v) Settings.BoxHeight = tonumber(v) or 5 end,
         SetMinFacing=function(v) Settings.BoxMinFacing = tonumber(v) or 0.2 end,
         SetPlayerW=function(v) Settings.BoxPlayerW = tonumber(v) or 3 end,
+        SetM1Length=function(v) Settings.BoxM1Length = tonumber(v) or 7.5 end,
+        SetM1Width=function(v) Settings.BoxM1Width = tonumber(v) or 4.5 end,
+        SetM1Height=function(v) Settings.BoxM1Height = tonumber(v) or 4.5 end,
+        SetPredictTime=function(v) Settings.BoxPredictTime = tonumber(v) or 0.15 end,
     },
 }
 
@@ -2134,6 +2265,11 @@ Library:OnUnload(function()
             Box_DestroyWireframe(BoxState.playerBox.parts)
             BoxState.playerBox = nil
         end
+        for killer, box in pairs(ConnectState.boxes) do
+            Box_DestroyWireframe(box.parts)
+        end
+        ConnectState.boxes = {}
+        ConnectState.active = {}
         BoxState.killers = {}
         BoxState.player = nil
         Box_DestroyRootFolder()
@@ -2142,8 +2278,8 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Box modes: Fan / Connect",
+    Content = "Fan + Connect modes ready",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — dual box modes.")
+print("[Cr4zy HuB] Loaded — Fan and Connect modes.")
