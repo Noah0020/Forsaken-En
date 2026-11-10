@@ -39,7 +39,9 @@ end
 
 --═══ SETTINGS ═══
 local Settings = {
-    AB_Mode = "Guest1337", AB_ShowZone = true,
+    AB_Mode = "Guest1337",
+    AB_ShowBox = true,   -- was AB_ShowZone (split)
+    AB_ShowFan = true,   -- new
     AB_PendingWindow = 0.25,
     AB_SpamEnabled = false, AB_SpamCount = 4, AB_SpamDuration = 0.05,
     BoxRange = 20, BoxFollowDelay = 0.1, BoxFacingDot = 0.5,
@@ -47,7 +49,6 @@ local Settings = {
     FanLength = 12, FanCurve = 3, FanDuration = 0.3,
     HDT_Enabled = false, HDT_Speed = 40, HDT_Duration = 0.6,
 
-    -- Auto Stab v6 (lerp-on-press)
     StabEnabled = false,
     StabLerpDuration = 0.2,
     StabLerpRange = 15,
@@ -79,7 +80,7 @@ for _, id in ipairs({100129666722695,108807732150251,108911997126897,11127018460
 local AntiBaitAnims = {}
 for _, id in ipairs({100926346851492,102517104852347,115706752305794,116506900864624,120725067908621,120748030255574,120773807614836,123548100869928,127040663332045,133292581373127,138407964761603,140671644163156,72182155407310,72722244508749,82036084568393,82605295530067,83036817079068,88287038085804,88557287105521,90970641235403,95421685049902,95802026624883,96959123077498}) do AntiBaitAnims["rbxassetid://"..id] = true end
 
---═══ BOX (Auto Block, unchanged) ═══
+--═══ BOX ═══
 local AB = { running=false, frameConn=nil, perKiller={}, lastBlock=0, BLOCK_COOLDOWN=27 }
 local GREEN = Color3.fromRGB(70,255,120)
 local BLUE  = Color3.fromRGB(80,150,255)
@@ -228,7 +229,7 @@ local function Box_GetPlayerBox()
     pb = { parts = parts }; BoxState.playerBox = pb; return pb
 end
 local function Box_ShowFan(killer)
-    if not Settings.AB_ShowZone then return end
+    if not Settings.AB_ShowFan then return end
     local khrp = killer:FindFirstChild("HumanoidRootPart"); if not khrp then return end
     local look = khrp.CFrame.LookVector
     local flatLook = Vector3.new(look.X, 0, look.Z)
@@ -261,7 +262,7 @@ local function Box_ShowFan(killer)
     end)
 end
 local function Box_RenderAll()
-    if not Settings.AB_ShowZone then
+    if not Settings.AB_ShowBox then
         for _, box in pairs(BoxState.killerBoxes) do Box_HideWireframe(box.parts) end
         if BoxState.playerBox then Box_HideWireframe(BoxState.playerBox.parts) end
         return
@@ -1188,7 +1189,7 @@ local function AM1_Disable()
     AM1_DestroyRangeRing(); AM1_DestroyFacingBox(); AM1.attacking = false
 end
 
---═══ AUTO STAB v6 (lerp-on-Dagger-press) ═══
+--═══ AUTO STAB v7 (lerp tracks live killer back for full duration) ═══
 local Stab = { lerping = false, hookInstalled = false }
 
 local function StabIsDaggerName(n)
@@ -1196,7 +1197,6 @@ local function StabIsDaggerName(n)
     local l = n:lower()
     return l == "dagger" or l == "stab" or l:find("dagger", 1, true) ~= nil
 end
-
 local function StabFindNearestKillerInRange(hrp, range)
     local kf = GetKillersFolder(); if not kf then return nil end
     local best, bestDist = nil, range
@@ -1223,13 +1223,6 @@ local function StabLerpToKillerBack()
     local kr = StabFindNearestKillerInRange(hrp, Settings.StabLerpRange)
     if not kr then return end
 
-    local look = kr.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
-    flat = flat.Unit
-    local targetPos = kr.Position - flat * Settings.StabLerpBehindOffset
-    local targetAimPos = kr.Position
-
     local startPos = hrp.Position
     local startT = tick()
     local duration = math.max(Settings.StabLerpDuration, 0.02)
@@ -1238,18 +1231,16 @@ local function StabLerpToKillerBack()
     Stab.lerping = true
     hum.AutoRotate = false
     hum.WalkSpeed = 0
-    pcall(function()
-        hrp.AssemblyLinearVelocity = Vector3.zero
-    end)
+    pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
 
     local conn
     conn = RunService.RenderStepped:Connect(function()
         local c2 = LocalPlayer.Character
         local hrp2 = c2 and c2:FindFirstChild("HumanoidRootPart")
         local hum2 = c2 and c2:FindFirstChildOfClass("Humanoid")
-        if not hrp2 or not hum2 or hum2.Health <= 0 or not kr.Parent then
+        if not hrp2 or not hum2 or hum2.Health <= 0 or not kr or not kr.Parent then
             Stab.lerping = false
-            conn:Disconnect()
+            if conn then conn:Disconnect() end
             if hum2 and hum2.Parent then
                 hum2.AutoRotate = true
                 hum2.WalkSpeed = savedWalkSpeed
@@ -1258,9 +1249,35 @@ local function StabLerpToKillerBack()
         end
 
         local elapsed = tick() - startT
-        local alpha = math.clamp(elapsed / duration, 0, 1)
-        local eased = alpha * alpha * (3 - 2 * alpha)
 
+        -- Recompute LIVE target every frame (killer may be running)
+        local look = kr.CFrame.LookVector
+        local flat = Vector3.new(look.X, 0, look.Z)
+        if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
+        flat = flat.Unit
+        local targetPos = kr.Position - flat * Settings.StabLerpBehindOffset
+        local targetAimPos = kr.Position
+
+        if elapsed >= duration then
+            -- Final frame: land exactly on killer's CURRENT back
+            local aimAt = Vector3.new(targetAimPos.X, hrp2.Position.Y, targetAimPos.Z)
+            pcall(function()
+                hrp2.CFrame = CFrame.lookAt(targetPos, aimAt)
+                hrp2.AssemblyLinearVelocity = Vector3.zero
+            end)
+            Stab.lerping = false
+            if conn then conn:Disconnect() end
+            if hum2 and hum2.Parent then
+                hum2.AutoRotate = true
+                hum2.WalkSpeed = savedWalkSpeed
+            end
+            return
+        end
+
+        local progress = math.clamp(elapsed / duration, 0, 1)
+        local eased = progress * progress * (3 - 2 * progress)
+
+        -- Blend START position toward CURRENT killer back → tracks runners
         local newPos = startPos:Lerp(targetPos, eased)
         local aimAt = Vector3.new(targetAimPos.X, newPos.Y, targetAimPos.Z)
         local newCF = CFrame.lookAt(newPos, aimAt)
@@ -1269,15 +1286,6 @@ local function StabLerpToKillerBack()
             hrp2.CFrame = newCF
             hrp2.AssemblyLinearVelocity = Vector3.zero
         end)
-
-        if alpha >= 1 then
-            Stab.lerping = false
-            conn:Disconnect()
-            if hum2 and hum2.Parent then
-                hum2.AutoRotate = true
-                hum2.WalkSpeed = savedWalkSpeed
-            end
-        end
     end)
 end
 
@@ -1669,7 +1677,7 @@ end
 --═══ OBSIDIAN UI ═══
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
-Library.ForceCheckbox = false
+Library.ForceCheckbox = true   -- fixed: real checkboxes instead of switches
 Library.ShowToggleFrameInKeybinds = true
 Library.NotifySide = "Right"
 
@@ -1740,7 +1748,6 @@ do
     local g = Tabs.AutoBlock:AddLeftGroupbox("Auto Block")
     g:AddToggle("AB_Enable_T",   { Text = "Enable Auto Block",  Default = false, Callback = function(v) if v then AB_Enable() else AB_Disable() end end })
     g:AddDropdown("AB_Mode_D",   { Text = "Block Ability", Values = {"Guest1337","007n7"}, Default = "Guest1337", Multi = false, Callback = function(v) Settings.AB_Mode = v end })
-    g:AddToggle("AB_ShowZone_T", { Text = "Show Box Visuals",   Default = true,  Callback = function(v) Settings.AB_ShowZone = v end })
     g:AddSlider("AB_Pending_S",  { Text = "Pending Window (s)", Default = 0.25, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.AB_PendingWindow = v end })
     local s = Tabs.AutoBlock:AddRightGroupbox("Block Spam")
     s:AddToggle("AB_SpamEn_T",    { Text = "Enable Spam",   Default = false, Callback = function(v) Settings.AB_SpamEnabled = v end })
@@ -1761,8 +1768,7 @@ do
         Text = "Use Auto Stab", Default = false,
         Callback = function(v) Settings.StabEnabled = v; if v then StabInstallHook() end end,
     })
-    g:AddLabel({ Text = "When enabled, pressing your real Dagger button lerps you to the killer's back. Range = max killer distance to activate.", DoesWrap = true })
-
+    g:AddLabel({ Text = "Pressing Dagger lerps you to the killer's back over Duration seconds. Tracks killer while they move. Range = max killer distance to activate.", DoesWrap = true })
     local s = Tabs.Stab:AddRightGroupbox("Settings")
     s:AddSlider("Stab_Duration_S", {
         Text = "Duration (s)", Default = 0.2, Min = 0.05, Max = 1, Rounding = 2,
@@ -1777,21 +1783,28 @@ do
 end
 
 do
-    local det = Tabs.Box:AddLeftGroupbox("Box Detection")
+    local det = Tabs.Box:AddLeftGroupbox("Box Visuals")
+    det:AddToggle("Box_ShowBox_T", {
+        Text = "Show Killer Box", Default = true,
+        Callback = function(v) Settings.AB_ShowBox = v end,
+    })
+    det:AddToggle("Box_ShowFan_T", {
+        Text = "Show Fan Beam (M1)", Default = true,
+        Callback = function(v) Settings.AB_ShowFan = v end,
+    })
     det:AddSlider("Box_Range_S", { Text = "Max Range (studs)", Default = 20, Min = 5, Max = 50, Rounding = 1, Callback = function(v) Settings.BoxRange = v end })
     det:AddSlider("Box_Dot_S",   { Text = "Facing Threshold", Default = 0.5, Min = 0.1, Max = 1, Rounding = 2, Tooltip = "0.5 = 60° cone. Player must be this much in front.", Callback = function(v) Settings.BoxFacingDot = v end })
     det:AddSlider("Box_Delay_S", { Text = "Follow Delay (s)", Default = 0.1, Min = 0.01, Max = 0.5, Rounding = 2, Callback = function(v) Settings.BoxFollowDelay = v end })
-    det:AddToggle("Box_ShowVis_T", { Text = "Show Box Visuals", Default = true, Callback = function(v) Settings.AB_ShowZone = v end })
     local dim = Tabs.Box:AddRightGroupbox("Box Dimensions")
     dim:AddSlider("Box_Len_S",     { Text = "Killer Box Length", Default = 8, Min = 3, Max = 20, Rounding = 1, Callback = function(v) Settings.BoxLength = v end })
     dim:AddSlider("Box_Width_S",   { Text = "Killer Box Width", Default = 5, Min = 1, Max = 20, Rounding = 1, Callback = function(v) Settings.BoxWidth = v end })
     dim:AddSlider("Box_Height_S",  { Text = "Killer Box Height", Default = 5, Min = 0.5, Max = 20, Rounding = 1, Callback = function(v) Settings.BoxHeight = v end })
     dim:AddSlider("Box_PlayerW_S", { Text = "Player Box Width", Default = 3, Min = 1, Max = 20, Rounding = 1, Callback = function(v) Settings.BoxPlayerW = v end })
-    local fan = Tabs.Box:AddLeftGroupbox("Fan Visual (M1 only)")
+    local fan = Tabs.Box:AddLeftGroupbox("Fan Beam")
     fan:AddSlider("Fan_Len_S",  { Text = "Fan Length (studs)", Default = 12, Min = 3, Max = 40, Rounding = 1, Tooltip = "How far the fan beam reaches from the killer.", Callback = function(v) Settings.FanLength = v end })
     fan:AddSlider("Fan_Curve_S",{ Text = "Fan Curve", Default = 3, Min = 0, Max = 10, Rounding = 1, Tooltip = "How much the beam arcs. 0 = straight, higher = more curve.", Callback = function(v) Settings.FanCurve = v end })
     fan:AddSlider("Fan_Dur_S",  { Text = "Show Duration (s)", Default = 0.3, Min = 0.05, Max = 1, Rounding = 2, Callback = function(v) Settings.FanDuration = v end })
-    fan:AddLabel({ Text = "Smooth white beam appears only when killer fires M1. Doesn't telegraph block.", DoesWrap = true })
+    fan:AddLabel({ Text = "White beam appears only when killer fires M1.", DoesWrap = true })
     local m1 = Tabs.Box:AddRightGroupbox("Auto M1")
     m1:AddToggle("AM1_Enable_T",     { Text = "Enable Auto M1",               Default = false, Callback = function(v) if v then AM1_Enable() else AM1_Disable() end end })
     m1:AddSlider("AM1_Range_S",      { Text = "Range (studs)",                Default = 9,     Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.AM1_Range = v end })
@@ -1898,6 +1911,8 @@ _G.Godsaken = {
         Trigger=function() StabLerpToKillerBack() end,
     },
     Box = {
+        SetShowBox=function(v) Settings.AB_ShowBox = v and true or false end,
+        SetShowFan=function(v) Settings.AB_ShowFan = v and true or false end,
         SetRange=function(v) Settings.BoxRange = tonumber(v) or 20 end,
         SetDelay=function(v) Settings.BoxFollowDelay = tonumber(v) or 0.1 end,
         SetLength=function(v) Settings.BoxLength = tonumber(v) or 8 end,
@@ -1934,8 +1949,8 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Auto Stab v6 — press Dagger → lerp to killer's back",
+    Content = "Stab v7 — lerp tracks live killer back. Box/Fan toggles split.",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — Stab v6 (lerp on Dagger press).")
+print("[Cr4zy HuB] Loaded — Stab v7 (live tracking) + separate Box/Fan toggles.") 
