@@ -48,28 +48,19 @@ local Settings = {
     FanLength = 12, FanCurve = 3, FanDuration = 0.3,
     HDT_Enabled = false, HDT_Speed = 40, HDT_Duration = 0.6,
 
-    -- Stab (v3)
+    -- Auto Stab (v4 — killer-back wireframe box)
     AutoStab = false,
     StabMode = "Auto Stab",       -- "Auto Stab" | "Aim Only"
-    StabCircleRadius = 15,
-    StabBoxOffset = 2,
-    StabBoxSize = 2,
-    StabTouchRadius = 1.5,
+    StabMaxRange = 60,            -- max distance to track killer (dash-tolerant)
+    StabBoxOffset = 2.5,          -- box center distance behind killer
+    StabBoxLength = 4,            -- front-to-back size
+    StabBoxWidth = 4,             -- side-to-side size
+    StabBoxHeight = 5,            -- vertical size
+    StabHideBox = false,          -- hide wireframe
     StabMoveSpeed = 42,
     StabFireDelay = 0.04,
-    StabCooldown = 5,
     StabCancelOnDamage = true,
     StabDebug = false,
-
-    -- Crouch Dash
-    CD_Enabled = false,
-    CD_Range = 30,
-    CD_LeftOffset = 4,
-    CD_BackOffset = 3,
-    CD_LungeWait = 0.06,
-    CD_LerpDuration = 0.25,
-    CD_Cooldown = 0.4,
-    CD_Debug = false,
 
     ABT_Duration = 0.5, AP_Delay = 0.5, PA_Prediction = 4,
     AIM_Mode = "Character", AIM_Prediction = 4, AIM_LockTime = 0.7,
@@ -96,23 +87,6 @@ local PunchAnims = {}
 for _, id in ipairs({100129666722695,108807732150251,108911997126897,111270184603402,113936304594883,114294293966030,115877419084531,116427323741607,119850211147676,121347891120512,122560631718612,123142632470371,127777649118195,129843313690921,130041116394309,132010205222516,133398613783505,135562195148584,136007065400978,138040001965654,138936949998619,140703210927645,255661850,71190646367497,7130144078,72007882634344,72685103823181,73737871217870,73908019523515,78440860685556,81905101227053,82137285150006,83161312898155,86096387000557,86709774283672,87259391926321,87716278630738,90604236361267,9113764330,91730605416216,91794561199608,91810464218576,94245829151472,99422325754526}) do PunchAnims["rbxassetid://"..id] = true end
 local AntiBaitAnims = {}
 for _, id in ipairs({100926346851492,102517104852347,115706752305794,116506900864624,120725067908621,120748030255574,120773807614836,123548100869928,127040663332045,133292581373127,138407964761603,140671644163156,72182155407310,72722244508749,82036084568393,82605295530067,83036817079068,88287038085804,88557287105521,90970641235403,95421685049902,95802026624883,96959123077498}) do AntiBaitAnims["rbxassetid://"..id] = true end
-
---═══ CROUCH DETECTION (early — used by Stab & CrouchDash) ═══
-local CrouchDash_State = { crouched = false }
-local CrouchDash_Keys = { [Enum.KeyCode.C] = true, [Enum.KeyCode.LeftControl] = true }
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if CrouchDash_Keys[input.KeyCode] then CrouchDash_State.crouched = true end
-end)
-UserInputService.InputEnded:Connect(function(input)
-    if CrouchDash_Keys[input.KeyCode] then CrouchDash_State.crouched = false end
-end)
-local function CrouchDash_IsCrouched()
-    if CrouchDash_State.crouched then return true end
-    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
-    return hum:GetState() == Enum.HumanoidStateType.PlatformStanding
-end
 
 --═══ BOX ═══
 local AB = { running=false, frameConn=nil, perKiller={}, lastBlock=0, BLOCK_COOLDOWN=27 }
@@ -730,7 +704,6 @@ local function ExtractAbility(arg)
     if t == "table" then return ExtractAbility(arg[1]) end
     return nil
 end
-
 local function IsOffensiveAbility(name)
     if type(name) ~= "string" or name == "" then return false end
     local l = name:lower()
@@ -1224,21 +1197,21 @@ local function AM1_Disable()
     AM1_DestroyRangeRing(); AM1_DestroyFacingBox(); AM1.attacking = false
 end
 
---═══ AUTO STAB (v3 — no button clone, crouch-aware) ═══
+--═══ AUTO STAB (v4 — killer-back wireframe box, no crouch dash, no button clone) ═══
 local Stab = {
     running = false, lastStab = 0, savedWalkSpeed = 12,
-    lastHealth = 0, box = nil, inCircle = false,
+    lastHealth = 0, boxParts = nil, boxFolder = nil,
 }
 local function StabLog(msg) if Settings.StabDebug then print("[Stab] "..tostring(msg)) end end
 
-local function StabGetKillerInCircle()
+local function StabGetNearestKiller()
     local players = Workspace:FindFirstChild("Players")
     local kf = players and players:FindFirstChild("Killers")
     if not kf then return nil, nil end
     local myChar = LocalPlayer.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myRoot then return nil, nil end
-    local best, bestKr, bestDist = nil, nil, Settings.StabCircleRadius
+    local best, bestKr, bestDist = nil, nil, Settings.StabMaxRange
     for _, k in ipairs(kf:GetChildren()) do
         if k:IsA("Model") then
             local kr = k:FindFirstChild("HumanoidRootPart")
@@ -1251,32 +1224,71 @@ local function StabGetKillerInCircle()
     end
     return best, bestKr
 end
-local function StabGetBoxPos(kr)
+
+local function StabGetBoxData(kr)
     local look = kr.CFrame.LookVector
     local flat = Vector3.new(look.X, 0, look.Z)
     if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
-    return kr.Position - flat.Unit * Settings.StabBoxOffset
+    flat = flat.Unit
+    local boxCenter = kr.Position - flat * Settings.StabBoxOffset
+    local cf = CFrame.lookAt(boxCenter, boxCenter + flat)
+    return boxCenter, flat, cf
 end
-local function StabCreateBox()
-    if Stab.box and Stab.box.Parent then return Stab.box end
-    local s = Settings.StabBoxSize
-    local p = Instance.new("Part")
-    p.Name = "StabMarker"; p.Anchored = true; p.CanCollide = false
-    p.CanQuery = false; p.CanTouch = false; p.CastShadow = false
-    p.Material = Enum.Material.Neon
-    p.Color = Color3.fromRGB(80, 150, 255); p.Transparency = 0.4
-    p.Size = Vector3.new(s, s, s); p.Shape = Enum.PartType.Ball
-    p.Parent = Workspace; Stab.box = p
-    return p
+
+local function StabIsPlayerInBox(playerPos, boxCenter, flat)
+    local right = Vector3.new(-flat.Z, 0, flat.X)
+    local rel = playerPos - boxCenter
+    local lx = rel:Dot(right)
+    local ly = rel.Y
+    local lz = rel:Dot(flat)
+    return math.abs(lx) <= Settings.StabBoxWidth/2
+       and math.abs(ly) <= Settings.StabBoxHeight/2
+       and math.abs(lz) <= Settings.StabBoxLength/2
 end
-local function StabDestroyBox()
-    if Stab.box and Stab.box.Parent then pcall(function() Stab.box:Destroy() end) end
-    Stab.box = nil
+
+local function StabEnsureFolder()
+    if Stab.boxFolder and Stab.boxFolder.Parent then return Stab.boxFolder end
+    local f = Instance.new("Folder")
+    f.Name = "StabBoxVisuals"
+    f.Parent = Workspace
+    Stab.boxFolder = f
+    return f
 end
+
+local function StabEnsureParts()
+    if Stab.boxParts and Box_IsWireframeValid(Stab.boxParts) then return Stab.boxParts end
+    if Stab.boxParts then Box_DestroyWireframe(Stab.boxParts) end
+    Stab.boxParts = Box_CreateWireframe(StabEnsureFolder())
+    return Stab.boxParts
+end
+
+local function StabRenderBox(cf, color)
+    if Settings.StabHideBox then
+        if Stab.boxParts and Box_IsWireframeValid(Stab.boxParts) then
+            Box_HideWireframe(Stab.boxParts)
+        end
+        return
+    end
+    local parts = StabEnsureParts()
+    local size = Vector3.new(Settings.StabBoxWidth, Settings.StabBoxHeight, Settings.StabBoxLength)
+    Box_UpdateWireframe(parts, cf, size, color)
+end
+
+local function StabHideBoxVisual()
+    if Stab.boxParts and Box_IsWireframeValid(Stab.boxParts) then
+        Box_HideWireframe(Stab.boxParts)
+    end
+end
+
+local function StabDestroyBoxVisual()
+    if Stab.boxParts then Box_DestroyWireframe(Stab.boxParts); Stab.boxParts = nil end
+    if Stab.boxFolder then pcall(function() Stab.boxFolder:Destroy() end); Stab.boxFolder = nil end
+end
+
 local function StabFireDagger()
     if NetworkEvent then
         local ok = pcall(function() NetworkEvent:FireServer("UseActorAbility", {"Dagger"}) end)
-        if ok then StabLog("Fired Dagger"); return true end
+        if ok then StabLog("Fired Dagger remote"); return true end
     end
     local m = PlayerGui:FindFirstChild("MainUI")
     local c = m and m:FindFirstChild("AbilityContainer", true)
@@ -1287,120 +1299,34 @@ local function StabFireDagger()
     end
     return false
 end
-local function StabIsDaggerCoolingDown()
+
+local function StabIsOnCooldown()
     local m = PlayerGui:FindFirstChild("MainUI")
-    if not m then return false end
-    local c = m:FindFirstChild("AbilityContainer", true)
-    if not c then return false end
-    local btn = c:FindFirstChild("Dagger") or c:FindFirstChild("Stab") or c:FindFirstChild("SacrificialDagger")
-    if not btn then return false end
-    local cd = btn:FindFirstChild("CooldownTime", true)
-    if not cd then return false end
-    local t = cd.Text
-    return t ~= nil and t ~= "" and t ~= " " and t ~= "0"
-end
-local function StabLoop()
-    while Stab.running do
-        RunService.Heartbeat:Wait()
-        if not Stab.running then break end
-        local char = LocalPlayer.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        if not root or not hum or hum.Health <= 0 then task.wait(0.5); continue end
-
-        -- Crouch-dash takes over while crouched
-        if CrouchDash_IsCrouched() then
-            StabDestroyBox()
-            hum.AutoRotate = true
-            hum:Move(Vector3.zero, false)
-            hum.WalkSpeed = Stab.savedWalkSpeed
-            continue
-        end
-
-        if Settings.StabCancelOnDamage and hum.Health < Stab.lastHealth then
-            StabLog("Damage — stopping"); StopAutoStab(); break
-        end
-        Stab.lastHealth = hum.Health
-
-        local killer, kr = StabGetKillerInCircle()
-        if not killer then
-            if Stab.inCircle then Stab.inCircle = false end
-            StabDestroyBox()
-            hum.WalkSpeed = Stab.savedWalkSpeed; hum.AutoRotate = true
-            if Settings.StabMode == "Auto Stab" then hum:Move(Vector3.zero, false) end
-            continue
-        end
-        if not Stab.inCircle then Stab.inCircle = true; StabLog("Entered circle: "..killer.Name) end
-
-        local boxPos = StabGetBoxPos(kr)
-        local killerPos = Vector3.new(kr.Position.X, root.Position.Y, kr.Position.Z)
-        local distToBox = (root.Position - boxPos).Magnitude
-
-        if Settings.StabMode == "Aim Only" then
-            local cooldownActive = StabIsDaggerCoolingDown()
-            if cooldownActive then StabDestroyBox()
-            else
-                local box = StabCreateBox()
-                box.CFrame = CFrame.new(boxPos)
-                box.Color = distToBox <= Settings.StabTouchRadius and Color3.fromRGB(80,255,80) or Color3.fromRGB(80,150,255)
-            end
-            hum.AutoRotate = false
-            pcall(function() root.CFrame = CFrame.lookAt(root.Position, killerPos) end)
-        else
-            local canFire = tick() - Stab.lastStab >= Settings.StabCooldown
-            if not canFire then
-                StabDestroyBox()
-                hum.WalkSpeed = Stab.savedWalkSpeed; hum.AutoRotate = true
-            elseif distToBox <= Settings.StabTouchRadius then
-                hum.AutoRotate = false
-                hum:Move(Vector3.zero, false)
-                hum.WalkSpeed = 0
-                pcall(function()
-                    root.CFrame = CFrame.lookAt(root.Position, killerPos)
-                    if root.AssemblyLinearVelocity.Magnitude > 2 then
-                        root.AssemblyLinearVelocity = Vector3.zero
+    if m then
+        local c = m:FindFirstChild("AbilityContainer", true)
+        if c then
+            local btn = c:FindFirstChild("Dagger") or c:FindFirstChild("Stab") or c:FindFirstChild("SacrificialDagger")
+            if btn then
+                local cd = btn:FindFirstChild("CooldownTime", true)
+                if cd then
+                    local t = cd.Text
+                    if t == nil or t == "" or t == " " or t == "0" then
+                        return false
                     end
-                end)
-                local box = StabCreateBox()
-                box.CFrame = CFrame.new(boxPos)
-                box.Color = Color3.fromRGB(80,255,80)
-                if Settings.StabFireDelay > 0 then task.wait(Settings.StabFireDelay) end
-                if Stab.running then
-                    StabFireDagger()
-                    Stab.lastStab = tick()
-                    StabDestroyBox()
-                    hum.WalkSpeed = Stab.savedWalkSpeed; hum.AutoRotate = true
-                    StabLog("Stabbed "..killer.Name)
+                    return true
                 end
-            else
-                local box = StabCreateBox()
-                box.CFrame = CFrame.new(boxPos)
-                box.Color = Color3.fromRGB(80,150,255)
-                hum.AutoRotate = true
-                hum.WalkSpeed = Settings.StabMoveSpeed
-                local diff = boxPos - root.Position
-                local flat = Vector3.new(diff.X, 0, diff.Z)
-                if flat.Magnitude > 0.1 then hum:Move(flat.Unit, false) end
             end
         end
     end
+    return (tick() - Stab.lastStab) < 30
 end
-local function StartAutoStab()
-    if Stab.running then return end
-    local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        local ws = hum.WalkSpeed
-        Stab.savedWalkSpeed = (ws > 0 and ws <= 26) and math.min(ws, 12) or 12
-        Stab.lastHealth = hum.Health
-    end
-    Stab.running = true; Stab.lastStab = 0; Stab.inCircle = false
-    StabLog("START ["..Settings.StabMode.."]")
-    task.spawn(StabLoop)
-end
-local function StopAutoStab()
+
+local StabLoop, StartAutoStab, StopAutoStab
+
+StopAutoStab = function()
     if not Stab.running then return end
-    Stab.running = false; StabDestroyBox(); Stab.inCircle = false
+    Stab.running = false
+    StabDestroyBoxVisual()
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if hum then
@@ -1413,138 +1339,101 @@ local function StopAutoStab()
     StabLog("STOP")
 end
 
---═══ CROUCH DASH STAB TECH ═══
-local CrouchDash = {
-    running = false,
-    lastTrigger = 0,
-    hookInstalled = false,
-}
-local function CD_Log(msg) if Settings.CD_Debug then print("[CrouchDash] "..tostring(msg)) end end
-
-local function CD_HookAbility(n)
-    if type(n) ~= "string" then return false end
-    local l = n:lower()
-    return l == "dagger" or l == "stab" or l == "sacrificialdagger" or l:find("dagger", 1, true) ~= nil
+StartAutoStab = function()
+    if Stab.running then return end
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local ws = hum.WalkSpeed
+        Stab.savedWalkSpeed = (ws > 0 and ws <= 26) and math.min(ws, 12) or 12
+        Stab.lastHealth = hum.Health
+    end
+    Stab.running = true
+    Stab.lastStab = -1000
+    StabLog("START ["..Settings.StabMode.."]")
+    task.spawn(function() StabLoop() end)
 end
-local function CD_GetNearestKiller()
-    local players = Workspace:FindFirstChild("Players")
-    local kf = players and players:FindFirstChild("Killers")
-    if not kf then return nil, nil end
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil, nil end
-    local best, bestKr, bestDist = nil, nil, Settings.CD_Range
-    for _, k in ipairs(kf:GetChildren()) do
-        if k:IsA("Model") then
-            local kr = k:FindFirstChild("HumanoidRootPart")
-            local kh = k:FindFirstChildOfClass("Humanoid")
-            if kr and kh and kh.Health > 0 then
-                local d = (kr.Position - myRoot.Position).Magnitude
-                if d <= bestDist then best, bestKr, bestDist = k, kr, d end
+
+StabLoop = function()
+    while Stab.running do
+        RunService.Heartbeat:Wait()
+        if not Stab.running then break end
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 then task.wait(0.5); continue end
+
+        if Settings.StabCancelOnDamage and hum.Health < Stab.lastHealth then
+            StabLog("Damage taken — stopping")
+            StopAutoStab()
+            break
+        end
+        Stab.lastHealth = hum.Health
+
+        if StabIsOnCooldown() then
+            StabHideBoxVisual()
+            hum.WalkSpeed = Stab.savedWalkSpeed
+            hum.AutoRotate = true
+            if Settings.StabMode == "Auto Stab" then
+                hum:Move(Vector3.zero, false)
+            end
+            continue
+        end
+
+        local killer, kr = StabGetNearestKiller()
+        if not killer or not kr then
+            StabHideBoxVisual()
+            hum.WalkSpeed = Stab.savedWalkSpeed
+            hum.AutoRotate = true
+            if Settings.StabMode == "Auto Stab" then
+                hum:Move(Vector3.zero, false)
+            end
+            continue
+        end
+
+        local boxCenter, flat, boxCF = StabGetBoxData(kr)
+        local playerInBox = StabIsPlayerInBox(root.Position, boxCenter, flat)
+        StabRenderBox(boxCF, playerInBox and GREEN or BLUE)
+
+        if playerInBox then
+            hum.AutoRotate = false
+            local killerPos = Vector3.new(kr.Position.X, root.Position.Y, kr.Position.Z)
+            pcall(function()
+                root.CFrame = CFrame.lookAt(root.Position, killerPos)
+            end)
+
+            if Settings.StabMode == "Auto Stab" then
+                hum:Move(Vector3.zero, false)
+                hum.WalkSpeed = 0
+                pcall(function()
+                    if root.AssemblyLinearVelocity.Magnitude > 2 then
+                        root.AssemblyLinearVelocity = Vector3.zero
+                    end
+                end)
+                if Settings.StabFireDelay > 0 then
+                    task.wait(Settings.StabFireDelay)
+                end
+                if Stab.running and StabFireDagger() then
+                    Stab.lastStab = tick()
+                    StabLog("Stabbed "..killer.Name)
+                    StabHideBoxVisual()
+                    hum.WalkSpeed = Stab.savedWalkSpeed
+                    hum.AutoRotate = true
+                end
+            end
+        else
+            if Settings.StabMode == "Auto Stab" then
+                hum.AutoRotate = true
+                hum.WalkSpeed = Settings.StabMoveSpeed
+                local diff = boxCenter - root.Position
+                local flatDiff = Vector3.new(diff.X, 0, diff.Z)
+                if flatDiff.Magnitude > 0.1 then
+                    hum:Move(flatDiff.Unit, false)
+                end
             end
         end
     end
-    return best, bestKr
 end
-local function CD_Execute(killer, kr)
-    if CrouchDash.running then return end
-    if tick() - CrouchDash.lastTrigger < Settings.CD_Cooldown then return end
-    CrouchDash.lastTrigger = tick()
-
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
-    if not myRoot or not myHum or myHum.Health <= 0 then return end
-
-    -- Step 1: Aim at LEFT of killer (before remote fires)
-    local toKiller = kr.Position - myRoot.Position
-    local flat = Vector3.new(toKiller.X, 0, toKiller.Z)
-    if flat.Magnitude < 0.5 then return end
-    flat = flat.Unit
-    local rightDir = Vector3.new(-flat.Z, 0, flat.X)
-    local leftAim = kr.Position - rightDir * Settings.CD_LeftOffset
-
-    myHum.AutoRotate = false
-    pcall(function()
-        myRoot.CFrame = CFrame.lookAt(myRoot.Position, Vector3.new(leftAim.X, myRoot.Position.Y, leftAim.Z))
-    end)
-
-    CrouchDash.running = true
-    CD_Log("Dash → "..killer.Name)
-
-    task.spawn(function()
-        task.wait(Settings.CD_LungeWait)
-        if not CrouchDash.running then return end
-
-        local startTime = tick()
-        local duration  = Settings.CD_LerpDuration
-        local conn
-        conn = RunService.RenderStepped:Connect(function(dt)
-            if not CrouchDash.running then conn:Disconnect(); return end
-            if not kr.Parent or not myRoot.Parent or not myHum.Parent or myHum.Health <= 0 then
-                conn:Disconnect(); CrouchDash.running = false
-                if myHum.Parent then pcall(function() myHum.AutoRotate = true end) end
-                return
-            end
-            local elapsed = tick() - startTime
-            local alpha = math.min(elapsed / duration, 1)
-            local eased = alpha * alpha * (3 - 2 * alpha)
-
-            local backPos = kr.Position - kr.CFrame.LookVector * Settings.CD_BackOffset
-            local toBack  = backPos - myRoot.Position
-            local dist    = toBack.Magnitude
-
-            if alpha >= 1 or dist < 1.5 then
-                conn:Disconnect(); CrouchDash.running = false
-                if myHum.Parent then pcall(function() myHum.AutoRotate = true end) end
-                CD_Log("Dash complete")
-                return
-            end
-
-            -- Smooth steering via velocity (no physics fighting)
-            local desiredSpeed = math.min(dist / math.max(duration - elapsed, 0.1), 90)
-            local steerVel = toBack.Unit * desiredSpeed
-            local curVel   = myRoot.AssemblyLinearVelocity
-            local blend    = math.min(eased * 15 * dt, 1)
-            local newVel   = Vector3.new(
-                curVel.X + (steerVel.X - curVel.X) * blend,
-                curVel.Y,
-                curVel.Z + (steerVel.Z - curVel.Z) * blend
-            )
-            pcall(function() myRoot.AssemblyLinearVelocity = newVel end)
-
-            -- Face killer's back (rotation only — position preserved)
-            pcall(function()
-                local lookTarget = myRoot.Position + (backPos - myRoot.Position).Unit * 10
-                myRoot.CFrame = CFrame.lookAt(myRoot.Position, lookTarget)
-            end)
-        end)
-    end)
-end
-local function CD_SetupHook()
-    if CrouchDash.hookInstalled then return end
-    if not NetworkEvent or not hookmetamethod then return end
-    local ok = pcall(function()
-        local old
-        old = hookmetamethod(game, "__namecall", function(self, ...)
-            if self == NetworkEvent and getnamecallmethod() == "FireServer" then
-                local args = {...}
-                if args[1] == "UseActorAbility" then
-                    local n = ExtractAbility(args[2])
-                    if n and CD_HookAbility(n) and Settings.CD_Enabled and CrouchDash_IsCrouched() then
-                        local killer, kr = CD_GetNearestKiller()
-                        if killer and kr then
-                            task.spawn(CD_Execute, killer, kr)
-                        end
-                    end
-                end
-            end
-            return old(self, ...)
-        end)
-    end)
-    if ok then CrouchDash.hookInstalled = true end
-end
-CD_SetupHook()
 
 --═══ GENERATOR SOLVER ═══
 local GS = { installed=false, generation=0, lockBoard=nil }
@@ -1922,7 +1811,6 @@ local Tabs = {
     Stam       = Window:AddTab("Stam", "zap"),
     AutoBlock  = Window:AddTab("Auto block", "shield"),
     Stab       = Window:AddTab("Stab", "sword"),
-    Crouch     = Window:AddTab("Crouch", "footprints"),
     Box        = Window:AddTab("Box", "square"),
     SurvivorAim= Window:AddTab("Survivor aim", "swords"),
     Vee        = Window:AddTab("Vee", "gamepad-2"),
@@ -2008,7 +1896,11 @@ do
         Default = "Auto Stab", Multi = false,
         Callback = function(v) Settings.StabMode = v end,
     })
-    g:AddLabel({ Text = "Auto Stab = script runs you to killer & fires. Aim Only = script only aims, you press Dagger yourself. Activates when killer enters circle.", DoesWrap = true })
+    g:AddToggle("Stab_HideBox_T", {
+        Text = "Hide Box", Default = false,
+        Callback = function(v) Settings.StabHideBox = v end,
+    })
+    g:AddLabel({ Text = "Box sticks to killer's back every frame — works during killer dashes (Nos/Noli etc). Green = fire zone. Hidden during Dagger cooldown. Aim Only mode: script aims, you press Dagger yourself.", DoesWrap = true })
     g:AddToggle("Stab_CancelDmg_T", {
         Text = "Cancel on Damage", Default = true,
         Callback = function(v) Settings.StabCancelOnDamage = v end,
@@ -2018,30 +1910,13 @@ do
         Callback = function(v) Settings.StabDebug = v end,
     })
     local s = Tabs.Stab:AddRightGroupbox("Settings")
-    s:AddSlider("Stab_CircleRadius_S", { Text = "Circle Radius (studs)", Default = 15, Min = 5, Max = 50, Rounding = 1, Tooltip = "Invisible zone around killer. Box spawns when you enter.", Callback = function(v) Settings.StabCircleRadius = v end })
-    s:AddSlider("Stab_BoxOffset_S",    { Text = "Behind-Killer Distance", Default = 2, Min = 0.5, Max = 8, Rounding = 1, Callback = function(v) Settings.StabBoxOffset = v end })
-    s:AddSlider("Stab_BoxSize_S",      { Text = "Marker Size", Default = 2, Min = 0.5, Max = 6, Rounding = 1, Callback = function(v) Settings.StabBoxSize = v end })
-    s:AddSlider("Stab_TouchRadius_S",  { Text = "Touch Radius", Default = 1.5, Min = 0.5, Max = 5, Rounding = 2, Tooltip = "How close to the marker = 'at box' → aim + fire.", Callback = function(v) Settings.StabTouchRadius = v end })
-    s:AddSlider("Stab_Speed_S",        { Text = "Auto Run Speed", Default = 42, Min = 5, Max = 60, Rounding = 0, Callback = function(v) Settings.StabMoveSpeed = v end })
-    s:AddSlider("Stab_FireDelay_S",    { Text = "Aim→Fire Delay", Default = 0.04, Min = 0, Max = 0.3, Rounding = 3, Tooltip = "Time between snapping toward killer and firing.", Callback = function(v) Settings.StabFireDelay = v end })
-    s:AddSlider("Stab_CD_S",           { Text = "Cooldown (s)", Default = 5, Min = 1, Max = 30, Rounding = 0, Callback = function(v) Settings.StabCooldown = v end })
-end
-
-do
-    local g = Tabs.Crouch:AddLeftGroupbox("Crouch Dash Stab")
-    g:AddToggle("CD_Enabled_T", {
-        Text = "Enable Crouch Dash", Default = false,
-        Callback = function(v) Settings.CD_Enabled = v end,
-    })
-    g:AddLabel({ Text = "Crouch (C / Ctrl) + press real Dagger button → script aims LEFT of killer (hitbox misses), lunges, then smoothly curves you to their BACK. No script-created button needed.", DoesWrap = true })
-    g:AddToggle("CD_Debug_T", { Text = "Debug Print (F9)", Default = false, Callback = function(v) Settings.CD_Debug = v end })
-    local s = Tabs.Crouch:AddRightGroupbox("Settings")
-    s:AddSlider("CD_Range_S",       { Text = "Killer Range",   Default = 30,   Min = 5,   Max = 80,  Rounding = 0, Callback = function(v) Settings.CD_Range = v end })
-    s:AddSlider("CD_LeftOffset_S",  { Text = "Left Aim Offset (studs)", Default = 4, Min = 1, Max = 10, Rounding = 1, Tooltip = "Aim this far to the left of killer — hitbox misses.", Callback = function(v) Settings.CD_LeftOffset = v end })
-    s:AddSlider("CD_BackOffset_S",  { Text = "Behind Target (studs)",  Default = 3, Min = 1, Max = 8, Rounding = 1, Callback = function(v) Settings.CD_BackOffset = v end })
-    s:AddSlider("CD_LungeWait_S",   { Text = "Lunge Wait (s)",         Default = 0.06, Min = 0, Max = 0.3, Rounding = 2, Tooltip = "Wait for the lunge to fire before redirecting.", Callback = function(v) Settings.CD_LungeWait = v end })
-    s:AddSlider("CD_LerpDuration_S",{ Text = "Redirect Duration (s)",  Default = 0.25, Min = 0.05, Max = 1, Rounding = 2, Tooltip = "How long the smooth curve to killer's back takes. Longer = more natural.", Callback = function(v) Settings.CD_LerpDuration = v end })
-    s:AddSlider("CD_Cooldown_S",    { Text = "Cooldown (s)",           Default = 0.4, Min = 0, Max = 3, Rounding = 2, Callback = function(v) Settings.CD_Cooldown = v end })
+    s:AddSlider("Stab_MaxRange_S", { Text = "Max Killer Range", Default = 60, Min = 10, Max = 150, Rounding = 0, Tooltip = "Beyond this distance, script idles. Killer must be closer than this for box to appear.", Callback = function(v) Settings.StabMaxRange = v end })
+    s:AddSlider("Stab_BoxOffset_S",{ Text = "Behind Killer (studs)", Default = 2.5, Min = 0, Max = 10, Rounding = 1, Tooltip = "Distance from killer to box center.", Callback = function(v) Settings.StabBoxOffset = v end })
+    s:AddSlider("Stab_BoxLength_S",{ Text = "Box Length", Default = 4, Min = 1, Max = 15, Rounding = 1, Tooltip = "Front-to-back size along killer's look direction.", Callback = function(v) Settings.StabBoxLength = v end })
+    s:AddSlider("Stab_BoxWidth_S", { Text = "Box Width",  Default = 4, Min = 1, Max = 15, Rounding = 1, Tooltip = "Side-to-side size.", Callback = function(v) Settings.StabBoxWidth = v end })
+    s:AddSlider("Stab_BoxHeight_S",{ Text = "Box Height", Default = 5, Min = 1, Max = 15, Rounding = 1, Tooltip = "Vertical size.", Callback = function(v) Settings.StabBoxHeight = v end })
+    s:AddSlider("Stab_Speed_S",    { Text = "Auto Run Speed", Default = 42, Min = 5, Max = 60, Rounding = 0, Callback = function(v) Settings.StabMoveSpeed = v end })
+    s:AddSlider("Stab_FireDelay_S",{ Text = "Aim→Fire Delay", Default = 0.04, Min = 0, Max = 0.3, Rounding = 3, Tooltip = "Time between snapping toward killer and firing.", Callback = function(v) Settings.StabFireDelay = v end })
 end
 
 do
@@ -2163,20 +2038,14 @@ _G.Godsaken = {
         SetEnabled=function(v) Settings.AutoStab = v; if v then StartAutoStab() else StopAutoStab() end end,
         Start=StartAutoStab, Stop=StopAutoStab,
         SetMode=function(v) Settings.StabMode = v end,
-        SetCircleRadius=function(v) Settings.StabCircleRadius = tonumber(v) or 15 end,
-        SetBoxOffset=function(v) Settings.StabBoxOffset = tonumber(v) or 2 end,
-        SetBoxSize=function(v) Settings.StabBoxSize = tonumber(v) or 2 end,
-        SetTouchRadius=function(v) Settings.StabTouchRadius = tonumber(v) or 1.5 end,
+        SetMaxRange=function(v) Settings.StabMaxRange = tonumber(v) or 60 end,
+        SetBoxOffset=function(v) Settings.StabBoxOffset = tonumber(v) or 2.5 end,
+        SetBoxLength=function(v) Settings.StabBoxLength = tonumber(v) or 4 end,
+        SetBoxWidth=function(v) Settings.StabBoxWidth = tonumber(v) or 4 end,
+        SetBoxHeight=function(v) Settings.StabBoxHeight = tonumber(v) or 5 end,
+        SetHideBox=function(v) Settings.StabHideBox = v and true or false end,
         SetSpeed=function(v) Settings.StabMoveSpeed = tonumber(v) or 42 end,
         SetFireDelay=function(v) Settings.StabFireDelay = tonumber(v) or 0.04 end,
-        SetCooldown=function(v) Settings.StabCooldown = tonumber(v) or 5 end,
-    },
-    CrouchDash = {
-        SetEnabled=function(v) Settings.CD_Enabled = v end,
-        SetRange=function(v) Settings.CD_Range = tonumber(v) or 30 end,
-        SetLeftOffset=function(v) Settings.CD_LeftOffset = tonumber(v) or 4 end,
-        SetBackOffset=function(v) Settings.CD_BackOffset = tonumber(v) or 3 end,
-        SetLerpDuration=function(v) Settings.CD_LerpDuration = tonumber(v) or 0.25 end,
     },
     Box = {
         SetRange=function(v) Settings.BoxRange = tonumber(v) or 20 end,
@@ -2198,7 +2067,6 @@ Library:OnUnload(function()
     pcall(function() AP_Disable() end)
     pcall(function() PA_Disable() end)
     pcall(function() Settings.AIM_Enabled = false end)
-    pcall(function() Settings.CD_Enabled = false end)
     pcall(function() AM1_Disable() end)
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
@@ -2216,8 +2084,8 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Crouch Dash + no button clone + small marker + circle detection",
+    Content = "Stab box v4 — sticks to killer's back, dash-tolerant",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — Crouch Dash, Auto Stab v3, no button clone.")
+print("[Cr4zy HuB] Loaded — Auto Stab v4 (killer-back wireframe box).")
