@@ -36,7 +36,6 @@ local function GetSurvivorsFolder()
     local p = Workspace:FindFirstChild("Players")
     return p and p:FindFirstChild("Survivors")
 end
-local function _num(v, d) return tonumber(v) or d end
 
 --═══ SETTINGS ═══
 local Settings = {
@@ -48,17 +47,11 @@ local Settings = {
     FanLength = 12, FanCurve = 3, FanDuration = 0.3,
     HDT_Enabled = false, HDT_Speed = 40, HDT_Duration = 0.6,
 
-    -- Auto Stab v5 (behind-check, no visuals)
-    AutoStab = false,
-    StabMode = "Auto Stab",       -- "Auto Stab" | "Aim Only"
-    StabActivateRange = 20,       -- detect killer within this distance
-    StabReach = 5,                -- stab hitbox ~5 studs (wiki)
-    StabBehindDot = 0.3,          -- dot < -0.3 = behind (107° cone)
-    StabBehindOffset = 2.5,       -- chase target offset behind killer
-    StabMoveSpeed = 42,
-    StabFireDelay = 0.02,         -- aim→fire replication wait
-    StabCancelOnDamage = true,
-    StabDebug = false,
+    -- Auto Stab v6 (lerp-on-press)
+    StabEnabled = false,
+    StabLerpDuration = 0.2,
+    StabLerpRange = 15,
+    StabLerpBehindOffset = 2.5,
 
     ABT_Duration = 0.5, AP_Delay = 0.5, PA_Prediction = 4,
     AIM_Mode = "Character", AIM_Prediction = 4, AIM_LockTime = 0.7,
@@ -86,7 +79,7 @@ for _, id in ipairs({100129666722695,108807732150251,108911997126897,11127018460
 local AntiBaitAnims = {}
 for _, id in ipairs({100926346851492,102517104852347,115706752305794,116506900864624,120725067908621,120748030255574,120773807614836,123548100869928,127040663332045,133292581373127,138407964761603,140671644163156,72182155407310,72722244508749,82036084568393,82605295530067,83036817079068,88287038085804,88557287105521,90970641235403,95421685049902,95802026624883,96959123077498}) do AntiBaitAnims["rbxassetid://"..id] = true end
 
---═══ BOX (Auto Block — unchanged) ═══
+--═══ BOX (Auto Block, unchanged) ═══
 local AB = { running=false, frameConn=nil, perKiller={}, lastBlock=0, BLOCK_COOLDOWN=27 }
 local GREEN = Color3.fromRGB(70,255,120)
 local BLUE  = Color3.fromRGB(80,150,255)
@@ -1195,197 +1188,125 @@ local function AM1_Disable()
     AM1_DestroyRangeRing(); AM1_DestroyFacingBox(); AM1.attacking = false
 end
 
---═══ AUTO STAB v5 (no visuals, behind-check, instant fire) ═══
-local Stab = {
-    running = false,
-    lastStab = 0,
-    savedWalkSpeed = 12,
-    lastHealth = 0,
-}
-local function StabLog(msg) if Settings.StabDebug then print("[Stab] "..tostring(msg)) end end
+--═══ AUTO STAB v6 (lerp-on-Dagger-press) ═══
+local Stab = { lerping = false, hookInstalled = false }
 
-local function StabGetNearestKiller()
-    local players = Workspace:FindFirstChild("Players")
-    local kf = players and players:FindFirstChild("Killers")
-    if not kf then return nil, nil end
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil, nil end
-    local best, bestKr, bestDist = nil, nil, Settings.StabActivateRange
+local function StabIsDaggerName(n)
+    if type(n) ~= "string" then return false end
+    local l = n:lower()
+    return l == "dagger" or l == "stab" or l:find("dagger", 1, true) ~= nil
+end
+
+local function StabFindNearestKillerInRange(hrp, range)
+    local kf = GetKillersFolder(); if not kf then return nil end
+    local best, bestDist = nil, range
     for _, k in ipairs(kf:GetChildren()) do
         if k:IsA("Model") then
             local kr = k:FindFirstChild("HumanoidRootPart")
             local kh = k:FindFirstChildOfClass("Humanoid")
             if kr and kh and kh.Health > 0 then
-                local d = (kr.Position - myRoot.Position).Magnitude
-                if d <= bestDist then best, bestKr, bestDist = k, kr, d end
+                local d = (kr.Position - hrp.Position).Magnitude
+                if d <= bestDist then best, bestDist = kr, d end
             end
         end
     end
-    return best, bestKr
+    return best
 end
 
-local function StabIsBehindKiller(playerRoot, killerRoot)
-    local pPos = playerRoot.Position
-    local kPos = killerRoot.Position
-    local toPlayer = pPos - kPos
-    local flatToPlayer = Vector3.new(toPlayer.X, 0, toPlayer.Z)
-    local dist = flatToPlayer.Magnitude
-    if dist > Settings.StabReach then return false end
-    if dist < 0.05 then return true end
-    local kLook = killerRoot.CFrame.LookVector
-    local flatLook = Vector3.new(kLook.X, 0, kLook.Z)
-    if flatLook.Magnitude < 0.01 then return false end
-    local dot = flatLook.Unit:Dot(flatToPlayer.Unit)
-    return dot < -Settings.StabBehindDot
-end
-
-local function StabIsOnCooldown()
-    local m = PlayerGui:FindFirstChild("MainUI")
-    if m then
-        local c = m:FindFirstChild("AbilityContainer", true)
-        if c then
-            local btn = c:FindFirstChild("Dagger") or c:FindFirstChild("Stab") or c:FindFirstChild("SacrificialDagger")
-            if btn then
-                local cd = btn:FindFirstChild("CooldownTime", true)
-                if cd then
-                    local n = tonumber(cd.Text)
-                    if n == nil or n <= 0 then return false end
-                    return true
-                end
-            end
-        end
-    end
-    return (tick() - Stab.lastStab) < 30
-end
-
-local function StabFireDagger()
-    if NetworkEvent then
-        local ok = pcall(function() NetworkEvent:FireServer("UseActorAbility", {"Dagger"}) end)
-        if ok then StabLog("Fired Dagger remote"); return true end
-    end
-    local m = PlayerGui:FindFirstChild("MainUI")
-    local c = m and m:FindFirstChild("AbilityContainer", true)
-    local btn = c and (c:FindFirstChild("Dagger") or c:FindFirstChild("Stab") or c:FindFirstChild("SacrificialDagger"))
-    if btn and firesignal then
-        local sig = btn:FindFirstChildOfClass("MouseButton1Click")
-        if sig then pcall(firesignal, sig); StabLog("Clicked Dagger"); return true end
-    end
-    return false
-end
-
-local StabLoop, StartAutoStab, StopAutoStab
-
-StopAutoStab = function()
-    if not Stab.running then return end
-    Stab.running = false
+local function StabLerpToKillerBack()
+    if Stab.lerping then return end
     local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
+    if not hrp or not hum or hum.Health <= 0 then return end
+
+    local kr = StabFindNearestKillerInRange(hrp, Settings.StabLerpRange)
+    if not kr then return end
+
+    local look = kr.CFrame.LookVector
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
+    flat = flat.Unit
+    local targetPos = kr.Position - flat * Settings.StabLerpBehindOffset
+    local targetAimPos = kr.Position
+
+    local startPos = hrp.Position
+    local startT = tick()
+    local duration = math.max(Settings.StabLerpDuration, 0.02)
+    local savedWalkSpeed = hum.WalkSpeed
+
+    Stab.lerping = true
+    hum.AutoRotate = false
+    hum.WalkSpeed = 0
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+    end)
+
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        local c2 = LocalPlayer.Character
+        local hrp2 = c2 and c2:FindFirstChild("HumanoidRootPart")
+        local hum2 = c2 and c2:FindFirstChildOfClass("Humanoid")
+        if not hrp2 or not hum2 or hum2.Health <= 0 or not kr.Parent then
+            Stab.lerping = false
+            conn:Disconnect()
+            if hum2 and hum2.Parent then
+                hum2.AutoRotate = true
+                hum2.WalkSpeed = savedWalkSpeed
+            end
+            return
+        end
+
+        local elapsed = tick() - startT
+        local alpha = math.clamp(elapsed / duration, 0, 1)
+        local eased = alpha * alpha * (3 - 2 * alpha)
+
+        local newPos = startPos:Lerp(targetPos, eased)
+        local aimAt = Vector3.new(targetAimPos.X, newPos.Y, targetAimPos.Z)
+        local newCF = CFrame.lookAt(newPos, aimAt)
+
         pcall(function()
-            hum.WalkSpeed = Stab.savedWalkSpeed
-            hum.AutoRotate = true
-            hum:Move(Vector3.zero, false)
+            hrp2.CFrame = newCF
+            hrp2.AssemblyLinearVelocity = Vector3.zero
         end)
-    end
-    StabLog("STOP")
-end
 
-StartAutoStab = function()
-    if Stab.running then return end
-    local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        local ws = hum.WalkSpeed
-        Stab.savedWalkSpeed = (ws > 0 and ws <= 26) and math.min(ws, 12) or 12
-        Stab.lastHealth = hum.Health
-    end
-    Stab.running = true
-    Stab.lastStab = -1000
-    StabLog("START ["..Settings.StabMode.."]")
-    task.spawn(StabLoop)
-end
-
-StabLoop = function()
-    while Stab.running do
-        RunService.Heartbeat:Wait()
-        if not Stab.running then break end
-        local char = LocalPlayer.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        if not root or not hum or hum.Health <= 0 then task.wait(0.5); continue end
-
-        if Settings.StabCancelOnDamage and hum.Health < Stab.lastHealth then
-            StabLog("Damage taken — stopping")
-            StopAutoStab()
-            break
-        end
-        Stab.lastHealth = hum.Health
-
-        if Settings.StabMode == "Auto Stab" and StabIsOnCooldown() then
-            hum.WalkSpeed = Stab.savedWalkSpeed
-            hum.AutoRotate = true
-            hum:Move(Vector3.zero, false)
-            continue
-        end
-
-        local killer, kr = StabGetNearestKiller()
-        if not killer or not kr then
-            hum.WalkSpeed = Stab.savedWalkSpeed
-            hum.AutoRotate = true
-            if Settings.StabMode == "Auto Stab" then
-                hum:Move(Vector3.zero, false)
+        if alpha >= 1 then
+            Stab.lerping = false
+            conn:Disconnect()
+            if hum2 and hum2.Parent then
+                hum2.AutoRotate = true
+                hum2.WalkSpeed = savedWalkSpeed
             end
-            continue
         end
+    end)
+end
 
-        local killerPos = Vector3.new(kr.Position.X, root.Position.Y, kr.Position.Z)
-
-        if Settings.StabMode == "Aim Only" then
-            hum.AutoRotate = false
-            pcall(function()
-                root.CFrame = CFrame.lookAt(root.Position, killerPos)
-            end)
-        else
-            if StabIsBehindKiller(root, kr) then
-                hum.AutoRotate = false
-                hum.WalkSpeed = 0
-                hum:Move(Vector3.zero, false)
-                pcall(function()
-                    root.CFrame = CFrame.lookAt(root.Position, killerPos)
-                    local v = root.AssemblyLinearVelocity
-                    if v.Magnitude > 1 then
-                        root.AssemblyLinearVelocity = Vector3.new(0, v.Y, 0)
+local function StabInstallHook()
+    if Stab.hookInstalled or not NetworkEvent or not hookmetamethod then return false end
+    local ok = pcall(function()
+        local old
+        old = hookmetamethod(game, "__namecall", function(self, ...)
+            if Settings.StabEnabled and not Stab.lerping and self == NetworkEvent and getnamecallmethod() == "FireServer" then
+                local args = {...}
+                if args[1] == "UseActorAbility" then
+                    local n = ExtractAbility(args[2])
+                    if n and StabIsDaggerName(n) then
+                        task.spawn(StabLerpToKillerBack)
                     end
-                end)
-                if Settings.StabFireDelay > 0 then
-                    task.wait(Settings.StabFireDelay)
-                end
-                if Stab.running and StabFireDagger() then
-                    Stab.lastStab = tick()
-                    StabLog("Stabbed "..killer.Name)
-                    hum.AutoRotate = true
-                    hum.WalkSpeed = Stab.savedWalkSpeed
-                end
-            else
-                hum.AutoRotate = true
-                hum.WalkSpeed = Settings.StabMoveSpeed
-                local kLook = kr.CFrame.LookVector
-                local flatLook = Vector3.new(kLook.X, 0, kLook.Z)
-                if flatLook.Magnitude < 0.01 then flatLook = Vector3.new(0, 0, -1) end
-                flatLook = flatLook.Unit
-                local behindPos = kr.Position - flatLook * Settings.StabBehindOffset
-                local diff = behindPos - root.Position
-                local flat = Vector3.new(diff.X, 0, diff.Z)
-                if flat.Magnitude > 0.3 then
-                    hum:Move(flat.Unit, false)
-                else
-                    hum:Move(Vector3.zero, false)
                 end
             end
-        end
-    end
+            return old(self, ...)
+        end)
+    end)
+    if ok then Stab.hookInstalled = true end
+    return ok
 end
+task.spawn(function()
+    for _ = 1, 30 do
+        if Stab.hookInstalled then break end
+        StabInstallHook(); task.wait(1)
+    end
+end)
 
 --═══ GENERATOR SOLVER ═══
 local GS = { installed=false, generation=0, lockBoard=nil }
@@ -1837,33 +1758,22 @@ end
 do
     local g = Tabs.Stab:AddLeftGroupbox("Auto Stab")
     g:AddToggle("Stab_Enable_T", {
-        Text = "Auto Stab", Default = false,
-        Callback = function(v)
-            Settings.AutoStab = v
-            if v then StartAutoStab() else StopAutoStab() end
-        end,
+        Text = "Use Auto Stab", Default = false,
+        Callback = function(v) Settings.StabEnabled = v; if v then StabInstallHook() end end,
     })
-    g:AddDropdown("Stab_Mode_D", {
-        Text = "Mode", Values = {"Auto Stab", "Aim Only"},
-        Default = "Auto Stab", Multi = false,
-        Callback = function(v) Settings.StabMode = v end,
-    })
-    g:AddLabel({ Text = "No visuals. Auto Stab: runs you behind the killer, fires instantly when in reach. Aim Only: continuously aims at nearest killer so you can press Dagger manually.", DoesWrap = true })
-    g:AddToggle("Stab_CancelDmg_T", {
-        Text = "Cancel on Damage", Default = true,
-        Callback = function(v) Settings.StabCancelOnDamage = v end,
-    })
-    g:AddToggle("Stab_Debug_T", {
-        Text = "Debug Print (F9)", Default = false,
-        Callback = function(v) Settings.StabDebug = v end,
-    })
+    g:AddLabel({ Text = "When enabled, pressing your real Dagger button lerps you to the killer's back. Range = max killer distance to activate.", DoesWrap = true })
+
     local s = Tabs.Stab:AddRightGroupbox("Settings")
-    s:AddSlider("Stab_ActivateRange_S", { Text = "Activation Range (studs)", Default = 20, Min = 5, Max = 100, Rounding = 1, Tooltip = "Killer must be within this distance for script to engage.", Callback = function(v) Settings.StabActivateRange = v end })
-    s:AddSlider("Stab_Reach_S",         { Text = "Stab Reach (studs)",       Default = 5,  Min = 1, Max = 15, Rounding = 1, Tooltip = "Dagger hitbox is ~5 studs. Script fires when player is within this of killer.", Callback = function(v) Settings.StabReach = v end })
-    s:AddSlider("Stab_BehindDot_S",     { Text = "Behind Threshold",         Default = 0.3, Min = 0, Max = 1, Rounding = 2, Tooltip = "0.3 = must be within ~107° of directly behind. Higher = stricter.", Callback = function(v) Settings.StabBehindDot = v end })
-    s:AddSlider("Stab_BehindOffset_S",  { Text = "Chase Target Offset",      Default = 2.5, Min = 0.5, Max = 8, Rounding = 1, Tooltip = "Auto mode runs you to this distance behind killer.", Callback = function(v) Settings.StabBehindOffset = v end })
-    s:AddSlider("Stab_Speed_S",         { Text = "Chase Speed",              Default = 42, Min = 5, Max = 60, Rounding = 0, Callback = function(v) Settings.StabMoveSpeed = v end })
-    s:AddSlider("Stab_FireDelay_S",     { Text = "Aim→Fire Delay",           Default = 0.02, Min = 0, Max = 0.2, Rounding = 3, Tooltip = "Tiny replication wait. Lower = more instant, but on high ping might not register.", Callback = function(v) Settings.StabFireDelay = v end })
+    s:AddSlider("Stab_Duration_S", {
+        Text = "Duration (s)", Default = 0.2, Min = 0.05, Max = 1, Rounding = 2,
+        Tooltip = "How long the lerp to the killer's back takes.",
+        Callback = function(v) Settings.StabLerpDuration = v end,
+    })
+    s:AddSlider("Stab_Range_S", {
+        Text = "Range (studs)", Default = 15, Min = 3, Max = 50, Rounding = 1,
+        Tooltip = "Killer must be within this distance for the lerp to activate.",
+        Callback = function(v) Settings.StabLerpRange = v end,
+    })
 end
 
 do
@@ -1982,15 +1892,10 @@ _G.Godsaken = {
     },
     HDT = { SetEnabled=function(v) Settings.HDT_Enabled = v end, SetSpeed=HDT_SetSpeed, SetDuration=HDT_SetDuration },
     Stab = {
-        SetEnabled=function(v) Settings.AutoStab = v; if v then StartAutoStab() else StopAutoStab() end end,
-        Start=StartAutoStab, Stop=StopAutoStab,
-        SetMode=function(v) Settings.StabMode = v end,
-        SetActivateRange=function(v) Settings.StabActivateRange = tonumber(v) or 20 end,
-        SetReach=function(v) Settings.StabReach = tonumber(v) or 5 end,
-        SetBehindDot=function(v) Settings.StabBehindDot = tonumber(v) or 0.3 end,
-        SetBehindOffset=function(v) Settings.StabBehindOffset = tonumber(v) or 2.5 end,
-        SetSpeed=function(v) Settings.StabMoveSpeed = tonumber(v) or 42 end,
-        SetFireDelay=function(v) Settings.StabFireDelay = tonumber(v) or 0.02 end,
+        SetEnabled=function(v) Settings.StabEnabled = v; if v then StabInstallHook() end end,
+        SetDuration=function(v) Settings.StabLerpDuration = tonumber(v) or 0.2 end,
+        SetRange=function(v) Settings.StabLerpRange = tonumber(v) or 15 end,
+        Trigger=function() StabLerpToKillerBack() end,
     },
     Box = {
         SetRange=function(v) Settings.BoxRange = tonumber(v) or 20 end,
@@ -2012,11 +1917,11 @@ Library:OnUnload(function()
     pcall(function() AP_Disable() end)
     pcall(function() PA_Disable() end)
     pcall(function() Settings.AIM_Enabled = false end)
+    pcall(function() Settings.StabEnabled = false end)
     pcall(function() AM1_Disable() end)
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
     pcall(function() Vee.AutoTrick = false; VeerATStop() end)
-    pcall(function() StopAutoStab() end)
     pcall(function()
         Box_StopRender()
         for killer, box in pairs(BoxState.killerBoxes) do Box_DestroyWireframe(box.parts) end
@@ -2029,8 +1934,8 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Auto Stab v5 — no visuals, instant fire when behind killer",
+    Content = "Auto Stab v6 — press Dagger → lerp to killer's back",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — Auto Stab v5 (pure behind-check, no boxes).")
+print("[Cr4zy HuB] Loaded — Stab v6 (lerp on Dagger press).")
