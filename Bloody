@@ -1,3 +1,4 @@
+
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local RunService          = game:GetService("RunService")
@@ -42,8 +43,10 @@ local function _num(v, d) return tonumber(v) or d end
 local Settings = {
     AB_Mode = "Guest1337", AB_ShowZone = true,
     AB_PendingWindow = 0.25,
+    AB_M1Only = true,
     AB_SpamEnabled = false, AB_SpamCount = 4, AB_SpamDuration = 0.05,
     BoxRange = 22,
+    BoxPadding = 2,
     BoxDisplayDuration = 0.3,
     BoxFacingDot = 0.5,
     BoxFastThreshold = 15,
@@ -187,9 +190,10 @@ local function Box_ComputeOverlap(killer)
     local localX = toPlayerFlat:Dot(right)
     local localZ = toPlayerFlat:Dot(lookFlat)
     local pHalf = Settings.BoxPlayerW / 2
+    local pad = Settings.BoxPadding or 0
 
-    return math.abs(localX) <= halfW + pHalf
-       and math.abs(localZ) <= halfL + pHalf
+    return math.abs(localX) <= halfW + pHalf + pad
+       and math.abs(localZ) <= halfL + pHalf + pad
 end
 
 local function AB_IsFacingPlayer(killer)
@@ -554,6 +558,15 @@ local function HDT_SetDuration(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 
 local function AB_TryFire(killer)
     local st = AB.perKiller[killer]
     if not st or st.pendingUntil <= 0 or tick() > st.pendingUntil then return end
+
+    if Settings.AB_M1Only then
+        local aU = killer:GetAttribute("AbilitiesUsed") or 0
+        if aU > (st.armAbilitiesUsed or 0) then
+            st.pendingUntil = 0
+            return
+        end
+    end
+
     Box_ShowOnM1(killer)
     if not AB_IsBlockReady() then return end
     local char = LocalPlayer.Character
@@ -574,8 +587,8 @@ local function AB_OnAttributeChanged(killer)
     local aLU = killer:GetAttribute("AbilityLastUsed") or 0
     if aLU <= st.lastAbility then return end
     st.lastAbility = aLU
+    st.armAbilitiesUsed = killer:GetAttribute("AbilitiesUsed") or 0
     st.pendingUntil = tick() + Settings.AB_PendingWindow
-    AB_TryFire(killer)
 end
 
 local function AB_HookKiller(killer)
@@ -583,6 +596,7 @@ local function AB_HookKiller(killer)
     local st = {
         lastAbility = killer:GetAttribute("AbilityLastUsed") or 0,
         lastUsed = killer:GetAttribute("AbilitiesUsed") or 0,
+        armAbilitiesUsed = 0,
         pendingUntil = 0, lastFireAt = 0,
     }
     local ok, conn = pcall(function()
@@ -1866,6 +1880,7 @@ do
     g:AddDropdown("AB_Mode_D",   { Text = "Block Ability", Values = {"Guest1337","007n7"}, Default = "Guest1337", Multi = false, Callback = function(v) Settings.AB_Mode = v end })
     g:AddToggle("AB_ShowZone_T", { Text = "Show Box Visuals",   Default = true,  Callback = function(v) Settings.AB_ShowZone = v end })
     g:AddSlider("AB_Pending_S",  { Text = "Pending Window (s)", Default = 0.25, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.AB_PendingWindow = v end })
+    g:AddToggle("AB_M1Only_T",   { Text = "M1 Only (skip abilities)", Default = true, Tooltip = "Only block when AbilitiesUsed did not increment — filters out cooldown abilities.", Callback = function(v) Settings.AB_M1Only = v end })
 
     local s = Tabs.AutoBlock:AddRightGroupbox("Block Spam")
     s:AddToggle("AB_SpamEn_T",    { Text = "Enable Spam",   Default = false, Callback = function(v) Settings.AB_SpamEnabled = v end })
@@ -1887,6 +1902,7 @@ do
     local bd = Tabs.Box:AddLeftGroupbox("Box Detection")
     bd:AddSlider("Box_Range_S", { Text = "Max Range (studs)", Default = 22, Min = 5, Max = 50, Rounding = 1, Callback = function(v) Settings.BoxRange = v end })
     bd:AddSlider("Box_Dot_S", { Text = "Facing Threshold", Default = 0.5, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.BoxFacingDot = v end })
+    bd:AddSlider("Box_Pad_S", { Text = "Overlap Padding (studs)", Default = 2, Min = 0, Max = 8, Rounding = 1, Tooltip = "Extra forgiveness added to every edge of the box overlap test. Raise if blocks feel too strict.", Callback = function(v) Settings.BoxPadding = v end })
     bd:AddSlider("Box_FastThresh_S", { Text = "Fast Velocity Threshold", Default = 15, Min = 5, Max = 40, Rounding = 0, Callback = function(v) Settings.BoxFastThreshold = v end })
     bd:AddSlider("Box_FastDot_S", { Text = "Fast Move Toward Dot", Default = 0.3, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.BoxFastDot = v end })
     bd:AddSlider("Box_ShowDur_S", { Text = "M1 Show Duration (s)", Default = 0.3, Min = 0.1, Max = 0.7, Rounding = 2, Callback = function(v) Settings.BoxDisplayDuration = v end })
@@ -2022,6 +2038,7 @@ _G.Godsaken = {
     },
     Box = {
         SetRange=function(v) Settings.BoxRange = tonumber(v) or 22 end,
+        SetPadding=function(v) Settings.BoxPadding = tonumber(v) or 2 end,
         SetKillerW=function(v) Settings.BoxKillerW = tonumber(v) or 6 end,
         SetKillerH=function(v) Settings.BoxKillerH = tonumber(v) or 6 end,
         SetKillerL=function(v) Settings.BoxKillerL = tonumber(v) or 9 end,
@@ -2058,7 +2075,7 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Box overlap fixed + HDT rebuild + Aim lock",
+    Content = "Box padding + M1 Only filter",
     Time = 4,
 })
 
