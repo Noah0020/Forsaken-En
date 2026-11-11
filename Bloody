@@ -44,7 +44,7 @@ local Settings = {
     AB_PendingWindow = 0.25,
     AB_SpamEnabled = false, AB_SpamCount = 4, AB_SpamDuration = 0.05,
 
-    FacingMode = "Zone", -- Zone or M1Line; the modes are mutually exclusive.
+    FacingMode = "Radar", -- Radar or M1Line; exactly one mode is active at a time.
     FacingAngle = 65,
     FacingLength = 20,
     FacingVisualEnabled = true,
@@ -88,7 +88,7 @@ for _, id in ipairs({100926346851492,102517104852347,115706752305794,11650690086
 --═══ UNIFIED FACING CHECK ═══
 local AB -- forward declaration; the renderer reads pending M1 state below.
 -- One selector controls the display and the Auto Block facing gate:
--- Zone = coloured frontal area; M1Line = curved, body-attached M1 reach line.
+-- Radar = filled, colour-coded frontal radar sector; M1Line = curved, body-attached M1 reach line.
 local RadarStates = setmetatable({}, {__mode = "k"})
 local FacingFolder = Instance.new("Folder")
 FacingFolder.Name = "Cr4zyFacingVisuals"
@@ -145,6 +145,7 @@ local function FacingDestroyVisual(state)
     if not state then return end
     if state.Visual then pcall(function() state.Visual:Destroy() end) end
     state.Visual = nil
+    state.VisualMesh = nil
     if state.Beam then pcall(function() state.Beam:Destroy() end) end
     if state.A0 then pcall(function() state.A0:Destroy() end) end
     if state.A1 then pcall(function() state.A1:Destroy() end) end
@@ -153,16 +154,23 @@ end
 
 local function FacingEnsureZone(root, state)
     if state.Visual and state.Visual.Parent then return state.Visual end
+    -- A flattened cone mesh gives a filled forward sector, not a rectangular box
+    -- or a set of distracting outline beams.
     local zone = Instance.new("Part")
-    zone.Name = "FacingZone"
+    zone.Name = "FacingFrontSector"
     zone.Anchored = true
     zone.CanCollide, zone.CanTouch, zone.CanQuery = false, false, false
     zone.CastShadow = false
     zone.Material = Enum.Material.ForceField
     zone.Transparency = 0.62
-    zone.Size = Vector3.new(1, 0.08, 1)
+    zone.Size = Vector3.new(1, 1, 1)
+    local mesh = Instance.new("SpecialMesh")
+    mesh.Name = "FacingSectorMesh"
+    mesh.MeshType = Enum.MeshType.Cone
+    mesh.Parent = zone
     zone.Parent = FacingFolder
     state.Visual = zone
+    state.VisualMesh = mesh
     return zone
 end
 
@@ -238,17 +246,31 @@ local function FacingRenderAll()
                     if not Settings.FacingVisualEnabled then
                         if state.Visual then state.Visual.Transparency = 1 end
                         if state.Beam then state.Beam.Enabled = false end
-                    elseif mode == "Zone" then
-                        if state.Beam then state.Beam.Enabled = false end
+                    elseif mode == "Radar" then
+                        if state.Beam or state.A0 or state.A1 then
+                            if state.Beam then pcall(function() state.Beam:Destroy() end) end
+                            if state.A0 then pcall(function() state.A0:Destroy() end) end
+                            if state.A1 then pcall(function() state.A1:Destroy() end) end
+                            state.Beam, state.A0, state.A1 = nil, nil, nil
+                        end
                         local part = FacingEnsureZone(root, state)
                         local length = math.clamp(tonumber(Settings.FacingLength) or 20, 3, 60)
-                        local width = 2 * math.tan(math.rad(math.clamp(Settings.FacingAngle or 65, 5, 120) / 2)) * length
-                        part.Size = Vector3.new(width, 0.08, length)
-                        part.CFrame = root.CFrame * CFrame.new(0, -2.5, -length / 2)
+                        local angle = math.clamp(tonumber(Settings.FacingAngle) or 65, 5, 120)
+                        local width = 2 * math.tan(math.rad(angle / 2)) * length
+                        local mesh = state.VisualMesh
+                        if mesh and mesh.Parent == part then
+                            -- Cone axis is rotated forward; flatten its vertical thickness
+                            -- so the result reads as a coloured ground-sector in front.
+                            mesh.Scale = Vector3.new(width, length, 0.08)
+                        end
+                        part.CFrame = root.CFrame * CFrame.new(0, -2.45, -length / 2) * CFrame.Angles(math.pi / 2, 0, 0)
                         part.Color = FacingColors[zone] or FacingColors.SAFE
                         part.Transparency = distance <= 100 and 0.62 or 1
                     elseif mode == "M1Line" then
-                        if state.Visual then state.Visual.Transparency = 1 end
+                        if state.Visual then
+                            pcall(function() state.Visual:Destroy() end)
+                            state.Visual, state.VisualMesh = nil, nil
+                        end
                         local beam = FacingEnsureBeam(root, state, myRoot)
                         beam.CurveSize0 = math.clamp(tonumber(Settings.M1LineCurve) or 4, 0, 12)
                         beam.CurveSize1 = -beam.CurveSize0
@@ -351,9 +373,10 @@ local function AB_IsInsideRadarBlockCone(killer)
     if Settings.FacingMode == "M1Line" then
         return state ~= nil and state.Connected == true
     end
-    if state then return state.Facing == true end
-    local _, isFacing = FacingCheck(krp, myRoot)
-    return isFacing == true
+    local maxZoneLength = math.clamp(tonumber(Settings.FacingLength) or 20, 3, 60)
+    if state then return state.Facing == true and state.Distance <= maxZoneLength end
+    local _, isFacing, distance = FacingCheck(krp, myRoot)
+    return isFacing == true and (distance or math.huge) <= maxZoneLength
 end
 
 local function AB_ShouldBlock(killer)
@@ -2033,20 +2056,22 @@ do
     s:AddSlider("AB_SpamDur_S",   { Text = "Spam Duration", Default = 0.05,  Min = 0, Max = 0.5, Rounding = 3, Callback = function(v) Settings.AB_SpamDuration = v end })
 
     local fc = Tabs.FacingCheck:AddLeftGroupbox("Facing Detection")
-    fc:AddDropdown("Facing_Mode_D", { Text = "Detection Visual", Values = {"Zone", "M1Line"}, Default = "Zone", Multi = false, Callback = function(v)
-        Settings.FacingMode = v
+    fc:AddDropdown("Facing_Mode_D", { Text = "Facing Check Mode", Values = {"Radar", "M1Line"}, Default = "Radar", Multi = false, Callback = function(v)
+        Settings.FacingMode = v == "M1Line" and "M1Line" or "Radar"
+        -- Hard-switch modes: destroy every old visual/attachment so both can never coexist.
         for _, state in pairs(RadarStates) do
-            if state.Visual then state.Visual.Transparency = 1 end
-            if state.Beam then state.Beam.Enabled = false end
+            FacingDestroyVisual(state)
+            state.Connected = false
         end
+        -- The renderer recreates only the selected mode on its next frame.
     end })
     fc:AddToggle("Facing_Visual_T", { Text = "Show Detection Visual", Default = true, Callback = function(v) Settings.FacingVisualEnabled = v end })
-    fc:AddSlider("Facing_Angle_S", { Text = "Front Angle (degrees)", Default = 65, Min = 10, Max = 120, Rounding = 0, Tooltip = "Controls how wide the killer's forward-facing zone is.", Callback = function(v) Settings.FacingAngle = v end })
-    fc:AddSlider("Facing_Length_S", { Text = "Zone Length (studs)", Default = 20, Min = 3, Max = 60, Rounding = 0, Tooltip = "How far the coloured zone extends in front of the killer.", Callback = function(v) Settings.FacingLength = v end })
+    fc:AddSlider("Facing_Angle_S", { Text = "Front Angle (degrees)", Default = 65, Min = 10, Max = 120, Rounding = 0, Tooltip = "Controls the angle covered by the killer's forward radar.", Callback = function(v) Settings.FacingAngle = v end })
+    fc:AddSlider("Facing_Length_S", { Text = "Radar Length (studs)", Default = 20, Min = 3, Max = 60, Rounding = 0, Tooltip = "How far the filled colour-coded radar extends in front of the killer.", Callback = function(v) Settings.FacingLength = v end })
     fc:AddSlider("M1_ExtraReach_S", { Text = "Extra M1 Reach (studs)", Default = 4, Min = 1, Max = 10, Rounding = 1, Tooltip = "Adds 1 to 10 studs to the detected killer M1 reach.", Callback = function(v) Settings.M1ExtraReach = v end })
     fc:AddSlider("M1_LineCurve_S", { Text = "M1 Line Curve", Default = 4, Min = 0, Max = 12, Rounding = 1, Tooltip = "Curves the M1 line toward the player. 0 is straight.", Callback = function(v) Settings.M1LineCurve = v end })
     fc:AddSlider("M1_LineMax_S", { Text = "Maximum Line Distance", Default = 20, Min = 5, Max = 30, Rounding = 0, Tooltip = "Prevents M1 line checks from trying to connect at long range.", Callback = function(v) Settings.M1LineMaxDistance = v end })
-    fc:AddLabel({ Text = "Zone mode uses coloured facing coverage. M1Line mode shows a curved body-attached line only during a detected M1, when the killer faces you and you are within its reach + extra range. Only one mode can be active.", DoesWrap = true })
+    fc:AddLabel({ Text = "Radar: a filled, colour-coded cone that follows the killer's front. M1Line: a curved line attached to both characters, shown only during a detected M1 when the killer faces you and you are within that killer's reach plus your extra reach. Select one mode at a time.", DoesWrap = true })
 
     local h = Tabs.AutoBlock:AddLeftGroupbox("HDT (Block Dash)")
     h:AddToggle("HDT_Enabled_T", { Text = "Enable HDT", Default = false, Tooltip = "Turns toward and dashes toward the killer when Auto Block fires. 27s cooldown.", Callback = function(v) Settings.HDT_Enabled = v; if not v then HDT_Stop() end end })
@@ -2158,7 +2183,10 @@ _G.Godsaken = {
     SurvivorAim = { Enable=function() Settings.AIM_Enabled=true; Aim_SetupHook() end, Disable=function() Settings.AIM_Enabled=false end },
     FacingCheck = {
         Check = FacingCheck,
-        SetMode=function(v) Settings.FacingMode = v == "M1Line" and "M1Line" or "Zone" end,
+        SetMode=function(v)
+            Settings.FacingMode = v == "M1Line" and "M1Line" or "Radar"
+            for _, state in pairs(RadarStates) do FacingDestroyVisual(state); state.Connected = false end
+        end,
         SetVisible=function(v) Settings.FacingVisualEnabled = v and true or false end,
         SetAngle=function(v) Settings.FacingAngle = math.clamp(tonumber(v) or 65, 5, 120) end,
         SetLength=function(v) Settings.FacingLength = math.clamp(tonumber(v) or 20, 3, 60) end,
@@ -2235,7 +2263,7 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Facing Check uses one selected mode: coloured zone or curved M1 reach line.",
+    Content = "Facing Check uses one selected mode: filled forward sector or curved M1 reach line.",
     Time = 4,
 })
 
