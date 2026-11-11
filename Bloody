@@ -15,7 +15,7 @@ local LocalHumanoid  = LocalCharacter:WaitForChild("Humanoid")
 local LocalRoot      = LocalCharacter:WaitForChild("HumanoidRootPart")
 LocalPlayer.CharacterAdded:Connect(function(c)
     LocalCharacter = c
-    LocalHumanoid  = c:FindFirstChildOfClass("Humanoid")
+    LocalHumanoid  = c:WaitForChild("Humanoid")
     LocalRoot      = c:WaitForChild("HumanoidRootPart")
 end)
 
@@ -50,6 +50,8 @@ local Settings = {
     RadarExitAngle = 0.58,
     RadarSnapDot = 0.90,
     RadarSnapWindow = 0.30,
+    RadarVisualEnabled = true,
+    RadarConeLength = 20,
 
     BoxRange = 20, BoxFollowDelay = 0.1,
     BoxLength = 8, BoxWidth = 5, BoxHeight = 5, BoxPlayerW = 3,
@@ -75,7 +77,7 @@ local Settings = {
     AM1_FacingX = 9, AM1_FacingY = 10, AM1_FacingZ = 9,
     AM1_RangeVisual = false, AM1_RangeOpacity = 1.0,
     AM1_FacingVisual = false, AM1_FacingOpacity = 1.0,
-    GS_Enabled = false, GS_StartDelay = 1.5, GS_FlowDelay = 0.05,
+    GS_Enabled = false, GS_StartDelay = 1.5, GS_FlowDelay = 0.08,
     GS_ConnectDelay = 1.0, GS_GearDelay = 0.03, GS_LockDelay = 0.08,
 }
 
@@ -87,65 +89,269 @@ for _, id in ipairs({100129666722695,108807732150251,108911997126897,11127018460
 local AntiBaitAnims = {}
 for _, id in ipairs({100926346851492,102517104852347,115706752305794,116506900864624,120725067908621,120748030255574,120773807614836,123548100869928,127040663332045,133292581373127,138407964761603,140671644163156,72182155407310,72722244508749,82036084568393,82605295530067,83036817079068,88287038085804,88557287105521,90970641235403,95421685049902,95802026624883,96959123077498}) do AntiBaitAnims["rbxassetid://"..id] = true end
 
---═══ R.A.D.A.R. FACING CHECK ═══
+--═══ R.A.D.A.R. FACING CHECK + VISUAL ═══
 local RadarStates = setmetatable({}, {__mode = "k"})
+local RadarColors = {
+    SAFE = Color3.fromRGB(45, 220, 110),       -- Green: facing away
+    ALERT = Color3.fromRGB(255, 145, 25),      -- Orange: turning toward you
+    SNAP = Color3.fromRGB(255, 215, 35),       -- Yellow: sudden turn toward you
+    FACING = Color3.fromRGB(255, 55, 55),      -- Red: inside facing cone
+    UNKNOWN = Color3.fromRGB(130, 140, 155),   -- Grey: outside radar range
+}
+
+local RadarVisualFolder = Instance.new("Folder")
+RadarVisualFolder.Name = "Cr4zyRadarVisuals"
+RadarVisualFolder.Parent = Workspace
 
 local function RadarGetState(root)
     if not RadarStates[root] then
         RadarStates[root] = {
             Facing = false,
             PreviousLook = nil,
+            PreviousDot = nil,
             PreviousTime = 0,
+            TurnUntil = 0,
             SnapUntil = 0,
+            Visual = nil,
+            Zone = "UNKNOWN",
+            Distance = math.huge,
         }
     end
     return RadarStates[root]
 end
 
+local function RadarCreateLine()
+    local part = Instance.new("Part")
+    part.Name = "RadarLine"
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.CastShadow = false
+    part.Material = Enum.Material.Neon
+    part.Transparency = 0.35
+    part.Size = Vector3.new(0.10, 0.10, 1)
+    part.Parent = RadarVisualFolder
+    return part
+end
+
+local function RadarCreateVisual(root)
+    local visual = { Lines = {}, Billboard = nil, Label = nil }
+
+    -- Five rays plus four arc segments make the cone easy to read.
+    for i = 1, 9 do
+        visual.Lines[i] = RadarCreateLine()
+    end
+
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "RadarStatus"
+    gui.Size = UDim2.fromOffset(154, 42)
+    gui.StudsOffset = Vector3.new(0, 3.6, 0)
+    gui.AlwaysOnTop = true
+    gui.Adornee = root
+    gui.Parent = RadarVisualFolder
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Status"
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+    label.BackgroundTransparency = 0.15
+    label.TextColor3 = RadarColors.UNKNOWN
+    label.TextScaled = true
+    label.TextWrapped = true
+    label.Font = Enum.Font.GothamBold
+    label.Text = "R.A.D.A.R.\nUNKNOWN"
+    label.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 7)
+    corner.Parent = label
+
+    visual.Billboard = gui
+    visual.Label = label
+    return visual
+end
+
+local function RadarDrawLine(part, fromPos, toPos, color)
+    local delta = toPos - fromPos
+    local length = delta.Magnitude
+    if length <= 0.001 then
+        part.Transparency = 1
+        return
+    end
+
+    part.Transparency = 0.35
+    part.Color = color
+    part.Size = Vector3.new(0.10, 0.10, length)
+    part.CFrame = CFrame.lookAt((fromPos + toPos) / 2, toPos)
+end
+
+local function RadarHideVisual(state)
+    local visual = state and state.Visual
+    if not visual then return end
+    for _, line in ipairs(visual.Lines) do
+        if line and line.Parent then line.Transparency = 1 end
+    end
+    if visual.Billboard then visual.Billboard.Enabled = false end
+end
+
+local function RadarDestroyVisual(state)
+    local visual = state and state.Visual
+    if not visual then return end
+    for _, line in ipairs(visual.Lines) do
+        pcall(function() line:Destroy() end)
+    end
+    if visual.Billboard then pcall(function() visual.Billboard:Destroy() end) end
+    state.Visual = nil
+end
+
+local function RadarDrawVisual(root, state, zone, distance)
+    if not Settings.RadarVisualEnabled then
+        RadarHideVisual(state)
+        return
+    end
+
+    if not state.Visual then
+        state.Visual = RadarCreateVisual(root)
+    end
+
+    local visual = state.Visual
+    local color = RadarColors[zone] or RadarColors.UNKNOWN
+    local origin = root.Position + Vector3.new(0, 0.15, 0)
+
+    local look = root.CFrame.LookVector
+    local forward = Vector3.new(look.X, 0, look.Z)
+    if forward.Magnitude < 0.001 then
+        forward = Vector3.new(0, 0, -1)
+    else
+        forward = forward.Unit
+    end
+
+    local right = Vector3.new(-forward.Z, 0, forward.X)
+    local visualThreshold = state.Facing
+        and math.min(Settings.RadarEnterAngle, Settings.RadarExitAngle)
+        or Settings.RadarEnterAngle
+    local dotThreshold = math.clamp(visualThreshold, 0.05, 0.999)
+    local halfAngle = math.acos(dotThreshold)
+    local length = math.max(2, tonumber(Settings.RadarConeLength) or 20)
+    local endpoints = {}
+
+    for i = 1, 5 do
+        local alpha = (i - 1) / 4
+        local angle = -halfAngle + (2 * halfAngle * alpha)
+        local direction = (forward * math.cos(angle) + right * math.sin(angle)).Unit
+        endpoints[i] = origin + direction * length
+        RadarDrawLine(visual.Lines[i], origin, endpoints[i], color)
+    end
+
+    for i = 1, 4 do
+        RadarDrawLine(visual.Lines[i + 5], endpoints[i], endpoints[i + 1], color)
+    end
+
+    visual.Billboard.Adornee = root
+    visual.Billboard.Enabled = true
+    visual.Label.TextColor3 = color
+    visual.Label.Text = string.format("R.A.D.A.R.  %s\n%.1f STUDS", zone, distance)
+end
+
 local function RadarCheck(enemyRoot, myRoot)
-    if not enemyRoot or not myRoot then return "UNKNOWN" end
+    if not enemyRoot or not myRoot then return "UNKNOWN", false end
 
     local state = RadarGetState(enemyRoot)
     local now = os.clock()
-
     local offset = myRoot.Position - enemyRoot.Position
     local distance = offset.Magnitude
+    state.Distance = distance
 
-    if distance > Settings.RadarMaxRange then
-        state.Facing = false
-        return "SAFE"
-    end
-
+    -- RadarMaxRange controls only the visual display. Keep the facing
+    -- calculation active so a shorter visual range cannot disable auto-block
+    -- while the killer is still inside BoxRange.
     local direction = distance > 0.001 and offset.Unit or enemyRoot.CFrame.LookVector
     local look = enemyRoot.CFrame.LookVector
     local dot = look:Dot(direction)
 
-    local threshold = state.Facing and Settings.RadarExitAngle or Settings.RadarEnterAngle
+    -- Hysteresis keeps the facing result from flickering near the cone edge.
+    local enter = math.clamp(Settings.RadarEnterAngle, -1, 1)
+    local exit = math.min(math.clamp(Settings.RadarExitAngle, -1, 1), enter)
+    local threshold = state.Facing and exit or enter
     state.Facing = dot >= threshold
 
-    if state.PreviousLook then
+    -- Snap is visual awareness only. It never independently triggers a block.
+    if state.PreviousLook and state.PreviousDot then
         local turnDot = state.PreviousLook:Dot(look)
-        if turnDot < Settings.RadarSnapDot then
-            if dot > 0.35 then
-                state.SnapUntil = now + Settings.RadarSnapWindow
-            end
+        local elapsed = now - (state.PreviousTime or now)
+        local turningTowardPlayer = dot > (state.PreviousDot + 0.015)
+            and elapsed <= 0.20
+
+        if turningTowardPlayer then
+            state.TurnUntil = now + 0.16
+        end
+
+        if turnDot < Settings.RadarSnapDot
+            and turningTowardPlayer
+            and dot > 0.35 then
+            state.SnapUntil = now + Settings.RadarSnapWindow
         end
     end
 
     state.PreviousLook = look
+    state.PreviousDot = dot
     state.PreviousTime = now
 
     local snapActive = now < state.SnapUntil
-
+    local zone
     if state.Facing then
-        return "FACING"
+        zone = "FACING"
     elseif snapActive then
-        return "SNAP"
-    elseif dot > 0.35 then
-        return "ALERT"
+        zone = "SNAP"
+    elseif now < state.TurnUntil then
+        zone = "ALERT"
+    else
+        zone = "SAFE"
     end
 
-    return "SAFE"
+    state.Zone = zone
+    return zone, state.Facing, distance, dot
+end
+
+local function RadarRenderAll()
+    local killerFolder = GetKillersFolder()
+    local character = LocalPlayer.Character
+    local myRoot = character and character:FindFirstChild("HumanoidRootPart")
+    local found = {}
+
+    if killerFolder and myRoot then
+        for _, killer in ipairs(killerFolder:GetChildren()) do
+            if killer:IsA("Model") then
+                local enemyRoot = killer:FindFirstChild("HumanoidRootPart")
+                if enemyRoot then
+                    found[enemyRoot] = true
+                    local zone, _, distance = RadarCheck(enemyRoot, myRoot)
+                    local state = RadarGetState(enemyRoot)
+                    if distance <= Settings.RadarMaxRange then
+                        RadarDrawVisual(enemyRoot, state, zone, distance)
+                    else
+                        RadarHideVisual(state)
+                    end
+                end
+            end
+        end
+    end
+
+    for root, state in pairs(RadarStates) do
+        if not root.Parent or not found[root] then
+            RadarDestroyVisual(state)
+            RadarStates[root] = nil
+        end
+    end
+end
+
+local function RadarDestroyAll()
+    for root, state in pairs(RadarStates) do
+        RadarDestroyVisual(state)
+        RadarStates[root] = nil
+    end
+    pcall(function() RadarVisualFolder:Destroy() end)
 end
 
 --═══ BOX VISUALS ═══
@@ -206,18 +412,26 @@ local function AB_IsPlayerInRange(killer)
     return (myRoot.Position - krp.Position).Magnitude <= Settings.BoxRange
 end
 
-local function AB_IsFacingPlayer(killer)
+local function AB_IsInsideRadarBlockCone(killer)
     local krp = killer and killer:FindFirstChild("HumanoidRootPart")
     local char = LocalPlayer.Character
     local myRoot = char and char:FindFirstChild("HumanoidRootPart")
     if not krp or not myRoot then return false end
-    local zone = RadarCheck(krp, myRoot)
-    return zone == "FACING" or zone == "SNAP"
+
+    -- RadarRenderAll updates this once per render frame. Reuse that result
+    -- so the block check does not advance the snap/facing history twice.
+    local state = RadarStates[krp]
+    if state then
+        return state.Facing == true
+    end
+
+    local _, isFacing = RadarCheck(krp, myRoot)
+    return isFacing == true
 end
 
 local function AB_ShouldBlock(killer)
     if not AB_IsPlayerInRange(killer) then return false end
-    return AB_IsFacingPlayer(killer)
+    return AB_IsInsideRadarBlockCone(killer)
 end
 
 local _WIRE = nil
@@ -320,6 +534,9 @@ end
 
 -- Render: killer boxes ALWAYS visible when toggle is on; color = would-fire indicator
 local function Box_RenderAll()
+    -- Radar visuals run independently of the optional killer-box visual.
+    RadarRenderAll()
+
     if not Settings.AB_ShowBox then
         for _, box in pairs(BoxState.killerBoxes) do Box_HideWireframe(box.parts) end
         if BoxState.playerBox then Box_HideWireframe(BoxState.playerBox.parts) end
@@ -379,8 +596,10 @@ local function AB_IsBlockReady()
     if btn then
         local cd = btn:FindFirstChild("CooldownTime")
         if cd then
-            local t = cd.Text
-            if t == nil or t == "" or t == " " then return true end
+            local t = tostring(cd.Text or ""):gsub("%s+", "")
+            if t == "" or t:lower() == "ready" then return true end
+            local remaining = tonumber(t)
+            if remaining then return remaining <= 0 end
             return false
         end
     end
@@ -396,9 +615,8 @@ local function AB_FireBlock()
     local mainUI = PlayerGui:FindFirstChild("MainUI")
     local ac = mainUI and mainUI:FindFirstChild("AbilityContainer")
     local btn = ac and ac:FindFirstChild(name)
-    if btn and firesignal then
-        local sig = btn:FindFirstChildOfClass("MouseButton1Click")
-        if sig then pcall(firesignal, sig) end
+    if btn and btn:IsA("GuiButton") and firesignal then
+        pcall(firesignal, btn.MouseButton1Click)
     end
 end
 local function AB_FireSpam()
@@ -425,48 +643,157 @@ end
 local function AB_Fire() if Settings.AB_SpamEnabled then AB_FireSpam() else AB_FireBlock() end end
 
 --═══ HDT ═══
-local HDT = { running=false, debounce=false, lastUse=0, COOLDOWN=27, Speed=Settings.HDT_Speed, Duration=Settings.HDT_Duration, bindId=0 }
+local HDT = {
+    running = false,
+    debounce = false,
+    lastUse = 0,
+    COOLDOWN = 27,
+    Speed = Settings.HDT_Speed,
+    Duration = Settings.HDT_Duration,
+    bindId = 0,
+    activeStop = nil,
+}
+
+local function HDT_Stop()
+    if HDT.activeStop then
+        pcall(HDT.activeStop)
+    end
+end
+
 local function HDT_Fire(killer)
     if not Settings.HDT_Enabled or HDT.debounce then return end
     if tick() - HDT.lastUse < HDT.COOLDOWN then return end
     if not killer or not killer.Parent then return end
-    local char = LocalPlayer.Character; if not char then return end
+
+    local char = LocalPlayer.Character
+    if not char then return end
+
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum or hum.Health <= 0 then return end
-    local kr = killer:FindFirstChild("HumanoidRootPart"); if not kr then return end
-    if (kr.Position - hrp.Position).Magnitude < 2.5 then return end
-    HDT.debounce = true; HDT.lastUse = tick(); HDT.bindId = HDT.bindId + 1
+    local kr = killer:FindFirstChild("HumanoidRootPart")
+    if not hrp or not hum or hum.Health <= 0 or not kr then return end
+
+    local initialOffset = kr.Position - hrp.Position
+    local initialFlat = Vector3.new(initialOffset.X, 0, initialOffset.Z)
+    if initialFlat.Magnitude < 0.05 then return end
+
+    HDT.debounce = true
+    HDT.lastUse = tick()
+    HDT.bindId = HDT.bindId + 1
+
     local bindName = "GS_HDT_" .. tostring(HDT.bindId)
-    local startT = tick(); local speed = HDT.Speed; local duration = HDT.Duration
+    local startT = tick()
+    local speed = math.clamp(tonumber(HDT.Speed) or 40, 5, 500)
+    local duration = math.clamp(tonumber(HDT.Duration) or 0.6, 0.05, 3)
+    local oldAutoRotate = hum.AutoRotate
     local active = true
+
+    -- Disable Humanoid's competing rotation while HDT controls facing.
+    hum.AutoRotate = false
+
+    local attachment = Instance.new("Attachment")
+    attachment.Name = "GS_HDT_Attachment"
+    attachment.Parent = hrp
+
+    local align = Instance.new("AlignOrientation")
+    align.Name = "GS_HDT_Align"
+    align.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    align.Attachment0 = attachment
+    align.RigidityEnabled = true
+    align.Responsiveness = 200
+    align.MaxTorque = 10000000
+    align.MaxAngularVelocity = 100000
+    align.CFrame = CFrame.lookAt(Vector3.zero, initialFlat.Unit)
+    align.Parent = hrp
+
     local bv = Instance.new("BodyVelocity")
-    bv.Name="GS_HDT_BV"; bv.MaxForce=Vector3.new(1e6,0,1e6); bv.Velocity=Vector3.zero; bv.Parent=hrp
-    local bg = Instance.new("BodyGyro")
-    bg.Name="GS_HDT_BG"; bg.MaxTorque=Vector3.new(1e6,1e6,1e6); bg.P=3000; bg.D=500
-    bg.CFrame=hrp.CFrame; bg.Parent=hrp
+    bv.Name = "GS_HDT_BV"
+    bv.MaxForce = Vector3.new(1000000, 0, 1000000)
+    bv.P = 25000
+    bv.Velocity = Vector3.zero
+    bv.Parent = hrp
+
     local function stop()
         if not active then return end
-        active=false; HDT.debounce=false
-        pcall(function() RunService:UnbindFromRenderStep(bindName) end)
+        active = false
+        HDT.debounce = false
+        if HDT.activeStop == stop then HDT.activeStop = nil end
+
+        pcall(function()
+            RunService:UnbindFromRenderStep(bindName)
+        end)
+
         if bv and bv.Parent then bv:Destroy() end
-        if bg and bg.Parent then bg:Destroy() end
+        if align and align.Parent then align:Destroy() end
+        if attachment and attachment.Parent then attachment:Destroy() end
+
+        if hum and hum.Parent then
+            hum.AutoRotate = oldAutoRotate
+        end
     end
-    RunService:BindToRenderStep(bindName, Enum.RenderPriority.Camera.Value + 1, function()
-        if not active then return end
-        if not hrp.Parent or not hum.Parent or hum.Health <= 0 then stop(); return end
-        if not kr.Parent then stop(); return end
-        if tick() - startT > duration then stop(); return end
-        local toK = kr.Position - hrp.Position
-        local flat = Vector3.new(toK.X, 0, toK.Z)
-        if flat.Magnitude < 1 then stop(); return end
-        if bv and bv.Parent then bv.Velocity = flat.Unit * speed end
-        if bg and bg.Parent then bg.CFrame = CFrame.new(hrp.Position, Vector3.new(kr.Position.X, hrp.Position.Y, kr.Position.Z)) end
+
+    HDT.activeStop = stop
+
+    local ok = pcall(function()
+        RunService:BindToRenderStep(
+            bindName,
+            Enum.RenderPriority.Character.Value + 1,
+            function()
+                if not active then return end
+                if not char.Parent or not hrp.Parent or not hum.Parent
+                    or hum.Health <= 0 or not killer.Parent or not kr.Parent then
+                    stop()
+                    return
+                end
+
+                if tick() - startT >= duration then
+                    stop()
+                    return
+                end
+
+                local toKiller = kr.Position - hrp.Position
+                local flat = Vector3.new(toKiller.X, 0, toKiller.Z)
+                if flat.Magnitude < 0.05 then
+                    bv.Velocity = Vector3.zero
+                    return
+                end
+
+                -- Face the killer continuously, including when already close.
+                local flatDirection = flat.Unit
+                align.CFrame = CFrame.lookAt(Vector3.zero, flatDirection)
+
+                -- Keep the dash horizontal. Close range still turns, but does
+                -- not shove the character through the killer.
+                if flat.Magnitude > 1.5 then
+                    bv.Velocity = flatDirection * speed
+                else
+                    bv.Velocity = Vector3.zero
+                end
+            end
+        )
     end)
-    task.delay(duration + 0.3, stop)
+
+    if not ok then
+        stop()
+        return
+    end
+
+    task.delay(duration + 0.35, stop)
 end
-local function HDT_SetSpeed(v) HDT.Speed = math.clamp(tonumber(v) or 40, 5, 500); Settings.HDT_Speed = HDT.Speed end
-local function HDT_SetDuration(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 0.05, 3); Settings.HDT_Duration = HDT.Duration end
+
+local function HDT_SetSpeed(v)
+    HDT.Speed = math.clamp(tonumber(v) or 40, 5, 500)
+    Settings.HDT_Speed = HDT.Speed
+end
+
+local function HDT_SetDuration(v)
+    HDT.Duration = math.clamp(tonumber(v) or 0.6, 0.05, 3)
+    Settings.HDT_Duration = HDT.Duration
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    HDT_Stop()
+end)
 
 local function AB_TryFire(killer)
     local st = AB.perKiller[killer]
@@ -662,67 +989,77 @@ local function AP_Disable()
 end
 
 --═══ PUNCH AIM ═══
-local PA = { running=false, looking=false, lookStarted=nil, loop=nil }
+-- Event-driven animation detection: avoids scanning every playing track every Heartbeat.
+local PA = { running=false, looking=false, lookStarted=nil, charConn=nil, animConn=nil, animator=nil }
 local function PA_AimOnce(humanoid, root, hrp)
     if not humanoid or not humanoid.Parent or not root or not root.Parent or not hrp or not hrp.Parent then return end
     local endT = tick() + 0.5
     while tick() < endT and PA.running do
-        if not humanoid.Parent or not root.Parent or not hrp.Parent then break end
+        if not humanoid.Parent or not root.Parent or not hrp.Parent or humanoid.Health <= 0 then break end
         local km = hrp.Parent
         local kh = km and km:FindFirstChildOfClass("Humanoid")
         local target = hrp.Position
         if kh then
-            local md = kh.MoveDirection
-            if md and md.Magnitude > 0.01 then target = target + md * Settings.PA_Prediction end
+            local velocity = hrp.AssemblyLinearVelocity
+            if velocity.Magnitude > 80 then velocity = velocity.Unit * 80 end
+            target = target + velocity * math.clamp(Settings.PA_Prediction * 0.05, 0, 1)
         end
         pcall(function() root.CFrame = CFrame.lookAt(root.Position, Vector3.new(target.X, root.Position.Y, target.Z)) end)
         RunService.Heartbeat:Wait()
     end
 end
-local function PA_Loop()
-    while PA.running do
-        RunService.Heartbeat:Wait()
-        if PA.looking and PA.lookStarted and (tick() - PA.lookStarted) > 2 then
-            PA.looking = false; PA.lookStarted = nil
-        end
-        if not PA.looking then
-            local char = LocalPlayer.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            if hum and root and root.Parent and hum.Health > 0 then
-                for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
-                    local aid = track.Animation and track.Animation.AnimationId
-                    if aid and PunchAnims[aid] then
-                        local kf = GetKillersFolder()
-                        if kf then
-                            local closest, cd = nil, math.huge
-                            for _, k in ipairs(kf:GetChildren()) do
-                                local kr = k:FindFirstChild("HumanoidRootPart")
-                                if kr and kr.Parent then
-                                    local d = (root.Position - kr.Position).Magnitude
-                                    if d < cd then cd = d; closest = kr end
-                                end
-                            end
-                            if closest then
-                                PA.looking = true; PA.lookStarted = tick()
-                                task.spawn(function()
-                                    pcall(PA_AimOnce, hum, root, closest)
-                                    PA.looking = false; PA.lookStarted = nil
-                                end)
-                            end
-                        end
-                        break
-                    end
-                end
-            end
+local function PA_OnAnimation(track, character)
+    if not PA.running or PA.looking then return end
+    local aid = track and track.Animation and track.Animation.AnimationId
+    if not aid or not PunchAnims[aid] then return end
+    local hum = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not hum or not root or hum.Health <= 0 then return end
+    local kf = GetKillersFolder()
+    if not kf then return end
+    local closest, bestDist = nil, math.huge
+    for _, killer in ipairs(kf:GetChildren()) do
+        local krp = killer:FindFirstChild("HumanoidRootPart")
+        local kh = killer:FindFirstChildOfClass("Humanoid")
+        if krp and kh and kh.Health > 0 then
+            local dist = (root.Position - krp.Position).Magnitude
+            if dist < bestDist then closest, bestDist = krp, dist end
         end
     end
+    if not closest then return end
+    PA.looking = true
+    PA.lookStarted = tick()
+    task.spawn(function()
+        pcall(PA_AimOnce, hum, root, closest)
+        PA.looking = false
+        PA.lookStarted = nil
+    end)
 end
-local function PA_Enable() if PA.running then return end; PA.running = true; PA.loop = task.spawn(PA_Loop) end
+local function PA_Attach(character)
+    if not PA.running then return end
+    if PA.animConn then pcall(function() PA.animConn:Disconnect() end); PA.animConn=nil end
+    local hum = character and character:WaitForChild("Humanoid", 5)
+    if not hum or not PA.running then return end
+    local animator = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 5)
+    if not animator then return end
+    PA.animator = animator
+    PA.animConn = animator.AnimationPlayed:Connect(function(track) PA_OnAnimation(track, character) end)
+    -- One-time catch-up for animations already playing when enabled/respawned.
+    for _, track in ipairs(hum:GetPlayingAnimationTracks()) do PA_OnAnimation(track, character) end
+end
+local function PA_Enable()
+    if PA.running then return end
+    PA.running = true
+    if LocalPlayer.Character then task.spawn(PA_Attach, LocalPlayer.Character) end
+    PA.charConn = LocalPlayer.CharacterAdded:Connect(function(c) if PA.running then task.spawn(PA_Attach, c) end end)
+end
 local function PA_Disable()
     PA.running = false
-    if PA.loop then pcall(task.cancel, PA.loop); PA.loop=nil end
-    PA.looking = false; PA.lookStarted = nil
+    if PA.animConn then pcall(function() PA.animConn:Disconnect() end); PA.animConn=nil end
+    if PA.charConn then pcall(function() PA.charConn:Disconnect() end); PA.charConn=nil end
+    PA.animator = nil
+    PA.looking = false
+    PA.lookStarted = nil
 end
 
 --═══ SURVIVOR AIM ═══
@@ -1338,7 +1675,7 @@ task.spawn(function()
 end)
 
 --═══ GENERATOR SOLVER ═══
-local GS = { installed=false, generation=0, lockBoard=nil }
+local GS = { installed=false, loading=false, generation=0, lockBoard=nil }
 local GSM = {}
 local function gs_safeRequire(path) if not path then return nil end; local ok, res = pcall(function() return require(path) end); return ok and res or nil end
 local function gs_loadModules()
@@ -1369,30 +1706,53 @@ local function gs_waitForSolver(object)
 end
 local function gs_solveFlowBoard(board, FlowBoardModule)
     local size, pairMap = board.Size, board.Pairs
+    if type(size) ~= "number" or type(pairMap) ~= "table" then return nil end
     local occupied, answer = {}, {}
     local directions = { {-1,0},{1,0},{0,-1},{0,1} }
-    local endpointOwner = {}
-    for color, pair in pairs(pairMap) do endpointOwner[pair[1]], endpointOwner[pair[2]] = color, color end
+    local endpointOwner, coords = {}, {}
+    for cell = 1, size * size do
+        local ok, row, col = pcall(FlowBoardModule.ToRowCol, size, cell)
+        if ok then coords[cell] = {row, col} end
+    end
+    for color, pair in pairs(pairMap) do
+        if type(pair) ~= "table" or not pair[1] or not pair[2] then return nil end
+        endpointOwner[pair[1]], endpointOwner[pair[2]] = color, color
+    end
     local remaining = {}
     for color in pairs(pairMap) do table.insert(remaining, color) end
+    local visitedNodes, NODE_BUDGET, YIELD_EVERY = 0, 30000, 400
+    local exhausted = false
+    local function spendNode()
+        visitedNodes = visitedNodes + 1
+        if visitedNodes > NODE_BUDGET then exhausted = true; return false end
+        if visitedNodes % YIELD_EVERY == 0 then
+            if not gs_isEnabled() then exhausted = true; return false end
+            task.wait()
+        end
+        return true
+    end
     local function candidates(color, limit)
         local pair = pairMap[color]
         local from, target = pair[1], pair[2]
+        local targetRC = coords[target]
+        if not coords[from] or not targetRC then return {} end
         local results, path, seen = {}, {from}, {[from] = true}
         local function distance(cell)
-            local r, c = FlowBoardModule.ToRowCol(size, cell)
-            local tr, tc = FlowBoardModule.ToRowCol(size, target)
-            return math.abs(r - tr) + math.abs(c - tc)
+            local rc = coords[cell]
+            if not rc then return math.huge end
+            return math.abs(rc[1] - targetRC[1]) + math.abs(rc[2] - targetRC[2])
         end
         local function walk(cell)
-            if #results >= limit then return end
+            if exhausted or #results >= limit or not spendNode() then return end
             if cell == target then table.insert(results, table.clone(path)); return end
-            local row, col = FlowBoardModule.ToRowCol(size, cell)
+            local rc = coords[cell]
+            if not rc then return end
+            local row, col = rc[1], rc[2]
             local nextCells = {}
             for _, d in ipairs(directions) do
                 local nr, nc = row + d[1], col + d[2]
                 if nr >= 1 and nr <= size and nc >= 1 and nc <= size then
-                    local n = FlowBoardModule.ToIndex(size, nr, nc)
+                    local n = (nr - 1) * size + nc
                     local owner = endpointOwner[n]
                     if not seen[n] and not occupied[n] and (not owner or (owner == color and n == target)) then
                         table.insert(nextCells, n)
@@ -1401,6 +1761,7 @@ local function gs_solveFlowBoard(board, FlowBoardModule)
             end
             table.sort(nextCells, function(a, b) return distance(a) < distance(b) end)
             for _, n in ipairs(nextCells) do
+                if exhausted then break end
                 seen[n] = true; table.insert(path, n); walk(n)
                 path[#path] = nil; seen[n] = nil
                 if #results >= limit then break end
@@ -1411,17 +1772,21 @@ local function gs_solveFlowBoard(board, FlowBoardModule)
         return results
     end
     local function search(colors)
+        -- Count combination-search branches too, not only individual path nodes.
+        -- This keeps the backtracking phase under the same global work budget.
+        if exhausted or not spendNode() then return false end
         if #colors == 0 then return true end
         local bestIndex, bestPaths
         for i, color in ipairs(colors) do
-            local list = candidates(color, 300)
-            if #list == 0 then return false end
+            local list = candidates(color, 120)
+            if exhausted or #list == 0 then return false end
             if not bestPaths or #list < #bestPaths then bestIndex, bestPaths = i, list end
         end
         local color = colors[bestIndex]
         local nextColors = table.clone(colors)
         table.remove(nextColors, bestIndex)
         for _, path in ipairs(bestPaths) do
+            if exhausted or not spendNode() then return false end
             for _, cell in ipairs(path) do occupied[cell] = true end
             answer[color] = path
             if search(nextColors) then return true end
@@ -1430,7 +1795,8 @@ local function gs_solveFlowBoard(board, FlowBoardModule)
         end
         return false
     end
-    return search(remaining) and answer or nil
+    if search(remaining) then return answer end
+    return nil
 end
 local function gs_install()
     if GS.installed then return true end
@@ -1507,8 +1873,32 @@ local function gs_install()
     end
     return true
 end
-local function GS_Enable() if not gs_install() then return false end; Settings.GS_Enabled = true; GS.generation = GS.generation + 1; return true end
-local function GS_Disable() Settings.GS_Enabled = false; GS.generation = GS.generation + 1 end
+local function GS_Enable()
+    Settings.GS_Enabled = true
+    GS.generation = GS.generation + 1
+    local generation = GS.generation
+    if GS.installed then return true end
+    if GS.loading then return true end
+    -- Module requires can be expensive; keep them off the UI callback/frame.
+    GS.loading = true
+    task.spawn(function()
+        local ok, result = pcall(gs_install)
+        GS.loading = false
+        if not ok or not result then
+            if GS.generation == generation then Settings.GS_Enabled = false end
+            pcall(function()
+                Library:Notify({ Title = "Generator Solver", Content = "Could not load minigame modules", Time = 4 })
+            end)
+            return
+        end
+        if GS.generation ~= generation or not Settings.GS_Enabled then return end
+    end)
+    return true
+end
+local function GS_Disable()
+    Settings.GS_Enabled = false
+    GS.generation = GS.generation + 1
+end
 
 --═══ VEE ═══
 local Vee = { AutoTrick=false, SkateControl=false, CustomStats=false, Sk8Speed=1.15, Sk8StaminaCost=1.35, Sk8TrickAirborneSpeed=1.42, Sk8BumpPower=11.9, Sk8TrickStamina=4, Sk8TrickCooldown=1, _moduleCache=nil, _behaviorModule=nil }
@@ -1771,19 +2161,22 @@ do
     g:AddDropdown("AB_Mode_D",   { Text = "Block Ability", Values = {"Guest1337","007n7"}, Default = "Guest1337", Multi = false, Callback = function(v) Settings.AB_Mode = v end })
     g:AddSlider("AB_Pending_S",  { Text = "Pending Window (s)", Default = 0.25, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.AB_PendingWindow = v end })
 
-    local r = Tabs.AutoBlock:AddLeftGroupbox("R.A.D.A.R. Facing")
-    r:AddSlider("Radar_Range_S",     { Text = "Max Range (studs)", Default = 100, Min = 20, Max = 300, Rounding = 0, Tooltip = "Killers beyond this distance are ignored.", Callback = function(v) Settings.RadarMaxRange = v end })
-    r:AddSlider("Radar_Enter_S",     { Text = "Enter Angle (dot)", Default = 0.72, Min = 0.1, Max = 1, Rounding = 2, Tooltip = "Dot threshold to enter FACING. Higher = tighter cone.", Callback = function(v) Settings.RadarEnterAngle = v end })
-    r:AddSlider("Radar_Exit_S",      { Text = "Exit Angle (dot)",  Default = 0.58, Min = 0.1, Max = 1, Rounding = 2, Tooltip = "Dot threshold to exit FACING (hysteresis). Should be lower than Enter.", Callback = function(v) Settings.RadarExitAngle = v end })
-    r:AddSlider("Radar_SnapDot_S",   { Text = "Snap Threshold",    Default = 0.90, Min = 0.5, Max = 1, Rounding = 2, Tooltip = "Turn-dot below this triggers snap detection.", Callback = function(v) Settings.RadarSnapDot = v end })
-    r:AddSlider("Radar_SnapWin_S",   { Text = "Snap Window (s)",   Default = 0.30, Min = 0.1, Max = 1, Rounding = 2, Tooltip = "How long SNAP state stays active after a sudden turn.", Callback = function(v) Settings.RadarSnapWindow = v end })
+    local r = Tabs.AutoBlock:AddLeftGroupbox("R.A.D.A.R. System")
+    r:AddToggle("Radar_Show_T", { Text = "Show 3D Radar", Default = true, Callback = function(v) Settings.RadarVisualEnabled = v end })
+    r:AddSlider("Radar_Range_S",     { Text = "Radar Range (studs)", Default = 100, Min = 20, Max = 300, Rounding = 0, Tooltip = "Maximum distance at which the radar tracks a killer.", Callback = function(v) Settings.RadarMaxRange = v end })
+    r:AddSlider("Radar_ConeLen_S",   { Text = "Cone Length (studs)", Default = 20, Min = 5, Max = 50, Rounding = 0, Tooltip = "Length of the visible front radar cone.", Callback = function(v) Settings.RadarConeLength = v end })
+    r:AddSlider("Radar_Enter_S",     { Text = "Enter Angle (dot)", Default = 0.72, Min = 0.1, Max = 1, Rounding = 2, Tooltip = "Controls the red facing cone. Higher = narrower.", Callback = function(v) Settings.RadarEnterAngle = v end })
+    r:AddSlider("Radar_Exit_S",      { Text = "Exit Angle (dot)",  Default = 0.58, Min = 0.1, Max = 1, Rounding = 2, Tooltip = "Keeps facing detection stable near the cone edge.", Callback = function(v) Settings.RadarExitAngle = v end })
+    r:AddSlider("Radar_SnapDot_S",   { Text = "Snap Threshold",    Default = 0.90, Min = 0.5, Max = 1, Rounding = 2, Tooltip = "Sensitivity for sudden turns toward you. Visual alert only.", Callback = function(v) Settings.RadarSnapDot = v end })
+    r:AddSlider("Radar_SnapWin_S",   { Text = "Snap Alert (s)",    Default = 0.30, Min = 0.1, Max = 1, Rounding = 2, Tooltip = "How long the yellow snap alert stays visible.", Callback = function(v) Settings.RadarSnapWindow = v end })
+    r:AddLabel({ Text = "RED: facing you | ORANGE: turning | YELLOW: sudden turn | GREEN: facing away", DoesWrap = true })
 
     local s = Tabs.AutoBlock:AddRightGroupbox("Block Spam")
     s:AddToggle("AB_SpamEn_T",    { Text = "Enable Spam",   Default = false, Callback = function(v) Settings.AB_SpamEnabled = v end })
     s:AddSlider("AB_SpamCount_S", { Text = "Spam Count",    Default = 4,     Min = 1, Max = 10,  Rounding = 0, Callback = function(v) Settings.AB_SpamCount = v end })
     s:AddSlider("AB_SpamDur_S",   { Text = "Spam Duration", Default = 0.05,  Min = 0, Max = 0.5, Rounding = 3, Callback = function(v) Settings.AB_SpamDuration = v end })
     local h = Tabs.AutoBlock:AddLeftGroupbox("HDT (Block Dash)")
-    h:AddToggle("HDT_Enabled_T", { Text = "Enable HDT", Default = false, Tooltip = "Dashes toward killer when Auto Block fires. 27s cooldown.", Callback = function(v) Settings.HDT_Enabled = v end })
+    h:AddToggle("HDT_Enabled_T", { Text = "Enable HDT", Default = false, Tooltip = "Turns toward and dashes toward the killer when Auto Block fires. 27s cooldown.", Callback = function(v) Settings.HDT_Enabled = v; if not v then HDT_Stop() end end })
     h:AddSlider("HDT_Speed_S",   { Text = "Dash Speed (studs/s)", Default = 40,   Min = 5,    Max = 500, Rounding = 0, Callback = function(v) HDT_SetSpeed(v)    end })
     h:AddSlider("HDT_Duration_S",{ Text = "Dash Duration (s)",    Default = 0.6,  Min = 0.05, Max = 3,   Rounding = 3, Callback = function(v) HDT_SetDuration(v) end })
     local a = Tabs.AutoBlock:AddRightGroupbox("Anti Bait")
@@ -1881,7 +2274,7 @@ do
     end })
     g:AddSlider("GS_Start_S", { Text = "Start Delay (s)", Default = 1.5, Min = 0, Max = 5, Rounding = 1, Callback = function(v) Settings.GS_StartDelay = v end })
     local fl = Tabs.Gen:AddRightGroupbox("Flow — Dots")
-    fl:AddSlider("GS_Flow_S", { Text = "Per-cell speed (s)", Default = 0.05, Min = 0.005, Max = 0.5, Rounding = 3, Callback = function(v) Settings.GS_FlowDelay = v end })
+    fl:AddSlider("GS_Flow_S", { Text = "Per-cell speed (s)", Default = 0.08, Min = 0.02, Max = 0.5, Rounding = 3, Callback = function(v) Settings.GS_FlowDelay = v end })
     local gr = Tabs.Gen:AddLeftGroupbox("Gear")
     gr:AddSlider("GS_Gear_S", { Text = "Per-turn speed (s)", Default = 0.03, Min = 0.005, Max = 0.5, Rounding = 3, Callback = function(v) Settings.GS_GearDelay = v end })
     local cn = Tabs.Gen:AddRightGroupbox("Connect")
@@ -1900,7 +2293,9 @@ _G.Godsaken = {
     SurvivorAim = { Enable=function() Settings.AIM_Enabled=true; Aim_SetupHook() end, Disable=function() Settings.AIM_Enabled=false end },
     Radar = {
         Check = RadarCheck,
+        SetVisible=function(v) Settings.RadarVisualEnabled = v and true or false end,
         SetMaxRange=function(v) Settings.RadarMaxRange = tonumber(v) or 100 end,
+        SetConeLength=function(v) Settings.RadarConeLength = tonumber(v) or 20 end,
         SetEnterAngle=function(v) Settings.RadarEnterAngle = tonumber(v) or 0.72 end,
         SetExitAngle=function(v) Settings.RadarExitAngle = tonumber(v) or 0.58 end,
         SetSnapDot=function(v) Settings.RadarSnapDot = tonumber(v) or 0.90 end,
@@ -1925,7 +2320,15 @@ _G.Godsaken = {
         SetCustomStats=function(v) Vee.CustomStats=v; Vee_ApplyStats(true) end,
         ForceApply=function() Vee_ApplyStats(true) end,
     },
-    HDT = { SetEnabled=function(v) Settings.HDT_Enabled = v end, SetSpeed=HDT_SetSpeed, SetDuration=HDT_SetDuration },
+    HDT = {
+        SetEnabled=function(v)
+            Settings.HDT_Enabled = v and true or false
+            if not Settings.HDT_Enabled then HDT_Stop() end
+        end,
+        SetSpeed=HDT_SetSpeed,
+        SetDuration=HDT_SetDuration,
+        Stop=HDT_Stop,
+    },
     Stab = {
         SetEnabled=function(v) Settings.StabEnabled = v; if v then StabInstallHook() end end,
         SetDuration=function(v) Settings.StabLerpDuration = tonumber(v) or 0.2 end,
@@ -1949,6 +2352,7 @@ _G.Godsaken = {
 
 Library:OnUnload(function()
     pcall(function() AB_Disable() end)
+    pcall(function() HDT_Stop() end)
     pcall(function() ABT_Disable() end)
     pcall(function() AP_Disable() end)
     pcall(function() PA_Disable() end)
@@ -1960,6 +2364,7 @@ Library:OnUnload(function()
     pcall(function() Vee.AutoTrick = false; VeerATStop() end)
     pcall(function()
         Box_StopRender()
+        RadarDestroyAll()
         for killer, box in pairs(BoxState.killerBoxes) do Box_DestroyWireframe(box.parts) end
         BoxState.killerBoxes = {}
         if BoxState.playerBox then Box_DestroyWireframe(BoxState.playerBox.parts); BoxState.playerBox = nil end
@@ -1970,8 +2375,8 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Killer box always visible. Blocks on in-zone + RADAR facing.",
+    Content = "R.A.D.A.R. visual enabled. Auto Block uses ability detection + block range + red facing zone.",
     Time = 4,
 })
 
-print("[Cr4zy HuB] Loaded — box always visible, RADAR gated fire.")
+print("[Cr4zy HuB] Loaded — R.A.D.A.R. visual + range-gated auto block.")
