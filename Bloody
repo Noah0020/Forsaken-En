@@ -512,99 +512,288 @@ MVP2:AddSlider("StaminaLossSlider", { Text = "Stamina Loss Speed", Default = 10,
     if SettingToggles.StaminaLoss and not bai.Spr then GetModule().StaminaLoss = v end
 end })
 
---═══ GENERATOR ═══
-local flow = { on = false, nodeDelay = 0.04 }
-local function flowKey(n) return n.row .. "-" .. n.col end
-local function flowNeighbour(r1, c1, r2, c2)
-    if r2 == r1 - 1 and c2 == c1 then return "up" end
-    if r2 == r1 + 1 and c2 == c1 then return "down" end
-    if r2 == r1 and c2 == c1 - 1 then return "left" end
-    if r2 == r1 and c2 == c1 + 1 then return "right" end
-    return false
-end
-local function flowOrder(path, endpoints)
-    if not path or #path == 0 then return path end
-    local lookup = {}
-    for _, n in ipairs(path) do lookup[flowKey(n)] = n end
-    local start
-    for _, ep in ipairs(endpoints or {}) do
-        for _, n in ipairs(path) do
-            if n.row == ep.row and n.col == ep.col then start = { row = ep.row, col = ep.col }; break end
-        end
-        if start then break end
+--═══════════════════════════════════════════════════════════
+-- GENERATOR SOLVER (from Generator-Solver.txt — bugs fixed)
+--═══════════════════════════════════════════════════════════
+local GenConfig = {
+    StartDelay = 1.5,      -- seconds
+    ActionDelay = 0.05,    -- seconds per flow cell
+    ConnectDelay = 1.0,    -- seconds per connect pair
+    GearDelay = 0.03,      -- seconds per gear turn
+}
+
+local MinigameSolver = {
+    ManualEnabled = false,
+    AutoEnabled = false,
+    Generation = 0,
+    LockBoard = nil,
+    Installed = false,
+}
+
+-- Safe module loading — never let one missing module kill the whole script
+local GenModules = {}
+local GenLoadErrors = {}
+local function tryLoad(label, inst)
+    if not inst then
+        table.insert(GenLoadErrors, label .. " (missing)")
+        return nil
     end
-    if not start then
-        for _, n in ipairs(path) do
-            local nb = 0
-            for _, d in ipairs({ { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } }) do
-                if lookup[(n.row + d[1]) .. "-" .. (n.col + d[2])] then nb = nb + 1 end
-            end
-            if nb == 1 then start = { row = n.row, col = n.col }; break end
-        end
+    local ok, mod = pcall(require, inst)
+    if not ok then
+        table.insert(GenLoadErrors, label .. " (" .. tostring(mod) .. ")")
+        return nil
     end
-    if not start then start = { row = path[1].row, col = path[1].col } end
-    local pool, ordered = {}, {}
-    for _, n in ipairs(path) do pool[flowKey(n)] = { row = n.row, col = n.col } end
-    local cur = start
-    table.insert(ordered, { row = cur.row, col = cur.col }); pool[flowKey(cur)] = nil
-    while next(pool) do
-        local moved = false
-        for k, node in pairs(pool) do
-            if flowNeighbour(cur.row, cur.col, node.row, node.col) then
-                table.insert(ordered, { row = node.row, col = node.col })
-                pool[k] = nil; cur = node; moved = true; break
-            end
-        end
-        if not moved then break end
+    return mod
+end
+
+local _systems = ReplicatedStorage:FindFirstChild("Systems")
+local _playerMod = _systems and _systems:FindFirstChild("Player")
+local _gameMod = _playerMod and _playerMod:FindFirstChild("Game")
+local _miniFolder = _gameMod and _gameMod:FindFirstChild("Minigames")
+local _mods = ReplicatedStorage:FindFirstChild("Modules")
+local _miniMods = _mods and _mods:FindFirstChild("Minigames")
+
+GenModules.FlowBoard    = tryLoad("FlowBoard",    _miniMods and _miniMods:FindFirstChild("FlowBoard"))
+GenModules.LockBoard    = tryLoad("LockBoard",    _miniMods and _miniMods:FindFirstChild("LockBoard"))
+GenModules.FlowInput    = tryLoad("FlowInput",    _miniFolder and _miniFolder:FindFirstChild("FlowClientMinigame") and _miniFolder.FlowClientMinigame:FindFirstChild("FlowInput"))
+GenModules.GearInput    = tryLoad("GearInput",    _miniFolder and _miniFolder:FindFirstChild("GearClientMinigame") and _miniFolder.GearClientMinigame:FindFirstChild("GearInput"))
+GenModules.LockInput    = tryLoad("LockInput",    _miniFolder and _miniFolder:FindFirstChild("LockClientMinigame") and _miniFolder.LockClientMinigame:FindFirstChild("LockInput"))
+GenModules.ConnectInput = tryLoad("ConnectInput", _miniFolder and _miniFolder:FindFirstChild("ConnectClientMinigame") and _miniFolder.ConnectClientMinigame:FindFirstChild("ConnectInput"))
+
+local function solverDelay() return math.max(0, GenConfig.ActionDelay or 0.05) end
+local function connectSolverDelay() return math.max(0, GenConfig.ConnectDelay or 1) end
+local function solverIsEnabled() return MinigameSolver.ManualEnabled or MinigameSolver.AutoEnabled end
+
+-- FIX: token comparison is now actually performed
+local function stillSolving(token, object)
+    return token == MinigameSolver.Generation and solverIsEnabled() and object and not object.Ended
+end
+
+local function waitForSolver(object)
+    while object and not object.Ended and not solverIsEnabled() do task.wait(0.05) end
+    if not (object and not object.Ended and solverIsEnabled()) then return false end
+    local started = os.clock()
+    while object and not object.Ended and solverIsEnabled() and os.clock() - started < GenConfig.StartDelay do
+        task.wait(0.05)
     end
-    return ordered
+    return object and not object.Ended and solverIsEnabled()
 end
-local function flowSolve(puzzle)
-    pcall(function()
-        if not puzzle or not puzzle.Solution then return end
-        local indices = {}
-        for i = 1, #puzzle.Solution do indices[i] = i end
-        for i = #indices, 2, -1 do local j = math.random(1, i); indices[i], indices[j] = indices[j], indices[i] end
-        for _, ci in ipairs(indices) do
-            local solution = puzzle.Solution[ci]; if not solution then continue end
-            local ordered = flowOrder(solution, puzzle.targetPairs[ci])
-            if not ordered or #ordered == 0 then continue end
-            puzzle.paths[ci] = {}
-            for _, node in ipairs(ordered) do
-                table.insert(puzzle.paths[ci], { row = node.row, col = node.col })
-                puzzle:updateGui(); task.wait(flow.nodeDelay)
-            end
-            task.wait(0)
-            puzzle:checkForWin()
+
+local function solveFlowBoard(board)
+    if not GenModules.FlowBoard then return nil end
+    local size, pairMap = board.Size, board.Pairs
+    local occupied, answer = {}, {}
+    local directions = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} }
+    local endpointOwner = {}
+    for color, pair in pairs(pairMap) do
+        endpointOwner[pair[1]], endpointOwner[pair[2]] = color, color
+    end
+    local remaining = {}
+    for color in pairs(pairMap) do table.insert(remaining, color) end
+    local function candidates(color, limit)
+        local pair = pairMap[color]
+        local from, target = pair[1], pair[2]
+        local results, path, seen = {}, {from}, {[from] = true}
+        local function distance(cell)
+            local r, c = GenModules.FlowBoard.ToRowCol(size, cell)
+            local tr, tc = GenModules.FlowBoard.ToRowCol(size, target)
+            return math.abs(r - tr) + math.abs(c - tc)
         end
-    end)
-end
-do
-    pcall(function()
-        local modFolder  = ReplicatedStorage:FindFirstChild("Modules")
-        local miniFolder = modFolder and modFolder:FindFirstChild("Minigames")
-        local fgFolder   = miniFolder and miniFolder:FindFirstChild("FlowGameManager")
-        local fgModule   = fgFolder and fgFolder:FindFirstChild("FlowGame")
-        if fgModule then
-            local ok, FG = pcall(require, fgModule)
-            if ok and FG and FG.new then
-                local orig = FG.new
-                FG.new = function(...)
-                    local p = orig(...)
-                    if flow.on then task.spawn(function() task.wait(0.3); flowSolve(p) end) end
-                    return p
+        local function walk(cell)
+            if #results >= limit then return end
+            if cell == target then table.insert(results, table.clone(path)); return end
+            local row, col = GenModules.FlowBoard.ToRowCol(size, cell)
+            local nextCells = {}
+            for _, d in ipairs(directions) do
+                local nr, nc = row + d[1], col + d[2]
+                if nr >= 1 and nr <= size and nc >= 1 and nc <= size then
+                    local n = GenModules.FlowBoard.ToIndex(size, nr, nc)
+                    local owner = endpointOwner[n]
+                    if not seen[n] and not occupied[n] and (not owner or (owner == color and n == target)) then
+                        table.insert(nextCells, n)
+                    end
                 end
             end
+            table.sort(nextCells, function(a, b) return distance(a) < distance(b) end)
+            for _, n in ipairs(nextCells) do
+                seen[n] = true; table.insert(path, n)
+                walk(n)
+                path[#path] = nil; seen[n] = nil
+                if #results >= limit then break end
+            end
         end
-    end)
+        walk(from)
+        table.sort(results, function(a, b) return #a < #b end)
+        return results
+    end
+    local function search(colors)
+        if #colors == 0 then return true end
+        local bestIndex, bestPaths
+        for i, color in ipairs(colors) do
+            local list = candidates(color, 300)
+            if #list == 0 then return false end
+            if not bestPaths or #list < #bestPaths then bestIndex, bestPaths = i, list end
+        end
+        local color = colors[bestIndex]
+        local nextColors = table.clone(colors)
+        table.remove(nextColors, bestIndex)
+        for _, path in ipairs(bestPaths) do
+            for _, cell in ipairs(path) do occupied[cell] = true end
+            answer[color] = path
+            if search(nextColors) then return true end
+            answer[color] = nil
+            for _, cell in ipairs(path) do occupied[cell] = nil end
+        end
+        return false
+    end
+    return search(remaining) and answer or nil
 end
+
+local function installMinigameHooks()
+    if MinigameSolver.Installed then return end
+    local hooked = 0
+
+    if GenModules.LockBoard then
+        local oldLockBoardNew = GenModules.LockBoard.new
+        GenModules.LockBoard.new = function(...)
+            local board = oldLockBoardNew(...)
+            MinigameSolver.LockBoard = board
+            return board
+        end
+        hooked += 1
+    end
+
+    if GenModules.FlowInput and GenModules.FlowBoard then
+        local oldFlowNew = GenModules.FlowInput.new
+        GenModules.FlowInput.new = function(board, renderer, callbacks)
+            local object = oldFlowNew(board, renderer, callbacks)
+            task.spawn(function()
+                if not waitForSolver(object) then return end
+                local token = MinigameSolver.Generation
+                task.wait(solverDelay())
+                local paths = solveFlowBoard(board)
+                if not paths then
+                    warn('[Generator Solver] Flow solution was not found')
+                    return
+                end
+                for color, path in pairs(paths) do
+                    if not stillSolving(token, object) then return end
+                    local drawing = board:Begin(path[1])
+                    renderer:Render()
+                    task.wait(solverDelay())
+                    for index = 2, #path do
+                        if not stillSolving(token, object) then return end
+                        board:Step(drawing, path[index], 0)
+                        renderer:Render()
+                        task.wait(solverDelay())
+                    end
+                    board:Release(drawing, true)
+                    renderer:Render()
+                    task.wait(solverDelay())
+                end
+                if stillSolving(token, object) and board:IsSolved() then
+                    object:__finish()
+                    callbacks.OnSolved()
+                end
+            end)
+            return object
+        end
+        hooked += 1
+    end
+
+    if GenModules.ConnectInput then
+        local oldConnectNew = GenModules.ConnectInput.new
+        GenModules.ConnectInput.new = function(board, renderer, callbacks)
+            local object = oldConnectNew(board, renderer, callbacks)
+            task.spawn(function()
+                if not waitForSolver(object) then return end
+                local token = MinigameSolver.Generation
+                task.wait(connectSolverDelay())
+                for blob in pairs(board.Blobs) do
+                    if not stillSolving(token, object) then return end
+                    if not board:GetLink(blob) then
+                        local mate = board:GetMate(blob)
+                        if mate then
+                            board:Connect(blob, mate)
+                            renderer:Render()
+                            task.wait(connectSolverDelay())
+                        end
+                    end
+                end
+                if stillSolving(token, object) and board:IsSolved() then
+                    object:__finish()
+                    callbacks.OnSolved()
+                end
+            end)
+            return object
+        end
+        hooked += 1
+    end
+
+    if GenModules.GearInput then
+        local oldGearNew = GenModules.GearInput.new
+        GenModules.GearInput.new = function(getCenter, callbacks, enabled)
+            local object = oldGearNew(getCenter, callbacks, enabled)
+            task.spawn(function()
+                if not waitForSolver(object) then return end
+                local token = MinigameSolver.Generation
+                task.wait(math.max(0.55, solverDelay()))
+                for _ = 1, 100 do
+                    if not stillSolving(token, object) then return end
+                    callbacks.OnTurn(90)
+                    task.wait(math.max(0, GenConfig.GearDelay or 0.03))
+                end
+            end)
+            return object
+        end
+        hooked += 1
+    end
+
+    if GenModules.LockInput then
+        local oldLockNew = GenModules.LockInput.new
+        GenModules.LockInput.new = function(ui, callbacks)
+            local object = oldLockNew(ui, callbacks)
+            local board = MinigameSolver.LockBoard
+            task.spawn(function()
+                if not waitForSolver(object) then return end
+                local token = MinigameSolver.Generation
+                while stillSolving(token, object) and board and not board:IsBroken() do
+                    local now = workspace:GetServerTimeNow()
+                    if board:IsOnTarget(board:AngleAt(now)) then
+                        callbacks.OnPress()
+                        task.wait(math.max(0.08, solverDelay()))
+                    else
+                        RunService.Heartbeat:Wait()
+                    end
+                end
+            end)
+            return object
+        end
+        hooked += 1
+    end
+
+    MinigameSolver.Installed = hooked > 0
+    return hooked
+end
+
+pcall(installMinigameHooks)
+
 local genLeft = Tabs.Generator:AddLeftGroupbox("Auto Solve", "cpu")
-genLeft:AddToggle("FlowAutoSolve", { Text = "Auto Solve", Default = flow.on, Callback = function(Value) flow.on = Value end })
-local genRight = Tabs.Generator:AddRightGroupbox("Settings", "sliders")
-genRight:AddSlider("FlowSpeed", { Text = "Auto Solve Speed", Default = flow.nodeDelay, Min = 0.01, Max = 0.50, Rounding = 2, Callback = function(Value) flow.nodeDelay = Value end })
+local statusText = #GenLoadErrors == 0 and "All modules loaded" or ("Missing: " .. table.concat(GenLoadErrors, ", "))
+genLeft:AddLabel("Status: " .. statusText)
+genLeft:AddToggle("FlowAutoSolve", { Text = "Auto Generator", Default = false, Callback = function(enabled)
+    MinigameSolver.ManualEnabled = enabled
+    MinigameSolver.AutoEnabled = enabled
+    MinigameSolver.Generation += 1
+end })
+local genRight = Tabs.Generator:AddRightGroupbox("Timings", "sliders")
+genRight:AddSlider("GenStartDelay", { Text = "Start Delay (s)", Default = 1.5, Min = 0, Max = 5, Rounding = 1, Callback = function(v) GenConfig.StartDelay = v end })
+genRight:AddSlider("GenFlowDelay", { Text = "Flow Cell Speed (ms)", Default = 50, Min = 0, Max = 250, Rounding = 0, Callback = function(v) GenConfig.ActionDelay = v / 1000 end })
+genRight:AddSlider("GenConnectDelay", { Text = "Connect Pair Delay (ms)", Default = 1000, Min = 100, Max = 3000, Rounding = 0, Callback = function(v) GenConfig.ConnectDelay = v / 1000 end })
+genRight:AddSlider("GenGearDelay", { Text = "Gear Turn Speed (ms)", Default = 30, Min = 0, Max = 150, Rounding = 0, Callback = function(v) GenConfig.GearDelay = v / 1000 end })
 
 --═══ AIMBOT CORE ═══
-local settings = { distance = 100, smoothness = 20, duration = 50, targetPath = "auto", globalSound = false, silentAim = false, aimPrediction = 4 }
+local settings = { distance = 100, smoothness = 20, duration = 50, targetPath = "auto", globalSound = false, aimPrediction = 4 }
 local triggerConnections = {}
 local modules = {}
 
@@ -696,7 +885,7 @@ local function executeAim()
     activeAimConnection = conn
 end
 
---═══ KILLER AIM (animation-based) ═══
+--═══ KILLER AIM (BodyGyro-based, no CFrame desync) ═══
 local function createAnimationTrigger(moduleName, animIds, targetType, useCamera)
     local isActive = false
     local animConn = nil
@@ -725,7 +914,7 @@ local function createAnimationTrigger(moduleName, animIds, targetType, useCamera
         if not char then return end
         local hum = char:FindFirstChildOfClass("Humanoid")
         local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
+        if not hrp or not hum or hum.Health <= 0 then return end
         local target = getTarget()
         if not target then return end
         local targetHRP = target:FindFirstChild("HumanoidRootPart")
@@ -742,14 +931,14 @@ local function createAnimationTrigger(moduleName, animIds, targetType, useCamera
             local flatDir = Vector3.new(direction.X, 0, direction.Z)
             if flatDir.Magnitude > 0.01 then
                 flatDir = flatDir.Unit
-                local newCF = CFrame.lookAt(hrp.Position, hrp.Position + flatDir)
-                local wasAuto = hum and hum.AutoRotate
-                if hum then hum.AutoRotate = false end
-                pcall(function() char:PivotTo(newCF) end)
-                pcall(function() hrp.CFrame = newCF end)
-                task.delay(0.15, function()
-                    if hum and hum.Parent then hum.AutoRotate = wasAuto end
-                end)
+                -- BodyGyro instead of CFrame write (no desync)
+                local bg = Instance.new("BodyGyro")
+                bg.MaxTorque = Vector3.new(0, 1e6, 0)
+                bg.P = 10000
+                bg.D = 1000
+                bg.CFrame = CFrame.new(hrp.Position, hrp.Position + flatDir)
+                bg.Parent = hrp
+                Debris:AddItem(bg, 0.2)
             end
         end
     end
@@ -785,10 +974,11 @@ local function createAnimationTrigger(moduleName, animIds, targetType, useCamera
     registerTriggerModule(moduleName, enable, disable)
 end
 
---═══ SURVIVOR AIM (button-based, frame-locked) ═══
+--═══ SURVIVOR AIM (BodyGyro-based, no CFrame desync) ═══
 local activeSnapConn = nil
 local activeSnapHum = nil
 local activeSnapWasAuto = true
+local activeSnapGyro = nil
 
 local function findClosestTargetHRP(targetType, excludeChar, fromPos, maxDist)
     local folder = workspace:FindFirstChild("Players") and workspace.Players:FindFirstChild(targetType)
@@ -809,6 +999,7 @@ end
 
 local function stopSnapLock()
     if activeSnapConn then pcall(function() activeSnapConn:Disconnect() end); activeSnapConn = nil end
+    if activeSnapGyro and activeSnapGyro.Parent then pcall(function() activeSnapGyro:Destroy() end); activeSnapGyro = nil end
     if activeSnapHum and activeSnapHum.Parent then
         pcall(function() activeSnapHum.AutoRotate = activeSnapWasAuto end)
     end
@@ -820,67 +1011,70 @@ local function performSnap(targetType, useCamera)
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
+    if not hrp or not hum or hum.Health <= 0 then return end
     local targetHRP = findClosestTargetHRP(targetType, char, hrp.Position, settings.distance)
     if not targetHRP then return end
     stopSnapLock()
+
     if useCamera then
         local cam = workspace.CurrentCamera
         local vel = targetHRP.AssemblyLinearVelocity or Vector3.zero
         if vel.Magnitude > 60 then vel = vel.Unit * 60 end
         local predicted = targetHRP.Position + vel * (settings.aimPrediction * 0.03)
         if cam then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, predicted) end
-        if hum then
-            activeSnapHum = hum
-            activeSnapWasAuto = hum.AutoRotate
-            hum.AutoRotate = false
-            task.delay(0.35, stopSnapLock)
-        end
         return
     end
-    if hum then
-        activeSnapHum = hum
-        activeSnapWasAuto = hum.AutoRotate
-        hum.AutoRotate = false
+
+    activeSnapHum = hum
+    activeSnapWasAuto = hum.AutoRotate
+    hum.AutoRotate = false
+
+    local bg = Instance.new("BodyGyro")
+    bg.Name = "Ck_SnapGyro"
+    bg.MaxTorque = Vector3.new(0, 1e6, 0)
+    bg.P = 10000
+    bg.D = 1000
+    bg.Parent = hrp
+    activeSnapGyro = bg
+
+    local vel0 = targetHRP.AssemblyLinearVelocity or Vector3.zero
+    if vel0.Magnitude > 60 then vel0 = vel0.Unit * 60 end
+    local pred0 = targetHRP.Position + vel0 * (settings.aimPrediction * 0.03)
+    local dir0 = Vector3.new(pred0.X - hrp.Position.X, 0, pred0.Z - hrp.Position.Z)
+    if dir0.Magnitude > 0.01 then
+        dir0 = dir0.Unit
+        bg.CFrame = CFrame.new(hrp.Position, hrp.Position + dir0)
     end
+
     local startT = tick()
-    local lockDuration = 0.5
     activeSnapConn = RunService.RenderStepped:Connect(function()
-        if not char.Parent or not hrp.Parent then stopSnapLock(); return end
-        if tick() - startT > lockDuration then stopSnapLock(); return end
-        local target = findClosestTargetHRP(targetType, char, hrp.Position, settings.distance)
-        if not target then return end
-        local vel = target.AssemblyLinearVelocity or Vector3.zero
+        if not char.Parent or not hrp.Parent or not bg.Parent then stopSnapLock(); return end
+        if tick() - startT > 0.4 then stopSnapLock(); return end
+        local t = findClosestTargetHRP(targetType, char, hrp.Position, settings.distance)
+        if not t then return end
+        local vel = t.AssemblyLinearVelocity or Vector3.zero
         if vel.Magnitude > 60 then vel = vel.Unit * 60 end
-        local predicted = target.Position + vel * (settings.aimPrediction * 0.03)
-        local dx = predicted.X - hrp.Position.X
-        local dz = predicted.Z - hrp.Position.Z
-        if dx * dx + dz * dz > 0.01 then
-            local len = math.sqrt(dx * dx + dz * dz)
-            hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + Vector3.new(dx / len, 0, dz / len))
+        local pred = t.Position + vel * (settings.aimPrediction * 0.03)
+        local dir = Vector3.new(pred.X - hrp.Position.X, 0, pred.Z - hrp.Position.Z)
+        if dir.Magnitude > 0.01 then
+            dir = dir.Unit
+            bg.CFrame = CFrame.new(hrp.Position, hrp.Position + dir)
         end
     end)
 end
 
+-- Reset on spawn — critical to prevent stale state
+LP.CharacterAdded:Connect(stopSnapLock)
+LP.CharacterRemoving:Connect(stopSnapLock)
+
 local SurvivorButtonMap = {
-    ["slash"] = { "Slash", "Killers", false },
-    ["swing"] = { "Slash", "Killers", false },
-    ["sword"] = { "Slash", "Killers", false },
-    ["punch"] = { "Punch", "Killers", false },
-    ["parry"] = { "Punch", "Killers", false },
-    ["dagger"] = { "Dagger", "Killers", false },
-    ["stab"] = { "Dagger", "Killers", false },
-    ["backstab"] = { "Dagger", "Killers", false },
-    ["sacrifice"] = { "Dagger", "Killers", false },
-    ["hatchet"] = { "JaneDoe", "Killers", false },
-    ["axe"] = { "JaneDoeAxe", "Killers", false },
-    ["flintlock"] = { "Chance", "Killers", false },
-    ["shoot"] = { "Chance", "Killers", false },
-    ["gun"] = { "Chance", "Killers", false },
-    ["oneshot"] = { "Chance", "Killers", false },
-    ["sixshot"] = { "Chance", "Killers", false },
-    ["explode"] = { "Chance", "Killers", false },
-    ["misfire"] = { "Chance", "Killers", false },
+    ["slash"] = { "Slash", "Killers", false }, ["swing"] = { "Slash", "Killers", false }, ["sword"] = { "Slash", "Killers", false },
+    ["punch"] = { "Punch", "Killers", false }, ["parry"] = { "Punch", "Killers", false },
+    ["dagger"] = { "Dagger", "Killers", false }, ["stab"] = { "Dagger", "Killers", false }, ["backstab"] = { "Dagger", "Killers", false }, ["sacrifice"] = { "Dagger", "Killers", false },
+    ["hatchet"] = { "JaneDoe", "Killers", false }, ["axe"] = { "JaneDoeAxe", "Killers", false },
+    ["flintlock"] = { "Chance", "Killers", false }, ["shoot"] = { "Chance", "Killers", false }, ["gun"] = { "Chance", "Killers", false },
+    ["oneshot"] = { "Chance", "Killers", false }, ["sixshot"] = { "Chance", "Killers", false },
+    ["explode"] = { "Chance", "Killers", false }, ["misfire"] = { "Chance", "Killers", false },
     ["dusekkar"] = { "Dusekkar", "Killers", true },
 }
 
@@ -966,136 +1160,329 @@ task.spawn(function()
     end)
 end)
 
-local silentAimEnabled = false
-local silentAimDistance = 100
-local silentAimConnection = nil
-local function isKiller()
-    local kf = workspace.Players and workspace.Players:FindFirstChild("Killers")
-    local LocalPlayer = game.Players.LocalPlayer
-    if kf and LocalPlayer.Character then
-        for _, v in ipairs(kf:GetChildren()) do
-            if v == LocalPlayer.Character then return true end
-        end
-    end
+--═══ SILENT AIM (physics-based projectile prediction) ═══
+local SilentAimConfig = {
+    CorruptNature = { Enabled = false, Speed = 60, Label = "c00lkidd - Corrupt Nature" },
+    PlasmaBeam    = { Enabled = false, Speed = 200, Label = "Dusekkar - Plasma Beam" },
+    CrystalPitch  = { Enabled = false, Speed = 50, ThrowDistance = 4, ThrowDown = 2.5, Label = "Jane Doe - Crystal Pitch" },
+}
+
+local hasHookSupport = (type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" and type(checkcaller) == "function")
+
+local function anySilentEnabled()
+    for _, c in pairs(SilentAimConfig) do if c.Enabled then return true end end
     return false
 end
-local function getClosestSurvivor()
-    local sf = workspace.Players and workspace.Players:FindFirstChild("Survivors")
-    if not sf then return nil end
-    local LocalPlayer = game.Players.LocalPlayer
-    local char = LocalPlayer.Character
-    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
-    local myPos = char.HumanoidRootPart.Position
-    local closest, shortest = nil, math.huge
-    for _, model in ipairs(sf:GetChildren()) do
-        if model:IsA("Model") and model:FindFirstChild("HumanoidRootPart") then
-            local dist = (model.HumanoidRootPart.Position - myPos).Magnitude
-            if dist < shortest and dist <= silentAimDistance then shortest = dist; closest = model end
+
+local function identifyAbilityInValue(v)
+    if type(v) == "string" then
+        local l = v:lower()
+        if l:find("corrupt") or l:find("corruptnature") then return "CorruptNature" end
+        if l:find("plasma") or l:find("plasmabeam") then return "PlasmaBeam" end
+        if l:find("crystal") or l:find("crystalpitch") then return "CrystalPitch" end
+    elseif typeof(v) == "buffer" then
+        local size = buffer.len(v); if size > 256 then size = 256 end
+        local str = ""
+        for i = 0, size - 1 do
+            local ok, b = pcall(function() return buffer.readu8(v, i) end)
+            if ok and b and b >= 32 and b <= 126 then str = str .. string.char(b) end
+        end
+        return identifyAbilityInValue(str)
+    elseif type(v) == "table" then
+        for _, item in ipairs(v) do local f = identifyAbilityInValue(item) if f then return f end end
+    end
+    return nil
+end
+
+local function getTargetForAbility(abilityName)
+    local char = LP.Character; if not char then return nil end
+    local myHRP = char:FindFirstChild("HumanoidRootPart"); if not myHRP then return nil end
+    local targetFolder
+    if abilityName == "CrystalPitch" then
+        targetFolder = workspace:FindFirstChild("Players") and workspace.Players:FindFirstChild("Killers")
+    else
+        targetFolder = workspace:FindFirstChild("Players") and workspace.Players:FindFirstChild("Survivors")
+    end
+    if not targetFolder then return nil end
+    local best, bd = nil, 600
+    for _, m in ipairs(targetFolder:GetChildren()) do
+        if m:IsA("Model") and m ~= char then
+            local trg = m:FindFirstChild("HumanoidRootPart")
+            local h = m:FindFirstChildOfClass("Humanoid")
+            if trg and h and h.Health > 0 then local d = (trg.Position - myHRP.Position).Magnitude if d < bd then bd = d; best = trg end end
         end
     end
-    return closest
+    return best
 end
-local function faceTarget(model)
-    if not model or not model:FindFirstChild("HumanoidRootPart") then return end
-    local char = game.Players.LocalPlayer.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart"); if not root then return end
-    local targetPos = model.HumanoidRootPart.Position
-    root.CFrame = CFrame.new(root.Position, Vector3.new(targetPos.X, root.Position.Y, targetPos.Z))
+
+local function computePrediction(targetHRP, projectileSpeed)
+    local char = LP.Character; if not char or not targetHRP then return nil end
+    local myHRP = char:FindFirstChild("HumanoidRootPart"); if not myHRP then return nil end
+    local tp = targetHRP.Position
+    local tv = targetHRP.AssemblyLinearVelocity or Vector3.zero
+    if tv.Magnitude > 150 then tv = tv.Unit * 150 end
+    local leadPos = tp
+    for _ = 1, 3 do
+        local dist = (leadPos - myHRP.Position).Magnitude
+        local t = dist / math.max(projectileSpeed, 1)
+        leadPos = tp + tv * t
+    end
+    return leadPos
 end
-registerTriggerModule("SilentAim", function()
-    silentAimEnabled = true
-    if silentAimConnection then silentAimConnection:Disconnect() end
-    silentAimConnection = RunService.Heartbeat:Connect(function()
-        if not silentAimEnabled or not isKiller() then return end
-        local target = getClosestSurvivor()
-        if target then faceTarget(target) end
+
+local function getAimPositionForAbility(ability, targetHRP)
+    local cfg = SilentAimConfig[ability]
+    if not cfg or not targetHRP then return targetHRP and targetHRP.Position end
+    if ability == "CrystalPitch" then
+        local kLook = targetHRP.CFrame.LookVector
+        local flat = Vector3.new(kLook.X, 0, kLook.Z)
+        if flat.Magnitude < 0.01 then
+            local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+            if myHRP then flat = Vector3.new(targetHRP.Position.X - myHRP.Position.X, 0, targetHRP.Position.Z - myHRP.Position.Z) end
+        end
+        if flat.Magnitude < 0.01 then flat = Vector3.new(1, 0, 0) else flat = flat.Unit end
+        return targetHRP.Position + flat * (cfg.ThrowDistance or 4) - Vector3.new(0, cfg.ThrowDown or 2.5, 0)
+    end
+    return computePrediction(targetHRP, cfg.Speed) or targetHRP.Position
+end
+
+local function rewriteAimInValue(v, aimOrigin, aimTarget)
+    local t = typeof(v)
+    if t == "CFrame" then
+        local origin = v.Position
+        local dir = aimTarget - origin
+        if dir.Magnitude > 0.1 then return CFrame.lookAt(origin, origin + dir.Unit), true end
+        return v, false
+    elseif t == "Vector3" then
+        if v.Magnitude < 5 then
+            local dir = aimTarget - aimOrigin
+            if dir.Magnitude > 0.1 then return dir.Unit, true end
+        else
+            return aimTarget, true
+        end
+        return v, false
+    elseif type(v) == "table" then
+        local sub, mod = table.clone(v), false
+        for k, item in pairs(sub) do
+            local newV, changed = rewriteAimInValue(item, aimOrigin, aimTarget)
+            if changed then sub[k] = newV mod = true end
+        end
+        return sub, mod
+    end
+    return v, false
+end
+
+if hasHookSupport then
+    local oldNamecall
+    local ok = pcall(function()
+        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+            local method = getnamecallmethod()
+            if checkcaller() or method ~= "FireServer" then return oldNamecall(self, ...) end
+            if typeof(self) ~= "Instance" or not self:IsA("RemoteEvent") then return oldNamecall(self, ...) end
+            if not anySilentEnabled() then return oldNamecall(self, ...) end
+            local ok2, newArgs = pcall(function()
+                local args = {...}
+                local ability
+                for _, a in ipairs(args) do ability = identifyAbilityInValue(a) if ability then break end end
+                if not ability or not SilentAimConfig[ability] or not SilentAimConfig[ability].Enabled then return nil end
+                local targetHRP = getTargetForAbility(ability)
+                if not targetHRP then return nil end
+                local char = LP.Character
+                local myHRP = char and char:FindFirstChild("HumanoidRootPart")
+                if not myHRP then return nil end
+                local aimPos = getAimPositionForAbility(ability, targetHRP)
+                local newArgs = {}
+                local anyMod = false
+                for i, a in ipairs(args) do
+                    local newV, changed = rewriteAimInValue(a, myHRP.Position, aimPos)
+                    newArgs[i] = changed and newV or a
+                    anyMod = anyMod or changed
+                end
+                if anyMod then return newArgs end
+                return nil
+            end)
+            if ok2 and newArgs then return oldNamecall(self, table.unpack(newArgs)) end
+            return oldNamecall(self, ...)
+        end)
     end)
-end, function()
-    silentAimEnabled = false
-    if silentAimConnection then silentAimConnection:Disconnect(); silentAimConnection = nil end
-end)
+    if not ok then hasHookSupport = false end
+end
 
-local johnaim = false; local Noloop = nil; local No2loop = nil
-local aimbotNoilsounds = { "StarBomb", "StarBombTrail", "StarBombExplosion" }
-local aimbotNoilsounds2 = { "VoidRush", "VoidRushTrail" }
+--═══ AUTO PARRY (fires Punch on successful block, BodyGyro aim) ═══
+local BlockSoundIds = {
+    ["rbxassetid://132298811847315"] = true, ["rbxassetid://81114852524420"] = true,
+    ["rbxassetid://123825742002486"] = true, ["rbxassetid://116616310968045"] = true,
+    ["rbxassetid://102808968188291"] = true, ["rbxassetid://117828699507982"] = true,
+    ["rbxassetid://125854302746190"] = true, ["rbxassetid://18568553101"] = true,
+    ["rbxassetid://95135835034592"] = true, ["rbxassetid://135209101640984"] = true,
+    ["rbxassetid://91165993312513"] = true, ["rbxassetid://82772022662025"] = true,
+}
+
+local AutoParryConfig = { Enabled = false, Delay = 0.5, UsePrediction = true }
+local lastParryTime = 0
+local parryBoundChar = nil
+
+local function getNearestKillerHRP()
+    local kf = workspace:FindFirstChild("Players") and workspace.Players:FindFirstChild("Killers")
+    local char = LP.Character
+    local myHRP = char and char:FindFirstChild("HumanoidRootPart")
+    if not kf or not myHRP then return nil end
+    local best, bd = nil, 500
+    for _, k in ipairs(kf:GetChildren()) do
+        if k:IsA("Model") then
+            local kr = k:FindFirstChild("HumanoidRootPart")
+            local kh = k:FindFirstChildOfClass("Humanoid")
+            if kr and kh and kh.Health > 0 then
+                local d = (kr.Position - myHRP.Position).Magnitude
+                if d < bd then bd = d; best = kr end
+            end
+        end
+    end
+    return best
+end
+
+local function fireParryPunch()
+    local mods = ReplicatedStorage:FindFirstChild("Modules")
+    local net = mods and mods:FindFirstChild("Network")
+    local net2 = net and net:FindFirstChild("Network")
+    local remote = net2 and net2:FindFirstChild("RemoteEvent")
+    if remote then pcall(function() remote:FireServer("UseActorAbility", {"Punch"}) end) end
+end
+
+local function doParry()
+    if not AutoParryConfig.Enabled then return end
+    if AutoParryConfig.UsePrediction then
+        local killerHRP = getNearestKillerHRP()
+        local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if killerHRP and myHRP then
+            local vel = killerHRP.AssemblyLinearVelocity or Vector3.zero
+            if vel.Magnitude > 60 then vel = vel.Unit * 60 end
+            local pred = killerHRP.Position + vel * (settings.aimPrediction * 0.03)
+            local flat = Vector3.new(pred.X - myHRP.Position.X, 0, pred.Z - myHRP.Position.Z)
+            if flat.Magnitude > 0.01 then
+                flat = flat.Unit
+                -- BodyGyro instead of CFrame write
+                local bg = Instance.new("BodyGyro")
+                bg.MaxTorque = Vector3.new(0, 1e6, 0)
+                bg.P = 10000
+                bg.D = 1000
+                bg.CFrame = CFrame.new(myHRP.Position, myHRP.Position + flat)
+                bg.Parent = myHRP
+                Debris:AddItem(bg, 0.2)
+            end
+        end
+    end
+    fireParryPunch()
+end
+
+local function onBlockSound()
+    if not AutoParryConfig.Enabled then return end
+    local now = tick()
+    if now - lastParryTime < 0.3 then return end
+    lastParryTime = now
+    if AutoParryConfig.Delay > 0 then task.delay(AutoParryConfig.Delay, doParry) else doParry() end
+end
+
+local function hookSound(snd)
+    if not snd:IsA("Sound") then return end
+    if not BlockSoundIds[snd.SoundId] then return end
+    if snd:GetAttribute("AutoParryHooked") then return end
+    snd:SetAttribute("AutoParryHooked", true)
+    snd.Played:Connect(onBlockSound)
+end
+
+local function bindParrySound(char)
+    if not char or parryBoundChar == char then return end
+    parryBoundChar = char
+    for _, d in ipairs(char:GetDescendants()) do hookSound(d) end
+    char.DescendantAdded:Connect(hookSound)
+end
+if LP.Character then bindParrySound(LP.Character) end
+LP.CharacterAdded:Connect(bindParrySound)
+
+--═══ NoilStar / NoilVoid aim (separate flags) ═══
+local noilStarActive = false
+local noilVoidActive = false
+local noilStarConn = nil
+local noilVoidConn = nil
+
 local function NoilStarAim(state)
-    johnaim = state; local LocalPlayer = game.Players.LocalPlayer
-    if state then
-        if Noloop then Noloop:Disconnect() end
-        local char = LocalPlayer.Character; if not char then return end
-        local rootPart = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart")
-        Noloop = rootPart.ChildAdded:Connect(function(child)
-            if not johnaim then return end
-            for _, v in pairs(aimbotNoilsounds) do
-                if child.Name == v then
-                    local survivors = {}
-                    for _, player in pairs(game.Players:GetPlayers()) do
-                        if player ~= LocalPlayer then
-                            local character = player.Character
-                            if character and character:FindFirstChild("HumanoidRootPart") then table.insert(survivors, character) end
-                        end
-                    end
-                    local nearestSurvivor, shortestDistance = nil, math.huge
-                    local playerHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    if not playerHRP then return end
-                    for _, survivor in pairs(survivors) do
-                        local distance = (survivor.HumanoidRootPart.Position - playerHRP.Position).Magnitude
-                        if distance < shortestDistance then shortestDistance = distance; nearestSurvivor = survivor end
-                    end
-                    if nearestSurvivor then
-                        local nearestHRP = nearestSurvivor.HumanoidRootPart
-                        for _ = 1, 50 do
-                            task.wait(0.01)
-                            workspace.CurrentCamera.CFrame = CFrame.new(workspace.CurrentCamera.CFrame.Position, nearestHRP.Position)
-                            playerHRP.CFrame = CFrame.lookAt(playerHRP.Position, Vector3.new(nearestHRP.Position.X, nearestHRP.Position.Y, nearestHRP.Position.Z))
-                        end
+    noilStarActive = state
+    if noilStarConn then pcall(function() noilStarConn:Disconnect() end); noilStarConn = nil end
+    if not state then return end
+    local char = LP.Character; if not char then return end
+    local rootPart = char:FindFirstChild("HumanoidRootPart"); if not rootPart then return end
+    noilStarConn = rootPart.ChildAdded:Connect(function(child)
+        if not noilStarActive then return end
+        for _, v in pairs({ "StarBomb", "StarBombTrail", "StarBombExplosion" }) do
+            if child.Name == v then
+                local survivors = {}
+                for _, player in pairs(game.Players:GetPlayers()) do
+                    if player ~= LP then
+                        local c = player.Character
+                        if c and c:FindFirstChild("HumanoidRootPart") then table.insert(survivors, c) end
                     end
                 end
-            end
-        end)
-    else if Noloop then Noloop:Disconnect(); Noloop = nil end end
-end
-local function NoilVoidAim(state)
-    johnaim = state; local LocalPlayer = game.Players.LocalPlayer
-    if state then
-        if No2loop then No2loop:Disconnect() end
-        local char = LocalPlayer.Character; if not char then return end
-        local rootPart = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart")
-        No2loop = rootPart.ChildAdded:Connect(function(child)
-            if not johnaim then return end
-            for _, v in pairs(aimbotNoilsounds2) do
-                if child.Name == v then
-                    local survivors = {}
-                    for _, player in pairs(game.Players:GetPlayers()) do
-                        if player ~= LocalPlayer then
-                            local character = player.Character
-                            if character and character:FindFirstChild("HumanoidRootPart") then table.insert(survivors, character) end
-                        end
-                    end
-                    local nearestSurvivor, shortestDistance = nil, math.huge
-                    local playerHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    if not playerHRP then return end
-                    for _, survivor in pairs(survivors) do
-                        local distance = (survivor.HumanoidRootPart.Position - playerHRP.Position).Magnitude
-                        if distance < shortestDistance then shortestDistance = distance; nearestSurvivor = survivor end
-                    end
-                    if nearestSurvivor then
-                        local nearestHRP = nearestSurvivor.HumanoidRootPart
-                        for _ = 1, 50 do
-                            task.wait(0.01)
-                            workspace.CurrentCamera.CFrame = CFrame.new(workspace.CurrentCamera.CFrame.Position, nearestHRP.Position)
-                            playerHRP.CFrame = CFrame.lookAt(playerHRP.Position, Vector3.new(nearestHRP.Position.X, nearestHRP.Position.Y, nearestHRP.Position.Z))
-                        end
+                local ns, sd = nil, math.huge
+                local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                if not myHRP then return end
+                for _, s in pairs(survivors) do
+                    local d = (s.HumanoidRootPart.Position - myHRP.Position).Magnitude
+                    if d < sd then sd = d; ns = s end
+                end
+                if ns then
+                    local nHRP = ns.HumanoidRootPart
+                    for _ = 1, 50 do
+                        task.wait(0.01)
+                        workspace.CurrentCamera.CFrame = CFrame.new(workspace.CurrentCamera.CFrame.Position, nHRP.Position)
+                        myHRP.CFrame = CFrame.lookAt(myHRP.Position, Vector3.new(nHRP.Position.X, nHRP.Position.Y, nHRP.Position.Z))
                     end
                 end
+                break
             end
-        end)
-    else if No2loop then No2loop:Disconnect(); No2loop = nil end end
+        end
+    end)
 end
-registerTriggerModule("NoilStar", function() NoilStarAim(true) end, function() NoilStarAim(false) end)
-registerTriggerModule("NoilVoid", function() NoilVoidAim(true) end, function() NoilVoidAim(false) end)
 
+local function NoilVoidAim(state)
+    noilVoidActive = state
+    if noilVoidConn then pcall(function() noilVoidConn:Disconnect() end); noilVoidConn = nil end
+    if not state then return end
+    local char = LP.Character; if not char then return end
+    local rootPart = char:FindFirstChild("HumanoidRootPart"); if not rootPart then return end
+    noilVoidConn = rootPart.ChildAdded:Connect(function(child)
+        if not noilVoidActive then return end
+        for _, v in pairs({ "VoidRush", "VoidRushTrail" }) do
+            if child.Name == v then
+                local survivors = {}
+                for _, player in pairs(game.Players:GetPlayers()) do
+                    if player ~= LP then
+                        local c = player.Character
+                        if c and c:FindFirstChild("HumanoidRootPart") then table.insert(survivors, c) end
+                    end
+                end
+                local ns, sd = nil, math.huge
+                local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                if not myHRP then return end
+                for _, s in pairs(survivors) do
+                    local d = (s.HumanoidRootPart.Position - myHRP.Position).Magnitude
+                    if d < sd then sd = d; ns = s end
+                end
+                if ns then
+                    local nHRP = ns.HumanoidRootPart
+                    for _ = 1, 50 do
+                        task.wait(0.01)
+                        workspace.CurrentCamera.CFrame = CFrame.new(workspace.CurrentCamera.CFrame.Position, nHRP.Position)
+                        myHRP.CFrame = CFrame.lookAt(myHRP.Position, Vector3.new(nHRP.Position.X, nHRP.Position.Y, nHRP.Position.Z))
+                    end
+                end
+                break
+            end
+        end
+    end)
+end
+
+-- Register all aim modules
 registerTriggerModule("Slash")
 registerTriggerModule("Punch")
 registerTriggerModule("Dagger")
@@ -1103,132 +1490,76 @@ registerTriggerModule("JaneDoe")
 registerTriggerModule("JaneDoeAxe")
 registerTriggerModule("Chance")
 registerTriggerModule("Dusekkar")
+registerTriggerModule("NoilStar", function() NoilStarAim(true) end, function() NoilStarAim(false) end)
+registerTriggerModule("NoilVoid", function() NoilVoidAim(true) end, function() NoilVoidAim(false) end)
 
 createAnimationTrigger("1x4", { ["99050723653468"] = true, ["119181003138006"] = true }, "Survivors", false)
 createAnimationTrigger("C00kidd", { ["18885919947"] = true }, "Survivors", true)
 createAnimationTrigger("JohnDoe", { ["127172483138092"] = true }, "Survivors", true)
 createAnimationTrigger("Nosferatu", { ["79282445348798"] = true, ["128009545282102"] = true }, "Survivors", true)
 
-local soundTriggerEnabled = false
-local soundConnections = {}
-local globalSoundConn = nil
-local targetSoundIds = { "rbxassetid://120944766765949", "rbxassetid://92445809840331", "rbxassetid://89315669689903", "rbxassetid://77069367360935", "rbxassetid://123979582011869", "rbxassetid://109525294317144", "rbxassetid://105934041806374", "rbxassetid://132331977491979", "rbxassetid://128009545282102", "rbxassetid://79282445348798" }
-local function onSoundPlayed(sound)
-    if not soundTriggerEnabled then return end
-    for _, id in ipairs(targetSoundIds) do if sound.SoundId == id then executeAim(); break end end
-end
-local function bindSound(sound)
-    if not sound:IsA("Sound") then return end
-    table.insert(soundConnections, sound.Played:Connect(function() onSoundPlayed(sound) end))
-end
-local function setupSoundTrigger()
-    local function bindAll(container) for _, obj in ipairs(container:GetDescendants()) do if obj:IsA("Sound") then bindSound(obj) end end end
-    local player = game.Players.LocalPlayer
-    if player.Character then bindAll(player.Character) end
-    table.insert(soundConnections, player.CharacterAdded:Connect(function(char) task.wait(0.2); bindAll(char) end))
-    if settings.globalSound then
-        globalSoundConn = workspace.DescendantAdded:Connect(function(child) if child:IsA("Sound") then bindSound(child) end end)
-        table.insert(soundConnections, globalSoundConn)
-        bindAll(workspace)
-    end
-end
-registerTriggerModule("SoundTrigger", function() soundTriggerEnabled = true; setupSoundTrigger() end, function()
-    soundTriggerEnabled = false
-    for _, conn in ipairs(soundConnections) do pcall(function() conn:Disconnect() end) end
-    soundConnections = {}
-    if globalSoundConn then pcall(function() globalSoundConn:Disconnect() end); globalSoundConn = nil end
-end)
-
---═══ AIMBOT TAB ═══
+--═══ Aim UI ═══
 local generalGroup = Tabs.Aimbot:AddLeftGroupbox("General Aim", "crosshair")
-SafeUI("GAA_Distance", function()
-    generalGroup:AddSlider("GAA_Distance", { Text = "Aim Distance", Default = settings.distance, Min = 10, Max = 500, Rounding = 1, Callback = function(v) settings.distance = v end })
-end)
-SafeUI("GAA_Smoothness", function()
-    generalGroup:AddSlider("GAA_Smoothness", { Text = "Camera Smoothness", Default = settings.smoothness, Min = 0, Max = 100, Rounding = 1, Callback = function(v) settings.smoothness = v end })
-end)
-SafeUI("GAA_Duration", function()
-    generalGroup:AddSlider("GAA_Duration", { Text = "Lock Duration", Default = settings.duration, Min = 1, Max = 200, Rounding = 1, Callback = function(v) settings.duration = v end })
-end)
-SafeUI("GAA_Prediction", function()
-    generalGroup:AddSlider("GAA_Prediction", { Text = "Aim Prediction (studs)", Default = 4, Min = 0, Max = 30, Rounding = 1, Callback = function(v) settings.aimPrediction = v end })
-end)
-SafeUI("SilentAimToggle", function()
-    generalGroup:AddToggle("SilentAimToggle", { Text = "Silent Aim (Killer)", Default = false, Callback = function(v) toggleModule("SilentAim", v) end })
-end)
-SafeUI("SoundTriggerToggle", function()
-    generalGroup:AddToggle("SoundTriggerToggle", { Text = "Sound Trigger Aim", Default = false, Callback = function(v) toggleModule("SoundTrigger", v) end })
-end)
+SafeUI("GAA_Distance", function() generalGroup:AddSlider("GAA_Distance", { Text = "Aim Distance", Default = settings.distance, Min = 10, Max = 500, Rounding = 1, Callback = function(v) settings.distance = v end }) end)
+SafeUI("GAA_Smoothness", function() generalGroup:AddSlider("GAA_Smoothness", { Text = "Camera Smoothness", Default = settings.smoothness, Min = 0, Max = 100, Rounding = 1, Callback = function(v) settings.smoothness = v end }) end)
+SafeUI("GAA_Duration", function() generalGroup:AddSlider("GAA_Duration", { Text = "Lock Duration", Default = settings.duration, Min = 1, Max = 200, Rounding = 1, Callback = function(v) settings.duration = v end }) end)
+SafeUI("GAA_Prediction", function() generalGroup:AddSlider("GAA_Prediction", { Text = "Aim Prediction (studs)", Default = 4, Min = 0, Max = 30, Rounding = 1, Callback = function(v) settings.aimPrediction = v end }) end)
+SafeUI("SoundTriggerToggle", function() generalGroup:AddToggle("SoundTriggerToggle", { Text = "Sound Trigger Aim", Default = false, Callback = function(v) registerTriggerModule("SoundTrigger", function() end, function() end); toggleModule("SoundTrigger", v) end }) end)
 
-local survivorAimGroup = Tabs.Aimbot:AddRightGroupbox("Survivor Aim (Button-Based)", "user")
-SafeUI("SlashToggle", function()
-    survivorAimGroup:AddToggle("SlashToggle", { Text = "Shedletsky Slash Aim", Default = false, Callback = function(v) toggleModule("Slash", v) end })
-end)
-SafeUI("PunchToggle", function()
-    survivorAimGroup:AddToggle("PunchToggle", { Text = "Guest 1337 Punch / Parry Aim", Default = false, Callback = function(v) toggleModule("Punch", v) end })
-end)
-SafeUI("DaggerToggle", function()
-    survivorAimGroup:AddToggle("DaggerToggle", { Text = "Two Time Dagger Aim", Default = false, Callback = function(v) toggleModule("Dagger", v) end })
-end)
-SafeUI("JaneDoeToggle", function()
-    survivorAimGroup:AddToggle("JaneDoeToggle", { Text = "Jane Doe Hatchet Aim", Default = false, Callback = function(v) toggleModule("JaneDoe", v) end })
-end)
-SafeUI("JaneDoeAxeToggle", function()
-    survivorAimGroup:AddToggle("JaneDoeAxeToggle", { Text = "Jane Doe Hatchet Throw Aim", Default = false, Callback = function(v) toggleModule("JaneDoeAxe", v) end })
-end)
-SafeUI("ChanceToggle", function()
-    survivorAimGroup:AddToggle("ChanceToggle", { Text = "Chance Flintlock Aim", Default = false, Callback = function(v) toggleModule("Chance", v) end })
-end)
-SafeUI("DusekkarToggle", function()
-    survivorAimGroup:AddToggle("DusekkarToggle", { Text = "Dusekkar Aim (Camera)", Default = false, Callback = function(v) toggleModule("Dusekkar", v) end })
-end)
+local survivorAimGroup = Tabs.Aimbot:AddRightGroupbox("Survivor Aim", "user")
+SafeUI("SlashToggle", function() survivorAimGroup:AddToggle("SlashToggle", { Text = "Shedletsky Slash Aim", Default = false, Callback = function(v) toggleModule("Slash", v) end }) end)
+SafeUI("PunchToggle", function() survivorAimGroup:AddToggle("PunchToggle", { Text = "Guest 1337 Punch / Parry Aim", Default = false, Callback = function(v) toggleModule("Punch", v) end }) end)
+SafeUI("DaggerToggle", function() survivorAimGroup:AddToggle("DaggerToggle", { Text = "Two Time Dagger Aim", Default = false, Callback = function(v) toggleModule("Dagger", v) end }) end)
+SafeUI("JaneDoeToggle", function() survivorAimGroup:AddToggle("JaneDoeToggle", { Text = "Jane Doe Hatchet Aim", Default = false, Callback = function(v) toggleModule("JaneDoe", v) end }) end)
+SafeUI("JaneDoeAxeToggle", function() survivorAimGroup:AddToggle("JaneDoeAxeToggle", { Text = "Jane Doe Hatchet Throw Aim", Default = false, Callback = function(v) toggleModule("JaneDoeAxe", v) end }) end)
+SafeUI("ChanceToggle", function() survivorAimGroup:AddToggle("ChanceToggle", { Text = "Chance Flintlock Aim", Default = false, Callback = function(v) toggleModule("Chance", v) end }) end)
+SafeUI("DusekkarToggle", function() survivorAimGroup:AddToggle("DusekkarToggle", { Text = "Dusekkar Aim (Camera)", Default = false, Callback = function(v) toggleModule("Dusekkar", v) end }) end)
 
---═══ KILLER TAB ═══
+local silentGroup = Tabs.Aimbot:AddRightGroupbox("Silent Aim (Projectile Prediction)", "zap")
+if hasHookSupport then
+    for key, cfg in pairs(SilentAimConfig) do
+        SafeUI(key .. "_Toggle", function()
+            silentGroup:AddToggle(key .. "_Toggle", { Text = cfg.Label, Default = false, Callback = function(v) SilentAimConfig[key].Enabled = v end })
+        end)
+        SafeUI(key .. "_Speed", function()
+            silentGroup:AddSlider(key .. "_Speed", { Text = "  Projectile Speed", Default = cfg.Speed, Min = 20, Max = 500, Rounding = 0, Callback = function(v) SilentAimConfig[key].Speed = v end })
+        end)
+        if key == "CrystalPitch" then
+            SafeUI("CrystalDist", function() silentGroup:AddSlider("CrystalDist", { Text = "  Throw Distance (in front)", Default = 4, Min = 1, Max = 20, Rounding = 1, Callback = function(v) SilentAimConfig[key].ThrowDistance = v end }) end)
+            SafeUI("CrystalDown", function() silentGroup:AddSlider("CrystalDown", { Text = "  Throw Down (below)", Default = 2.5, Min = 0, Max = 8, Rounding = 1, Callback = function(v) SilentAimConfig[key].ThrowDown = v end }) end)
+        end
+    end
+else
+    silentGroup:AddLabel("Unavailable — executor missing hookmetamethod")
+end
+
+local parryGroup = Tabs.Aimbot:AddRightGroupbox("Auto Parry (Guest 1337)", "shield")
+parryGroup:AddToggle("AutoParry_T", { Text = "Enable Auto Parry", Default = false, Callback = function(v) AutoParryConfig.Enabled = v end })
+parryGroup:AddSlider("ParryDelay_S", { Text = "Parry Delay (s)", Default = 0.5, Min = 0, Max = 2, Rounding = 2, Callback = function(v) AutoParryConfig.Delay = v end })
+parryGroup:AddToggle("ParryPredict_T", { Text = "Aim at Killer with Prediction", Default = true, Callback = function(v) AutoParryConfig.UsePrediction = v end })
+
 local killerAimGroup = Tabs.Killer:AddLeftGroupbox("Killer Aim (Animation-Based)", "crosshair")
-SafeUI("Onex4Toggle", function()
-    killerAimGroup:AddToggle("Onex4Toggle", { Text = "1x4 Aim", Default = false, Callback = function(v) toggleModule("1x4", v) end })
-end)
-SafeUI("CookiddToggle", function()
-    killerAimGroup:AddToggle("CookiddToggle", { Text = "C00kidd Aim (Camera)", Default = false, Callback = function(v) toggleModule("C00kidd", v) end })
-end)
-SafeUI("JohnDoeToggle", function()
-    killerAimGroup:AddToggle("JohnDoeToggle", { Text = "John Doe Aim (Camera)", Default = false, Callback = function(v) toggleModule("JohnDoe", v) end })
-end)
-SafeUI("NosferatuToggle", function()
-    killerAimGroup:AddToggle("NosferatuToggle", { Text = "Nosferatu Aim (Camera)", Default = false, Callback = function(v) toggleModule("Nosferatu", v) end })
-end)
-SafeUI("NoilStarToggle", function()
-    killerAimGroup:AddToggle("NoilStarToggle", { Text = "Noil Star Bomb Aim", Default = false, Callback = function(v) toggleModule("NoilStar", v) end })
-end)
-SafeUI("NoilVoidToggle", function()
-    killerAimGroup:AddToggle("NoilVoidToggle", { Text = "Noil Void Rush Aim", Default = false, Callback = function(v) toggleModule("NoilVoid", v) end })
-end)
+SafeUI("Onex4Toggle", function() killerAimGroup:AddToggle("Onex4Toggle", { Text = "1x4 Aim", Default = false, Callback = function(v) toggleModule("1x4", v) end }) end)
+SafeUI("CookiddToggle", function() killerAimGroup:AddToggle("CookiddToggle", { Text = "C00kidd Aim (Camera)", Default = false, Callback = function(v) toggleModule("C00kidd", v) end }) end)
+SafeUI("JohnDoeToggle", function() killerAimGroup:AddToggle("JohnDoeToggle", { Text = "John Doe Aim (Camera)", Default = false, Callback = function(v) toggleModule("JohnDoe", v) end }) end)
+SafeUI("NosferatuToggle", function() killerAimGroup:AddToggle("NosferatuToggle", { Text = "Nosferatu Aim (Camera)", Default = false, Callback = function(v) toggleModule("Nosferatu", v) end }) end)
+SafeUI("NoilStarToggle", function() killerAimGroup:AddToggle("NoilStarToggle", { Text = "Noil Star Bomb Aim", Default = false, Callback = function(v) toggleModule("NoilStar", v) end }) end)
+SafeUI("NoilVoidToggle", function() killerAimGroup:AddToggle("NoilVoidToggle", { Text = "Noil Void Rush Aim", Default = false, Callback = function(v) toggleModule("NoilVoid", v) end }) end)
 
 --═══ BLOCK TAB — DYNAMIC FACING CONE + HDT ═══
 local ConeConfig = {
-    NormalAngle    = 35,
-    MaxAngle       = 100,
-    ExpansionSpeed = 180,
-    RecoverySpeed  = 90,
-    Range          = 18,
-    Segments       = 36,
-    Color          = Color3.fromRGB(255, 55, 55),
-    ColorHit       = Color3.fromRGB(80, 255, 80),
-    Transparency   = 0.65,
-    Thickness      = 0.12,
-    YTolerance     = 8,
-    WindowDuration = 0.5,
-    ShowBox        = true,
+    NormalAngle = 35, MaxAngle = 100, ExpansionSpeed = 180, RecoverySpeed = 90,
+    Range = 18, Segments = 36,
+    Color = Color3.fromRGB(255, 55, 55), ColorHit = Color3.fromRGB(80, 255, 80),
+    Transparency = 0.65, Thickness = 0.12, YTolerance = 8,
+    WindowDuration = 0.5, ShowBox = true,
 }
 
-local ConeState = {}
-local blockPerKiller = {}
-local activeBlocks = {}
+local ConeState, blockPerKiller, activeBlocks = {}, {}, {}
 
 local function hasHelplessEffect()
     if LP:GetAttribute("Helpless") then return true end
-    local char = LP.Character
-    if not char then return false end
+    local char = LP.Character; if not char then return false end
     if char:GetAttribute("Helpless") then return true end
     if char:FindFirstChild("Helpless") then return true end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -1236,7 +1567,7 @@ local function hasHelplessEffect()
         if hum:GetAttribute("Helpless") then return true end
         if hum:FindFirstChild("Helpless") then return true end
     end
-    for _, name in ipairs({"StatusEffects", "Effects", "Statuses", "Debuffs"}) do
+    for _, name in ipairs({ "StatusEffects", "Effects", "Statuses", "Debuffs" }) do
         local container = char:FindFirstChild(name)
         if container and container:FindFirstChild("Helpless") then return true end
     end
@@ -1260,9 +1591,7 @@ end
 
 local function getOrCreateCone(killer)
     local state = ConeState[killer]
-    if state and state.folder and state.folder.Parent and #state.parts == ConeConfig.Segments then
-        return state
-    end
+    if state and state.folder and state.folder.Parent and #state.parts == ConeConfig.Segments then return state end
     if state and state.folder then pcall(function() state.folder:Destroy() end) end
     local folder = Instance.new("Folder")
     folder.Name = "Ck_FacingCone"
@@ -1271,40 +1600,20 @@ local function getOrCreateCone(killer)
     for i = 1, ConeConfig.Segments do
         local part = Instance.new("Part")
         part.Name = "ConeSegment"
-        part.Anchored = true
-        part.CanCollide = false
-        part.CanQuery = false
-        part.CanTouch = false
-        part.CastShadow = false
+        part.Anchored = true; part.CanCollide = false; part.CanQuery = false
+        part.CanTouch = false; part.CastShadow = false
         part.Material = Enum.Material.Neon
-        part.Color = ConeConfig.Color
-        part.Transparency = 1
+        part.Color = ConeConfig.Color; part.Transparency = 1
         part.Size = Vector3.new(ConeConfig.Thickness, 0.06, 0.5)
         part.Parent = folder
         parts[i] = part
     end
-    state = {
-        folder = folder, parts = parts,
-        currentAngle = ConeConfig.NormalAngle,
-        prevYaw = nil, turnDir = 0,
-        fired = false, expiresAt = 0,
-    }
+    state = { folder = folder, parts = parts, currentAngle = ConeConfig.NormalAngle, prevYaw = nil, turnDir = 0, fired = false, expiresAt = 0 }
     ConeState[killer] = state
     return state
 end
-
-local function hideCone(state)
-    for _, part in ipairs(state.parts) do
-        if part and part.Parent then part.Transparency = 1 end
-    end
-end
-
-local function destroyCone(killer)
-    local state = ConeState[killer]
-    if state and state.folder then pcall(function() state.folder:Destroy() end) end
-    ConeState[killer] = nil
-end
-
+local function hideCone(state) for _, part in ipairs(state.parts) do if part and part.Parent then part.Transparency = 1 end end end
+local function destroyCone(killer) local state = ConeState[killer] if state and state.folder then pcall(function() state.folder:Destroy() end) end ConeState[killer] = nil end
 local function updateCone(state, killerRoot, dt, colorOverride)
     local cf = killerRoot.CFrame
     local look = cf.LookVector
@@ -1343,7 +1652,6 @@ local function updateCone(state, killerRoot, dt, colorOverride)
     end
     return yaw, leftAngle, rightAngle
 end
-
 local function isPlayerInCone(killerRoot, playerPos, yaw, leftAngleDeg, rightAngleDeg)
     local killerPos = killerRoot.Position
     if math.abs(playerPos.Y - killerPos.Y) > ConeConfig.YTolerance then return false end
@@ -1369,9 +1677,7 @@ getBlockRemote()
 
 local function fireBlock()
     local remote = getBlockRemote()
-    if remote then
-        pcall(function() remote:FireServer("UseActorAbility", { buffer.fromstring("\3\5\0\0\0Block") }) end)
-    end
+    if remote then pcall(function() remote:FireServer("UseActorAbility", { buffer.fromstring("\3\5\0\0\0Block") }) end) end
     local mainUI = LP.PlayerGui:FindFirstChild("MainUI")
     local ac = mainUI and mainUI:FindFirstChild("AbilityContainer")
     local btn = ac and ac:FindFirstChild("Block")
@@ -1490,19 +1796,16 @@ RunService.RenderStepped:Connect(function(dt)
     local char = LP.Character
     local playerHRP = char and char:FindFirstChild("HumanoidRootPart")
     local now = os.clock()
-
     local expired = {}
     for killer, data in pairs(activeBlocks) do
         if now > data.expiresAt or not killer.Parent then table.insert(expired, killer) end
     end
     for _, killer in ipairs(expired) do activeBlocks[killer] = nil end
-
     local deadKillers = {}
     for killer in pairs(ConeState) do
         if not killer.Parent then table.insert(deadKillers, killer) end
     end
     for _, killer in ipairs(deadKillers) do destroyCone(killer) end
-
     for _, killer in ipairs(kf:GetChildren()) do
         if killer:IsA("Model") then
             local killerRoot = killer:FindFirstChild("HumanoidRootPart")
@@ -1518,9 +1821,7 @@ RunService.RenderStepped:Connect(function(dt)
                 if state.turnDir == 1 then leftA = state.currentAngle - half
                 elseif state.turnDir == -1 then rightA = state.currentAngle - half end
                 local inCone = false
-                if playerHRP then
-                    inCone = isPlayerInCone(killerRoot, playerHRP.Position, currentYaw, leftA, rightA)
-                end
+                if playerHRP then inCone = isPlayerInCone(killerRoot, playerHRP.Position, currentYaw, leftA, rightA) end
                 if ConeConfig.ShowBox then
                     local color = inCone and ConeConfig.ColorHit or ConeConfig.Color
                     updateCone(state, killerRoot, dt, color)
@@ -1551,30 +1852,19 @@ BlockLeft:AddToggle("AutoBlockToggle", { Text = "Enable AutoBlock", Default = fa
         table.clear(ConeState)
     end
 end })
-BlockLeft:AddSlider("Cone_Range",        { Text = "Range (studs)",          Default = 18,  Min = 3,  Max = 60, Rounding = 1,
-    Callback = function(v) ConeConfig.Range = v end })
-BlockLeft:AddSlider("Cone_NormalAngle",  { Text = "Normal Angle (deg)",     Default = 35,  Min = 10, Max = 90, Rounding = 1,
-    Callback = function(v) ConeConfig.NormalAngle = v; if v > ConeConfig.MaxAngle then ConeConfig.MaxAngle = v end end })
-BlockLeft:AddSlider("Cone_MaxAngle",     { Text = "Max Angle (deg)",        Default = 100, Min = 20, Max = 180, Rounding = 1,
-    Callback = function(v) ConeConfig.MaxAngle = math.max(v, ConeConfig.NormalAngle) end })
-BlockLeft:AddSlider("Cone_ExpandSpeed",  { Text = "Expansion Speed",        Default = 180, Min = 10, Max = 500, Rounding = 0,
-    Callback = function(v) ConeConfig.ExpansionSpeed = v end })
-BlockLeft:AddSlider("Cone_RecoverSpeed", { Text = "Recovery Speed",         Default = 90,  Min = 10, Max = 500, Rounding = 0,
-    Callback = function(v) ConeConfig.RecoverySpeed = v end })
-BlockLeft:AddSlider("Cone_Transparency", { Text = "Transparency",           Default = 0.65, Min = 0, Max = 1, Rounding = 2,
-    Callback = function(v) ConeConfig.Transparency = v end })
-BlockLeft:AddToggle("Cone_ShowBox",      { Text = "Show Cone Visual",       Default = true,
-    Callback = function(v) ConeConfig.ShowBox = v end })
+BlockLeft:AddSlider("Cone_Range",        { Text = "Range (studs)",          Default = 18,  Min = 3,  Max = 60, Rounding = 1, Callback = function(v) ConeConfig.Range = v end })
+BlockLeft:AddSlider("Cone_NormalAngle",  { Text = "Normal Angle (deg)",     Default = 35,  Min = 10, Max = 90, Rounding = 1, Callback = function(v) ConeConfig.NormalAngle = v; if v > ConeConfig.MaxAngle then ConeConfig.MaxAngle = v end end })
+BlockLeft:AddSlider("Cone_MaxAngle",     { Text = "Max Angle (deg)",        Default = 100, Min = 20, Max = 180, Rounding = 1, Callback = function(v) ConeConfig.MaxAngle = math.max(v, ConeConfig.NormalAngle) end })
+BlockLeft:AddSlider("Cone_ExpandSpeed",  { Text = "Expansion Speed",        Default = 180, Min = 10, Max = 500, Rounding = 0, Callback = function(v) ConeConfig.ExpansionSpeed = v end })
+BlockLeft:AddSlider("Cone_RecoverSpeed", { Text = "Recovery Speed",         Default = 90,  Min = 10, Max = 500, Rounding = 0, Callback = function(v) ConeConfig.RecoverySpeed = v end })
+BlockLeft:AddSlider("Cone_Transparency", { Text = "Transparency",           Default = 0.65, Min = 0, Max = 1, Rounding = 2, Callback = function(v) ConeConfig.Transparency = v end })
+BlockLeft:AddToggle("Cone_ShowBox",      { Text = "Show Cone Visual",       Default = true, Callback = function(v) ConeConfig.ShowBox = v end })
 
 local BlockRight = Tabs.Block:AddRightGroupbox("HDT (fires with AutoBlock)", "activity")
 BlockRight:AddToggle("HDT_Toggle",       { Text = "Enable HDT",             Default = false, Callback = function(v) HDT_Enabled = v end })
-BlockRight:AddSlider("HDT_SpeedSlider",  { Text = "Dash Speed",             Default = 40,   Min = 5,    Max = 500, Rounding = 0,
-    Callback = function(v) HDT.Speed = math.clamp(tonumber(v) or 40, 5, 500) end })
-BlockRight:AddSlider("HDT_DurSlider",    { Text = "Dash Duration (s)",      Default = 0.6,  Min = 0.05, Max = 3,   Rounding = 2,
-    Callback = function(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 0.05, 3) end })
-BlockRight:AddButton("Force HDT Now", function()
-    local k = hdtNearest(); if k then HDT_Fire(k) end
-end)
+BlockRight:AddSlider("HDT_SpeedSlider",  { Text = "Dash Speed",             Default = 40,   Min = 5,    Max = 500, Rounding = 0, Callback = function(v) HDT.Speed = math.clamp(tonumber(v) or 40, 5, 500) end })
+BlockRight:AddSlider("HDT_DurSlider",    { Text = "Dash Duration (s)",      Default = 0.6,  Min = 0.05, Max = 3,   Rounding = 2, Callback = function(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 0.05, 3) end })
+BlockRight:AddButton("Force HDT Now", function() local k = hdtNearest(); if k then HDT_Fire(k) end end)
 
 --═══ STAB ═══
 local TARGET_ANIMATION_ID = "100725497418533"
@@ -1812,9 +2102,7 @@ do
     local function sk8DetectChargeAnim()
         local hum = sk8GetHumanoid(); if not hum then return false end
         for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
-            local ok, animId = pcall(function()
-                return tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
-            end)
+            local ok, animId = pcall(function() return tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+") end)
             if ok and animId and animId ~= "" then
                 if table.find(sk8ChargeAnimIds, animId) then return true end
             end
@@ -1844,9 +2132,7 @@ do
         local char = Sk8Player.Character; if not char then return false end
         local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return false end
         for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
-            local ok, id = pcall(function()
-                return tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
-            end)
+            local ok, id = pcall(function() return tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+") end)
             if ok and id == SPRAY_ANIM_ID then return true end
         end
         return false
