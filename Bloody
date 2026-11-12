@@ -1,5 +1,6 @@
---// Cupcake Hub | Obsidian
---// Red Theme
+--// Cupcake Hub — Core Logic (UI-agnostic)
+--// All features are toggleable via the CONFIG table.
+--// Example: CONFIG.ESP.killerESP = true
 
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -9,73 +10,75 @@ local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
 local Debris = game:GetService("Debris")
 
-local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/Library.lua"))()
-
--- Red color scheme
-Library.Scheme = {
-    BackgroundColor = Color3.fromRGB(12, 12, 12),
-    MainColor = Color3.fromRGB(22, 12, 12),
-    AccentColor = Color3.fromRGB(220, 25, 35),
-    OutlineColor = Color3.fromRGB(100, 20, 25),
-    FontColor = Color3.fromRGB(255, 255, 255),
-    Font = Font.fromEnum(Enum.Font.Gotham),
-
-    RedColor = Color3.fromRGB(255, 40, 40),
-    DestructiveColor = Color3.fromRGB(200, 20, 20),
-    DarkColor = Color3.fromRGB(5, 5, 5),
-    WhiteColor = Color3.fromRGB(255, 255, 255),
+--═══════════════════════════════════════════════════════════
+-- CONFIG (set these to toggle features)
+--═══════════════════════════════════════════════════════════
+local CONFIG = {
+    ESP = {
+        killerESP = false, survivorESP = false,
+        killerName = true, survivorName = true,
+        killerHealth = true, survivorHealth = true,
+        killerSkin = false, survivorSkin = false,
+        killerColor = Color3.fromRGB(255, 100, 100),
+        survivorColor = Color3.fromRGB(100, 255, 100),
+        killerFill = 0.7, killerOutline = 0.3,
+        survivorFill = 0.7, survivorOutline = 0.3,
+        genESP = false, genColor = Color3.fromRGB(200, 100, 200),
+        itemESP = false, itemColor = Color3.fromRGB(200, 200, 0),
+        pizzaESP = false, pizzaColor = Color3.fromRGB(200, 150, 0),
+        deliveryESP = false, deliveryColor = Color3.fromRGB(200, 100, 100),
+        zombieESP = false, zombieColor = Color3.fromRGB(200, 100, 100),
+        tripwireESP = false, tripwireColor = Color3.fromRGB(100, 0, 100),
+        mineESP = false, mineColor = Color3.fromRGB(255, 0, 255),
+        respawnESP = false, respawnColor = Color3.fromRGB(0, 150, 200),
+        graffitiESP = false, graffitiColor = Color3.fromRGB(255, 255, 255),
+        bulbESP = false, bulbColor = Color3.fromRGB(0, 255, 200),
+        vineESP = false, vineColor = Color3.fromRGB(200, 0, 255),
+    },
+    AIM = { distance = 100, prediction = 4 },
+    SILENT = {
+        CorruptNature = { Enabled = false, Speed = 60 },
+        PlasmaBeam    = { Enabled = false, Speed = 200 },
+        CrystalPitch  = { Enabled = false, Speed = 50, ThrowDistance = 4, ThrowDown = 2.5 },
+    },
+    PARRY = { Enabled = false, Delay = 0.5, UsePrediction = true },
+    BLOCK = {
+        Enabled = false,
+        NormalAngle = 35, MaxAngle = 100, ExpansionSpeed = 180, RecoverySpeed = 90,
+        Range = 18, Segments = 36,
+        Color = Color3.fromRGB(255, 55, 55), ColorHit = Color3.fromRGB(80, 255, 80),
+        Transparency = 0.65, Thickness = 0.12, YTolerance = 8,
+        WindowDuration = 0.5, ShowBox = true,
+    },
+    HDT = { Enabled = false, Speed = 40, Duration = 0.6 },
+    STAB = { Backstab = false, Dashstab = false, BehindStuds = 4, BackDelay = 0.05, BackDur = 0.5, DashDelay = 0.25 },
+    SK8  = { ControlEnabled = false, FastSpray = false, SpraySpeed = 4.5, Speed = 60 },
+    STAMINA = {
+        Infinite = false,
+        MaxStamina = 100, StaminaGain = 25, StaminaLoss = 10, SprintSpeed = 28, InfiniteGain = 9999,
+        ModMaxStamina = false, ModStaminaGain = false, ModStaminaLoss = false, ModSprintSpeed = false,
+    },
+    GENERATOR = {
+        AutoSolve = false,
+        StartDelay = 1.5, ActionDelay = 0.05, ConnectDelay = 1.0, GearDelay = 0.03,
+    },
 }
+_G.CupcakeHubConfig = CONFIG
 
--- Window
-local Window = Library:CreateWindow({
-    Title = "Cupcake Hub",
-    Footer = LP.Name,
-    Icon = 72996766218088,
-    IconSize = UDim2.fromOffset(35, 35),
-
-    Center = true,
-    AutoShow = true,
-    Resizable = true,
-    ShowCustomCursor = false,
-})
+local ESP = CONFIG.ESP
+local aimSettings = CONFIG.AIM
 
 --═══════════════════════════════════════════════════════════
--- ESP LOGIC
+-- ESP
 --═══════════════════════════════════════════════════════════
-local MapFolder = nil
-local mapObj = Workspace:FindFirstChild("Map")
-if mapObj then MapFolder = mapObj:FindFirstChild("Ingame") end
+local MapFolder = Workspace:FindFirstChild("Map")
+MapFolder = MapFolder and MapFolder:FindFirstChild("Ingame")
 local DummyNames = {
-    "PizzaDeliveryRig", "Mafiaso1", "Mafiaso2", "Builderman", "Elliot",
-    "ShedletskyCORRUPT", "ChancecORRUPT", "ChanceCORRUPT", "Mafia1", "Mafia2",
-    "Mafia3", "Mafia4", "Mafia5", "Mafia6", "Mafia7", "Mafia8", "Mafia9",
-    "GreenGuy", "RedGuy", "BlueGuy", "PurpleGuy", "PinkGuy", "YellowGuy",
-    "OrangeGuy", "GreyGuy"
+    "PizzaDeliveryRig","Mafiaso1","Mafiaso2","Builderman","Elliot","ShedletskyCORRUPT","ChancecORRUPT","ChanceCORRUPT",
+    "Mafia1","Mafia2","Mafia3","Mafia4","Mafia5","Mafia6","Mafia7","Mafia8","Mafia9",
+    "GreenGuy","RedGuy","BlueGuy","PurpleGuy","PinkGuy","YellowGuy","OrangeGuy","GreyGuy"
 }
 local PlayerESPData, ObjectESPData = {}, {}
-local Camera = Workspace.CurrentCamera
-
-local ESP = {
-    killerESP = false, survivorESP = false,
-    killerName = true, survivorName = true,
-    killerHealth = true, survivorHealth = true,
-    killerSkin = false, survivorSkin = false,
-    killerColor = Color3.fromRGB(255, 100, 100),
-    survivorColor = Color3.fromRGB(100, 255, 100),
-    killerFill = 0.7, killerOutline = 0.3,
-    survivorFill = 0.7, survivorOutline = 0.3,
-    genESP = false, genColor = Color3.fromRGB(200, 100, 200),
-    itemESP = false, itemColor = Color3.fromRGB(200, 200, 0),
-    pizzaESP = false, pizzaColor = Color3.fromRGB(200, 150, 0),
-    deliveryESP = false, deliveryColor = Color3.fromRGB(200, 100, 100),
-    zombieESP = false, zombieColor = Color3.fromRGB(200, 100, 100),
-    tripwireESP = false, tripwireColor = Color3.fromRGB(100, 0, 100),
-    mineESP = false, mineColor = Color3.fromRGB(255, 0, 255),
-    respawnESP = false, respawnColor = Color3.fromRGB(0, 150, 200),
-    graffitiESP = false, graffitiColor = Color3.fromRGB(255, 255, 255),
-    bulbESP = false, bulbColor = Color3.fromRGB(0, 255, 200),
-    vineESP = false, vineColor = Color3.fromRGB(200, 0, 255),
-}
 
 local function isRagdoll(m)
     local r = Workspace:FindFirstChild("Ragdolls")
@@ -101,7 +104,6 @@ local function getGenPart(model)
     end
     for _, v in ipairs(model:GetDescendants()) do if v:IsA("BasePart") then return v end end
 end
-
 local function applyText(data)
     if not data.model or not data.model.Parent then return end
     local isK = data.isKiller
@@ -115,8 +117,7 @@ local function applyText(data)
                 local sn = data.model:GetAttribute("SkinNameDisplay")
                 if sn and sn ~= "" then dn = dn .. " | " .. sn end
             end
-            data.nameLabel.Text = dn
-            data.nameLabel.Visible = true
+            data.nameLabel.Text = dn; data.nameLabel.Visible = true
         else data.nameLabel.Visible = false end
     end
     if data.hpLabel and data.hpLabel.Parent then
@@ -136,11 +137,9 @@ local function applyText(data)
         end
     end
 end
-
 local function createPlayerESP(model, color, isKiller)
     if model:FindFirstChild("Ck_Highlight") or isRagdoll(model) then return end
-    local hrp = model:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
+    local hrp = model:FindFirstChild("HumanoidRootPart"); if not hrp then return end
     local hl = Instance.new("Highlight")
     hl.Name = "Ck_Highlight"; hl.Adornee = model
     hl.FillColor = color; hl.OutlineColor = color
@@ -171,7 +170,6 @@ local function createPlayerESP(model, color, isKiller)
         h:GetPropertyChangedSignal("MaxHealth"):Connect(function() applyText(data) end)
     end
 end
-
 local function removePlayerESP(model)
     for i = #PlayerESPData, 1, -1 do if PlayerESPData[i].model == model then table.remove(PlayerESPData, i) end end
     pcall(function()
@@ -179,7 +177,6 @@ local function removePlayerESP(model)
         if model:FindFirstChild("Ck_Billboard") then model.Ck_Billboard:Destroy() end
     end)
 end
-
 local function createObjESP(model, color, displayText)
     if not model or model:FindFirstChild("Ck_ObjESP") or isRagdoll(model) then return end
     local tp = model:IsA("Model") and (getGenPart(model) or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)) or model
@@ -200,7 +197,6 @@ local function createObjESP(model, color, displayText)
     tl.Parent = bb
     table.insert(ObjectESPData, model)
 end
-
 local function removeObjESP(model)
     for i = #ObjectESPData, 1, -1 do if ObjectESPData[i] == model then table.remove(ObjectESPData, i) end end
     pcall(function()
@@ -208,12 +204,10 @@ local function removeObjESP(model)
         if model:FindFirstChild("Ck_ObjBB") then model.Ck_ObjBB:Destroy() end
     end)
 end
-
 local function updateESP()
     local pf = Workspace:FindFirstChild("Players")
     if pf then
-        local kf = pf:FindFirstChild("Killers")
-        local sf = pf:FindFirstChild("Survivors")
+        local kf, sf = pf:FindFirstChild("Killers"), pf:FindFirstChild("Survivors")
         if kf then for _, k in ipairs(kf:GetChildren()) do
             if k == LP.Character then continue end
             if isRagdoll(k) then removePlayerESP(k); continue end
@@ -300,9 +294,8 @@ task.spawn(function() while task.wait(0.5) do pcall(updateESP) end end)
 task.spawn(function() while task.wait(0.15) do for _, d in ipairs(PlayerESPData) do pcall(applyText, d) end end end)
 
 --═══════════════════════════════════════════════════════════
--- AIM CORE (BodyGyro-based, no desync)
+-- AIM CORE
 --═══════════════════════════════════════════════════════════
-local aimSettings = { distance = 100, prediction = 4 }
 local aimModules = {}
 local function registerAim(name, on, off) aimModules[name] = { enabled = false, on = on, off = off } end
 local function toggleAim(name, state)
@@ -310,10 +303,11 @@ local function toggleAim(name, state)
     if state and not m.enabled then if m.on then pcall(m.on) end m.enabled = true
     elseif not state and m.enabled then if m.off then pcall(m.off) end m.enabled = false end
 end
+_G.CupcakeToggleAim = toggleAim
 
 local snapConn, snapHum, snapWasAuto, snapGyro = nil, nil, true, nil
 local function findClosestTarget(kind, excludeChar, fromPos, maxDist)
-    local folder = workspace:FindFirstChild("Players") and workspace.Players:FindFirstChild(kind)
+    local folder = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild(kind)
     if not folder then return nil end
     local best, bd = nil, maxDist
     for _, m in ipairs(folder:GetChildren()) do
@@ -343,7 +337,7 @@ local function performSnap(kind, useCam)
     if not target then return end
     stopSnap()
     if useCam then
-        local cam = workspace.CurrentCamera
+        local cam = Workspace.CurrentCamera
         local vel = target.AssemblyLinearVelocity or Vector3.zero
         if vel.Magnitude > 60 then vel = vel.Unit * 60 end
         if cam then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, target.Position + vel * (aimSettings.prediction * 0.03)) end
@@ -413,7 +407,6 @@ local function bindBtn(btn)
     local click = btn:IsA("GuiButton") and btn or btn:FindFirstChildWhichIsA("GuiButton", true) or btn
     if click and click.MouseButton1Down then click.MouseButton1Down:Connect(tryFire) end
 end
-local watchingUI = false
 task.spawn(function()
     local pg, mui
     for _ = 1, 200 do
@@ -422,8 +415,7 @@ task.spawn(function()
         if mui then break end
         task.wait(0.1)
     end
-    if not mui or watchingUI then return end
-    watchingUI = true
+    if not mui then return end
     for _, d in ipairs(mui:GetDescendants()) do
         if d:IsA("GuiObject") and (d:FindFirstChild("CooldownTime") or d:FindFirstAncestor("AbilityContainer")) then pcall(bindBtn, d) end
     end
@@ -442,8 +434,7 @@ local killerAimAnimIds = {
 }
 local killerAimCam = { ["C00kidd"] = true, ["JohnDoe"] = true, ["Nosferatu"] = true }
 local function makeAnimTrigger(name)
-    local ids = killerAimAnimIds[name]
-    local useCam = killerAimCam[name]
+    local ids = killerAimAnimIds[name]; local useCam = killerAimCam[name]
     local active, animConn, charConn = false, nil, nil
     local function onAnim(track)
         if not active then return end
@@ -461,7 +452,7 @@ local function makeAnimTrigger(name)
             if vel.Magnitude > 60 then vel = vel.Unit * 60 end
             local pred = target.Position + vel * (aimSettings.prediction * 0.03)
             if useCam then
-                local cam = workspace.CurrentCamera
+                local cam = Workspace.CurrentCamera
                 if cam then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, pred) end
             else
                 local dir = Vector3.new(pred.X - hrp.Position.X, 0, pred.Z - hrp.Position.Z)
@@ -497,20 +488,14 @@ local function makeAnimTrigger(name)
     end)
 end
 for name in pairs(killerAimAnimIds) do makeAnimTrigger(name) end
-
--- Survivor button-based aim modules (no enable/disable needed)
 for _, key in ipairs({ "Slash", "Punch", "Dagger", "JaneDoe", "JaneDoeAxe", "Chance", "Dusekkar" }) do
     registerAim(key)
 end
 
 --═══════════════════════════════════════════════════════════
--- SILENT AIM (physics projectile)
+-- SILENT AIM
 --═══════════════════════════════════════════════════════════
-local SilentAimCfg = {
-    CorruptNature = { Enabled = false, Speed = 60, Label = "c00lkidd - Corrupt Nature" },
-    PlasmaBeam    = { Enabled = false, Speed = 200, Label = "Dusekkar - Plasma Beam" },
-    CrystalPitch  = { Enabled = false, Speed = 50, ThrowDistance = 4, ThrowDown = 2.5, Label = "Jane Doe - Crystal Pitch" },
-}
+local SilentAimCfg = CONFIG.SILENT
 local hasHook = type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" and type(checkcaller) == "function"
 local function anySilentOn() for _, c in pairs(SilentAimCfg) do if c.Enabled then return true end end end
 local function identifyAbility(v)
@@ -535,7 +520,7 @@ local function getTargetForAbility(name)
     local char = LP.Character; if not char then return nil end
     local hrp = char:FindFirstChild("HumanoidRootPart"); if not hrp then return nil end
     local kind = name == "CrystalPitch" and "Killers" or "Survivors"
-    local folder = workspace:FindFirstChild("Players") and workspace.Players:FindFirstChild(kind)
+    local folder = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild(kind)
     if not folder then return nil end
     local best, bd = nil, 600
     for _, m in ipairs(folder:GetChildren()) do
@@ -639,10 +624,10 @@ local BlockSounds = {
     ["rbxassetid://95135835034592"] = true, ["rbxassetid://135209101640984"] = true,
     ["rbxassetid://91165993312513"] = true, ["rbxassetid://82772022662025"] = true,
 }
-local ParryCfg = { Enabled = false, Delay = 0.5, UsePrediction = true }
+local ParryCfg = CONFIG.PARRY
 local lastParryTime, parryBoundChar = 0, nil
 local function getNearestKillerHRP()
-    local kf = workspace:FindFirstChild("Players") and workspace.Players:FindFirstChild("Killers")
+    local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
     local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if not kf or not hrp then return nil end
     local best, bd = nil, 500
@@ -708,15 +693,9 @@ if LP.Character then bindParry(LP.Character) end
 LP.CharacterAdded:Connect(bindParry)
 
 --═══════════════════════════════════════════════════════════
--- BLOCK (Dynamic Facing Cone + HDT)
+-- AUTO BLOCK (Dynamic Facing Cone + HDT)
 --═══════════════════════════════════════════════════════════
-local ConeCfg = {
-    NormalAngle = 35, MaxAngle = 100, ExpansionSpeed = 180, RecoverySpeed = 90,
-    Range = 18, Segments = 36,
-    Color = Color3.fromRGB(255, 55, 55), ColorHit = Color3.fromRGB(80, 255, 80),
-    Transparency = 0.65, Thickness = 0.12, YTolerance = 8,
-    WindowDuration = 0.5, ShowBox = true,
-}
+local ConeCfg = CONFIG.BLOCK
 local ConeState, blockPerKiller, activeBlocks = {}, {}, {}
 
 local function hasHelpless()
@@ -746,7 +725,6 @@ local function hasHelpless()
     end
     return false
 end
-
 local function getCone(killer)
     local s = ConeState[killer]
     if s and s.folder and s.folder.Parent and #s.parts == ConeCfg.Segments then return s end
@@ -805,7 +783,6 @@ local function inCone(root, pos, yaw, lA, rA)
     local diff = math.atan2(math.sin(pYaw - yaw), math.cos(pYaw - yaw))
     return diff >= -math.rad(lA) and diff <= math.rad(rA)
 end
-
 local BlockRemote = nil
 local function getBlockRemote()
     if BlockRemote then return BlockRemote end
@@ -817,21 +794,10 @@ getBlockRemote()
 local function fireBlock()
     local r = getBlockRemote()
     if r then pcall(function() r:FireServer("UseActorAbility", { buffer.fromstring("\3\5\0\0\0Block") }) end) end
-    local mui = LP.PlayerGui:FindFirstChild("MainUI")
-    local ac = mui and mui:FindFirstChild("AbilityContainer")
-    local btn = ac and ac:FindFirstChild("Block")
-    if btn and firesignal then
-        pcall(function()
-            if btn.MouseButton1Down then firesignal(btn.MouseButton1Down) end
-            if btn.MouseButton1Click then firesignal(btn.MouseButton1Click) end
-        end)
-    end
 end
-
 local HDT = { debounce = false, Speed = 40, Duration = 0.6, bindId = 0 }
-local HDT_Enabled = false
 local function HDT_Fire(killer)
-    if not HDT_Enabled or HDT.debounce then return end
+    if not CONFIG.HDT.Enabled or HDT.debounce then return end
     if hasHelpless() then return end
     if not killer or not killer.Parent then return end
     local char = LP.Character; if not char then return end
@@ -869,10 +835,8 @@ local function HDT_Fire(killer)
     end)
     task.delay(dur + 0.3, stop)
 end
-
-local AutoBlockEnabled = false
 local function checkKiller(k)
-    if not AutoBlockEnabled or not LP.Character then return end
+    if not CONFIG.BLOCK.Enabled or not LP.Character then return end
     local cu = k:GetAttribute("AbilityLastUsed") or 0
     local cus = k:GetAttribute("AbilitiesUsed") or 0
     local st = blockPerKiller[k]
@@ -889,14 +853,14 @@ local function checkKiller(k)
     st.lastUsed = cu; st.used = cus
 end
 RunService.Heartbeat:Connect(function()
-    if not AutoBlockEnabled then return end
+    if not CONFIG.BLOCK.Enabled then return end
     local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
     if not kf then return end
     for _, k in ipairs(kf:GetChildren()) do if k:IsA("Model") then pcall(checkKiller, k) end end
 end)
 RunService.RenderStepped:Connect(function(dt)
     local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
-    if not AutoBlockEnabled or not kf then
+    if not CONFIG.BLOCK.Enabled or not kf then
         for _, s in pairs(ConeState) do hideCone(s) end
         return
     end
@@ -922,8 +886,7 @@ RunService.RenderStepped:Connect(function(dt)
                 local lA, rA = half, half
                 if s.turnDir == 1 then lA = s.currentAngle - half elseif s.turnDir == -1 then rA = s.currentAngle - half end
                 local inside = pHRP and inCone(kR, pHRP.Position, yaw, lA, rA) or false
-                if ConeCfg.ShowBox then
-                    updateCone(s, kR, dt, inside and ConeCfg.ColorHit or ConeCfg.Color)
+                if ConeCfg.ShowBox then updateCone(s, kR, dt, inside and ConeCfg.ColorHit or ConeCfg.Color)
                 elseif not inside and s.currentAngle == ConeCfg.NormalAngle then hideCone(s) end
                 if ab and inside and not ab.fired then ab.fired = true fireBlock() HDT_Fire(k) end
             else destroyCone(k) end
@@ -936,8 +899,6 @@ end)
 --═══════════════════════════════════════════════════════════
 local STAB_ANIM = "100725497418533"
 local DASH_ANIM = "89448354637442"
-local stabBack, stabDash = false, false
-local behindStuds, backDelay, backDur, dashDelay = 4, 0.05, 0.5, 0.25
 local function getFVK()
     local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
     if not kf then return nil end
@@ -950,6 +911,7 @@ local function getFVK()
     end
 end
 local function runStab(delay)
+    local S = CONFIG.STAB
     local char = LP.Character; if not char then return end
     local hrp = char:WaitForChild("HumanoidRootPart")
     task.wait(delay)
@@ -959,9 +921,9 @@ local function runStab(delay)
     anchor.Size = Vector3.new(1, 1, 1); anchor.Transparency = 1
     anchor.Anchored = true; anchor.CanCollide = false; anchor.Parent = Workspace
     local st = tick()
-    while tick() - st < backDur do
+    while tick() - st < S.BackDur do
         if not char.Parent then break end
-        anchor.CFrame = kr.CFrame * CFrame.new(0, 0, behindStuds)
+        anchor.CFrame = kr.CFrame * CFrame.new(0, 0, S.BehindStuds)
         hrp.CFrame = anchor.CFrame
         RunService.PreRender:Wait()
     end
@@ -973,8 +935,9 @@ local function hookStab(c)
     a.AnimationPlayed:Connect(function(t)
         if not t or not t.Animation then return end
         local id = tostring(t.Animation.AnimationId or ""):gsub("%D", "")
-        if id == STAB_ANIM and stabBack then task.spawn(runStab, backDelay)
-        elseif id == DASH_ANIM and stabDash then task.spawn(runStab, dashDelay) end
+        local S = CONFIG.STAB
+        if id == STAB_ANIM and S.Backstab then task.spawn(runStab, S.BackDelay)
+        elseif id == DASH_ANIM and S.Dashstab then task.spawn(runStab, S.DashDelay) end
     end)
 end
 if LP.Character then hookStab(LP.Character) end
@@ -983,11 +946,9 @@ LP.CharacterAdded:Connect(hookStab)
 --═══════════════════════════════════════════════════════════
 -- SK8
 --═══════════════════════════════════════════════════════════
-local sk8Enabled = false
 local sk8Active = false
-local sk8Conn, sk8ShiftConn = nil, nil
+local sk8Conn = nil
 local sk8Saved = {}
-local SK8_SPEED = 60
 local function sk8GetHum() return LP.Character and LP.Character:FindFirstChildOfClass("Humanoid") end
 local function sk8IsCharging()
     local h = sk8GetHum(); if not h then return false end
@@ -1002,13 +963,13 @@ local function sk8Start()
     local h = sk8GetHum(); if not h then return end
     sk8Active = true
     sk8Saved[h] = { WalkSpeed = h.WalkSpeed, AutoRotate = h.AutoRotate }
-    pcall(function() h.WalkSpeed = SK8_SPEED; h.AutoRotate = false end)
+    pcall(function() h.WalkSpeed = CONFIG.SK8.Speed; h.AutoRotate = false end)
     UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
     sk8Conn = RunService.RenderStepped:Connect(function()
         local hum = sk8GetHum()
         local root = hum and hum.Parent and hum.Parent:FindFirstChild("HumanoidRootPart")
         if not hum or not root then return end
-        pcall(function() hum.WalkSpeed = SK8_SPEED; hum.AutoRotate = false end)
+        pcall(function() hum.WalkSpeed = CONFIG.SK8.Speed; hum.AutoRotate = false end)
         local d = root.CFrame.LookVector; local flat = Vector3.new(d.X, 0, d.Z)
         if flat.Magnitude > 0 then hum:Move(flat.Unit) end
     end)
@@ -1025,13 +986,13 @@ local function sk8Stop()
     end
 end
 RunService.RenderStepped:Connect(function()
-    if not sk8Enabled then if sk8Active then sk8Stop() end return end
+    if not CONFIG.SK8.ControlEnabled then if sk8Active then sk8Stop() end return end
     if not sk8GetHum() then if sk8Active then sk8Stop() end return end
     if sk8IsCharging() then if not sk8Active then sk8Start() end
     else if sk8Active then sk8Stop() end end
 end)
 
-local sprayOn, sprayPhase, sprayBase, spraySpeed = false, 0, nil, 4.5
+local sprayPhase, sprayBase = 0, nil
 local function isSpraying()
     local h = sk8GetHum(); if not h then return false end
     for _, t in ipairs(h:GetPlayingAnimationTracks()) do
@@ -1041,43 +1002,55 @@ local function isSpraying()
     return false
 end
 RunService.RenderStepped:Connect(function(dt)
-    if not sprayOn or not isSpraying() then sprayPhase = 0; sprayBase = nil; return end
+    if not CONFIG.SK8.FastSpray or not isSpraying() then sprayPhase = 0; sprayBase = nil; return end
     local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart"); if not hrp then return end
     if not sprayBase or math.abs(math.sin(sprayPhase)) < 0.05 then sprayBase = hrp.CFrame end
-    sprayPhase = sprayPhase + dt * (math.pi * spraySpeed)
+    sprayPhase = sprayPhase + dt * (math.pi * CONFIG.SK8.SpraySpeed)
     hrp.CFrame = sprayBase + (sprayBase.LookVector * (-math.sin(sprayPhase) * 2))
 end)
 
 --═══════════════════════════════════════════════════════════
 -- STAMINA
 --═══════════════════════════════════════════════════════════
-local StamSettings = { MaxStamina = 100, StaminaGain = 25, StaminaLoss = 10, SprintSpeed = 28, InfiniteGain = 9999 }
-local StamToggles = { MaxStamina = false, StaminaGain = false, StaminaLoss = false, SprintSpeed = false }
+local StamSettings = CONFIG.STAMINA
 local StamModule = nil
 pcall(function()
     StamModule = require(ReplicatedStorage:WaitForChild("Systems", 5):WaitForChild("Character", 5):WaitForChild("Game", 5):WaitForChild("Sprinting", 5))
 end)
+local staminaConn = nil
 task.spawn(function()
     while true do
         if StamModule then
-            for k, v in pairs(StamSettings) do
-                if StamToggles[k] then pcall(function() StamModule[k] = v end) end
+            for _, key in ipairs({"MaxStamina","StaminaGain","StaminaLoss","SprintSpeed"}) do
+                if StamSettings["Mod"..key] then pcall(function() StamModule[key] = StamSettings[key] end) end
             end
         end
         task.wait(0.5)
     end
 end)
-local infStamina, staminaConn = false, nil
+task.spawn(function()
+    while true do
+        if StamModule then
+            if StamSettings.Infinite then
+                StamModule.StaminaLoss = 0
+                StamModule.StaminaGain = StamSettings.InfiniteGain
+            elseif not StamSettings.ModStaminaLoss then
+                StamModule.StaminaLoss = 10
+            end
+        end
+        task.wait(0.25)
+    end
+end)
 
 --═══════════════════════════════════════════════════════════
 -- GENERATOR SOLVER
 --═══════════════════════════════════════════════════════════
-local GenCfg = { StartDelay = 1.5, ActionDelay = 0.05, ConnectDelay = 1.0, GearDelay = 0.03 }
-local MinigameSolver = { ManualEnabled = false, Generation = 0, LockBoard = nil, Installed = false }
+local GenCfg = CONFIG.GENERATOR
+local MinigameSolver = { Generation = 0, LockBoard = nil, Installed = false }
 local GenMods = {}
 
 task.spawn(function()
-    local function safeReq(label, inst)
+    local function safeReq(inst)
         if not inst then return nil end
         local ok, m = pcall(require, inst)
         return ok and m or nil
@@ -1088,14 +1061,14 @@ task.spawn(function()
     local mf = gMod and gMod:FindFirstChild("Minigames")
     local mods = ReplicatedStorage:FindFirstChild("Modules")
     local miniMods = mods and mods:FindFirstChild("Minigames")
-    GenMods.FlowBoard = safeReq("FlowBoard", miniMods and miniMods:FindFirstChild("FlowBoard"))
-    GenMods.LockBoard = safeReq("LockBoard", miniMods and miniMods:FindFirstChild("LockBoard"))
-    GenMods.FlowInput = safeReq("FlowInput", mf and mf:FindFirstChild("FlowClientMinigame") and mf.FlowClientMinigame:FindFirstChild("FlowInput"))
-    GenMods.GearInput = safeReq("GearInput", mf and mf:FindFirstChild("GearClientMinigame") and mf.GearClientMinigame:FindFirstChild("GearInput"))
-    GenMods.LockInput = safeReq("LockInput", mf and mf:FindFirstChild("LockClientMinigame") and mf.LockClientMinigame:FindFirstChild("LockInput"))
-    GenMods.ConnectInput = safeReq("ConnectInput", mf and mf:FindFirstChild("ConnectClientMinigame") and mf.ConnectClientMinigame:FindFirstChild("ConnectInput"))
+    GenMods.FlowBoard = safeReq(miniMods and miniMods:FindFirstChild("FlowBoard"))
+    GenMods.LockBoard = safeReq(miniMods and miniMods:FindFirstChild("LockBoard"))
+    GenMods.FlowInput = safeReq(mf and mf:FindFirstChild("FlowClientMinigame") and mf.FlowClientMinigame:FindFirstChild("FlowInput"))
+    GenMods.GearInput = safeReq(mf and mf:FindFirstChild("GearClientMinigame") and mf.GearClientMinigame:FindFirstChild("GearInput"))
+    GenMods.LockInput = safeReq(mf and mf:FindFirstChild("LockClientMinigame") and mf.LockClientMinigame:FindFirstChild("LockInput"))
+    GenMods.ConnectInput = safeReq(mf and mf:FindFirstChild("ConnectClientMinigame") and mf.ConnectClientMinigame:FindFirstChild("ConnectInput"))
 
-    local function solverOn() return MinigameSolver.ManualEnabled end
+    local function solverOn() return GenCfg.AutoSolve end
     local function stillSolving(tok, obj) return tok == MinigameSolver.Generation and solverOn() and obj and not obj.Ended end
     local function waitSolver(obj)
         while obj and not obj.Ended and not solverOn() do task.wait(0.05) end
@@ -1106,11 +1079,10 @@ task.spawn(function()
     end
     local function solveFlow(board)
         if not GenMods.FlowBoard then return nil end
-        local size, pairs = board.Size, board.Pairs
+        local size = board.Size
         local occupied, answer = {}, {}
         local dirs = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } }
         local owner = {}
-        for color, pair in pairsFn or pairs, pairs do end
         for color, pair in pairs(board.Pairs) do owner[pair[1]], owner[pair[2]] = color, color end
         local remaining = {}
         for color in pairs(board.Pairs) do table.insert(remaining, color) end
@@ -1169,7 +1141,6 @@ task.spawn(function()
         end
         return search(remaining) and answer or nil
     end
-
     if MinigameSolver.Installed then return end
     local hooked = 0
     if GenMods.LockBoard and GenMods.LockBoard.new then
@@ -1186,7 +1157,7 @@ task.spawn(function()
                 local tok = MinigameSolver.Generation
                 task.wait(GenCfg.ActionDelay)
                 local paths = solveFlow(board)
-                if not paths then warn("[Cupcake Gen] Flow solve failed") return end
+                if not paths then return end
                 for color, path in pairs(paths) do
                     if not stillSolving(tok, obj) then return end
                     local draw = board:Begin(path[1]); renderer:Render(); task.wait(GenCfg.ActionDelay)
@@ -1249,7 +1220,7 @@ task.spawn(function()
                 if not waitSolver(obj) then return end
                 local tok = MinigameSolver.Generation
                 while stillSolving(tok, obj) and board and not board:IsBroken() do
-                    local n = workspace:GetServerTimeNow()
+                    local n = Workspace:GetServerTimeNow()
                     if board:IsOnTarget(board:AngleAt(n)) then cb.OnPress(); task.wait(math.max(0.08, GenCfg.ActionDelay))
                     else RunService.Heartbeat:Wait() end
                 end
@@ -1262,208 +1233,254 @@ task.spawn(function()
 end)
 
 --═══════════════════════════════════════════════════════════
--- TABS
+-- PUBLIC API — flip CONFIG values to toggle features
 --═══════════════════════════════════════════════════════════
-local ESPTab = Window:AddTab("ESP", "eye")
-local PlayerTab = Window:AddTab("Player", "user")
-local GenTab = Window:AddTab("Generator", "cpu")
-local AimbotTab = Window:AddTab("Aimbot", "crosshair")
-local KillerTab = Window:AddTab("Killer", "sword")
-local BlockTab = Window:AddTab("Block", "shield")
-local StabTab = Window:AddTab("Stab", "sword")
-local Sk8Tab = Window:AddTab("Sk8", "activity")
-local UITab = Window:AddTab("UI Settings", "settings")
-
--- ESP Tab
-local espK = ESPTab:AddLeftGroupbox("Killer")
-espK:AddToggle("KillerESP_T", { Text = "Killer ESP", Default = false, Callback = function(v) ESP.killerESP = v end })
-espK:AddToggle("KillerName_T", { Text = "Show Name", Default = true, Callback = function(v) ESP.killerName = v end })
-espK:AddToggle("KillerHP_T", { Text = "Show Health", Default = true, Callback = function(v) ESP.killerHealth = v end })
-espK:AddToggle("KillerSkin_T", { Text = "Show Skin", Default = false, Callback = function(v) ESP.killerSkin = v end })
-espK:AddSlider("KillerFill_S", { Text = "Fill Transparency", Default = 0.7, Min = 0, Max = 1, Rounding = 2, Callback = function(v) ESP.killerFill = v end })
-espK:AddSlider("KillerOutline_S", { Text = "Outline Transparency", Default = 0.3, Min = 0, Max = 1, Rounding = 2, Callback = function(v) ESP.killerOutline = v end })
-espK:AddLabel("Killer Color"):AddColorPicker("KillerColor_P", { Default = ESP.killerColor, Title = "Killer ESP Color", Callback = function(c) ESP.killerColor = c end })
-
-local espS = ESPTab:AddLeftGroupbox("Survivor")
-espS:AddToggle("SurvivorESP_T", { Text = "Survivor ESP", Default = false, Callback = function(v) ESP.survivorESP = v end })
-espS:AddToggle("SurvivorName_T", { Text = "Show Name", Default = true, Callback = function(v) ESP.survivorName = v end })
-espS:AddToggle("SurvivorHP_T", { Text = "Show Health", Default = true, Callback = function(v) ESP.survivorHealth = v end })
-espS:AddToggle("SurvivorSkin_T", { Text = "Show Skin", Default = false, Callback = function(v) ESP.survivorSkin = v end })
-espS:AddSlider("SurvivorFill_S", { Text = "Fill Transparency", Default = 0.7, Min = 0, Max = 1, Rounding = 2, Callback = function(v) ESP.survivorFill = v end })
-espS:AddSlider("SurvivorOutline_S", { Text = "Outline Transparency", Default = 0.3, Min = 0, Max = 1, Rounding = 2, Callback = function(v) ESP.survivorOutline = v end })
-espS:AddLabel("Survivor Color"):AddColorPicker("SurvivorColor_P", { Default = ESP.survivorColor, Title = "Survivor ESP Color", Callback = function(c) ESP.survivorColor = c end })
-
-local espO = ESPTab:AddRightGroupbox("Objects")
-espO:AddToggle("GenESP_T", { Text = "Generator ESP", Default = false, Callback = function(v) ESP.genESP = v end })
-espO:AddLabel("Generator Color"):AddColorPicker("GenColor_P", { Default = ESP.genColor, Title = "Generator Color", Callback = function(c) ESP.genColor = c end })
-espO:AddToggle("ItemESP_T", { Text = "Item ESP", Default = false, Callback = function(v) ESP.itemESP = v end })
-espO:AddLabel("Item Color"):AddColorPicker("ItemColor_P", { Default = ESP.itemColor, Title = "Item Color", Callback = function(c) ESP.itemColor = c end })
-espO:AddToggle("PizzaESP_T", { Text = "Pizza ESP", Default = false, Callback = function(v) ESP.pizzaESP = v end })
-espO:AddLabel("Pizza Color"):AddColorPicker("PizzaColor_P", { Default = ESP.pizzaColor, Title = "Pizza Color", Callback = function(c) ESP.pizzaColor = c end })
-espO:AddToggle("TripwireESP_T", { Text = "Tripwire ESP", Default = false, Callback = function(v) ESP.tripwireESP = v end })
-espO:AddLabel("Tripwire Color"):AddColorPicker("TripwireColor_P", { Default = ESP.tripwireColor, Title = "Tripwire Color", Callback = function(c) ESP.tripwireColor = c end })
-espO:AddToggle("MineESP_T", { Text = "Mine ESP", Default = false, Callback = function(v) ESP.mineESP = v end })
-espO:AddLabel("Mine Color"):AddColorPicker("MineColor_P", { Default = ESP.mineColor, Title = "Mine Color", Callback = function(c) ESP.mineColor = c end })
-espO:AddToggle("RespawnESP_T", { Text = "Respawn ESP", Default = false, Callback = function(v) ESP.respawnESP = v end })
-espO:AddLabel("Respawn Color"):AddColorPicker("RespawnColor_P", { Default = ESP.respawnColor, Title = "Respawn Color", Callback = function(c) ESP.respawnColor = c end })
-espO:AddToggle("GraffitiESP_T", { Text = "Graffiti ESP", Default = false, Callback = function(v) ESP.graffitiESP = v end })
-espO:AddLabel("Graffiti Color"):AddColorPicker("GraffitiColor_P", { Default = ESP.graffitiColor, Title = "Graffiti Color", Callback = function(c) ESP.graffitiColor = c end })
-
-local espSp = ESPTab:AddRightGroupbox("Special")
-espSp:AddToggle("DeliveryESP_T", { Text = "Pizza Delivery ESP", Default = false, Callback = function(v) ESP.deliveryESP = v end })
-espSp:AddLabel("Delivery Color"):AddColorPicker("DeliveryColor_P", { Default = ESP.deliveryColor, Title = "Delivery Color", Callback = function(c) ESP.deliveryColor = c end })
-espSp:AddToggle("ZombieESP_T", { Text = "Zombie ESP", Default = false, Callback = function(v) ESP.zombieESP = v end })
-espSp:AddLabel("Zombie Color"):AddColorPicker("ZombieColor_P", { Default = ESP.zombieColor, Title = "Zombie Color", Callback = function(c) ESP.zombieColor = c end })
-espSp:AddToggle("BulbESP_T", { Text = "GroundBulb ESP", Default = false, Callback = function(v) ESP.bulbESP = v end })
-espSp:AddLabel("GroundBulb Color"):AddColorPicker("BulbColor_P", { Default = ESP.bulbColor, Title = "GroundBulb Color", Callback = function(c) ESP.bulbColor = c end })
-espSp:AddToggle("VineESP_T", { Text = "Vine ESP", Default = false, Callback = function(v) ESP.vineESP = v end })
-espSp:AddLabel("Vine Color"):AddColorPicker("VineColor_P", { Default = ESP.vineColor, Title = "Vine Color", Callback = function(c) ESP.vineColor = c end })
-
--- Player Tab
-local pStam = PlayerTab:AddLeftGroupbox("Stamina")
-pStam:AddToggle("InfStam_T", { Text = "Infinite Stamina", Default = false, Callback = function(state)
-    infStamina = state
-    if StamModule then
-        if state then
-            StamModule.StaminaLoss = 0
-            StamModule.StaminaGain = StamSettings.InfiniteGain
-            if staminaConn then staminaConn:Disconnect() end
-            staminaConn = RunService.Heartbeat:Connect(function()
-                if not infStamina or not StamModule then return end
-                StamModule.StaminaLoss = 0
-                StamModule.StaminaGain = StamSettings.InfiniteGain
-            end)
-        else
-            StamModule.StaminaLoss = 10
-            StamModule.StaminaGain = 25
-            if staminaConn then staminaConn:Disconnect(); staminaConn = nil end
-        end
-    end
-end })
-pStam:AddToggle("ModMaxStam_T", { Text = "Modify Max Stamina", Default = false, Callback = function(v) StamToggles.MaxStamina = v end })
-pStam:AddToggle("ModStamGain_T", { Text = "Modify Stamina Gain", Default = false, Callback = function(v) StamToggles.StaminaGain = v end })
-pStam:AddToggle("ModStamLoss_T", { Text = "Modify Stamina Loss", Default = false, Callback = function(v) StamToggles.StaminaLoss = v end })
-pStam:AddToggle("ModSprint_T", { Text = "Modify Sprint Speed", Default = false, Callback = function(v) StamToggles.SprintSpeed = v end })
-
-local pStamCfg = PlayerTab:AddRightGroupbox("Stamina Settings")
-pStamCfg:AddSlider("MaxStam_S", { Text = "Max Stamina", Default = 100, Min = 1, Max = 500, Rounding = 0, Callback = function(v) StamSettings.MaxStamina = v end })
-pStamCfg:AddSlider("SprintSpd_S", { Text = "Sprint Speed", Default = 28, Min = 1, Max = 60, Rounding = 0, Callback = function(v) StamSettings.SprintSpeed = v end })
-pStamCfg:AddSlider("StamGain_S", { Text = "Stamina Gain Speed", Default = 25, Min = 0, Max = 120, Rounding = 0, Callback = function(v) StamSettings.StaminaGain = v end })
-pStamCfg:AddSlider("StamLoss_S", { Text = "Stamina Loss Speed", Default = 10, Min = 0, Max = 100, Rounding = 0, Callback = function(v) StamSettings.StaminaLoss = v end })
-
--- Generator Tab
-local gMain = GenTab:AddLeftGroupbox("Auto Solve")
-gMain:AddToggle("AutoGen_T", { Text = "Auto Generator", Default = false, Callback = function(v)
-    MinigameSolver.ManualEnabled = v
-    MinigameSolver.Generation += 1
-end })
-local gTime = GenTab:AddRightGroupbox("Timings")
-gTime:AddSlider("GenStart_S", { Text = "Start Delay (s)", Default = 1.5, Min = 0, Max = 5, Rounding = 1, Callback = function(v) GenCfg.StartDelay = v end })
-gTime:AddSlider("GenFlow_S", { Text = "Flow Cell Speed (ms)", Default = 50, Min = 0, Max = 250, Rounding = 0, Callback = function(v) GenCfg.ActionDelay = v / 1000 end })
-gTime:AddSlider("GenConn_S", { Text = "Connect Pair Delay (ms)", Default = 1000, Min = 100, Max = 3000, Rounding = 0, Callback = function(v) GenCfg.ConnectDelay = v / 1000 end })
-gTime:AddSlider("GenGear_S", { Text = "Gear Turn Speed (ms)", Default = 30, Min = 0, Max = 150, Rounding = 0, Callback = function(v) GenCfg.GearDelay = v / 1000 end })
-
--- Aimbot Tab
-local aSettings = AimbotTab:AddLeftGroupbox("Aim Settings")
-aSettings:AddSlider("AimDist_S", { Text = "Aim Distance", Default = 100, Min = 10, Max = 500, Rounding = 1, Callback = function(v) aimSettings.distance = v end })
-aSettings:AddSlider("AimPred_S", { Text = "Aim Prediction (studs)", Default = 4, Min = 0, Max = 30, Rounding = 1, Callback = function(v) aimSettings.prediction = v end })
-
-local aSurv = AimbotTab:AddLeftGroupbox("Survivor Aim")
-aSurv:AddToggle("Slash_T", { Text = "Shedletsky Slash", Default = false, Callback = function(v) toggleAim("Slash", v) end })
-aSurv:AddToggle("Punch_T", { Text = "Guest 1337 Punch / Parry", Default = false, Callback = function(v) toggleAim("Punch", v) end })
-aSurv:AddToggle("Dagger_T", { Text = "Two Time Dagger", Default = false, Callback = function(v) toggleAim("Dagger", v) end })
-aSurv:AddToggle("JaneDoe_T", { Text = "Jane Doe Hatchet", Default = false, Callback = function(v) toggleAim("JaneDoe", v) end })
-aSurv:AddToggle("JaneDoeAxe_T", { Text = "Jane Doe Axe Throw", Default = false, Callback = function(v) toggleAim("JaneDoeAxe", v) end })
-aSurv:AddToggle("Chance_T", { Text = "Chance Flintlock", Default = false, Callback = function(v) toggleAim("Chance", v) end })
-aSurv:AddToggle("Dusekkar_T", { Text = "Dusekkar (Camera)", Default = false, Callback = function(v) toggleAim("Dusekkar", v) end })
-
-local aSilent = AimbotTab:AddRightGroupbox("Silent Aim")
-if hasHook then
-    for key, cfg in pairs(SilentAimCfg) do
-        aSilent:AddToggle(key .. "_T", { Text = cfg.Label, Default = false, Callback = function(v) SilentAimCfg[key].Enabled = v end })
-        aSilent:AddSlider(key .. "_Speed", { Text = "  Speed", Default = cfg.Speed, Min = 20, Max = 500, Rounding = 0, Callback = function(v) SilentAimCfg[key].Speed = v end })
-        if key == "CrystalPitch" then
-            aSilent:AddSlider("CrystalDist_S", { Text = "  Throw Distance", Default = 4, Min = 1, Max = 20, Rounding = 1, Callback = function(v) SilentAimCfg[key].ThrowDistance = v end })
-            aSilent:AddSlider("CrystalDown_S", { Text = "  Throw Down", Default = 2.5, Min = 0, Max = 8, Rounding = 1, Callback = function(v) SilentAimCfg[key].ThrowDown = v end })
-        end
-    end
-else
-    aSilent:AddLabel("Unavailable — missing hookmetamethod")
-end
-
-local aParry = AimbotTab:AddRightGroupbox("Auto Parry")
-aParry:AddToggle("Parry_T", { Text = "Enable Auto Parry", Default = false, Callback = function(v) ParryCfg.Enabled = v end })
-aParry:AddSlider("ParryDelay_S", { Text = "Parry Delay (s)", Default = 0.5, Min = 0, Max = 2, Rounding = 2, Callback = function(v) ParryCfg.Delay = v end })
-aParry:AddToggle("ParryPredict_T", { Text = "Aim with Prediction", Default = true, Callback = function(v) ParryCfg.UsePrediction = v end })
-
--- Killer Tab
-local kAim = KillerTab:AddLeftGroupbox("Killer Aim")
-kAim:AddToggle("1x4_T", { Text = "1x4 Aim", Default = false, Callback = function(v) toggleAim("1x4", v) end })
-kAim:AddToggle("C00kidd_T", { Text = "C00kidd Aim (Camera)", Default = false, Callback = function(v) toggleAim("C00kidd", v) end })
-kAim:AddToggle("JohnDoe_T", { Text = "John Doe Aim (Camera)", Default = false, Callback = function(v) toggleAim("JohnDoe", v) end })
-kAim:AddToggle("Nosferatu_T", { Text = "Nosferatu Aim (Camera)", Default = false, Callback = function(v) toggleAim("Nosferatu", v) end })
-
--- Block Tab
-local bMain = BlockTab:AddLeftGroupbox("Auto Block (Cone)")
-bMain:AddToggle("AutoBlock_T", { Text = "Enable AutoBlock", Default = false, Callback = function(state)
-    AutoBlockEnabled = state
-    table.clear(blockPerKiller); table.clear(activeBlocks)
-    if not state then
+_G.CupcakeHub = {
+    Config = CONFIG,
+    ToggleAim = toggleAim,
+    FireBlock = fireBlock,
+    HasHelpless = hasHelpless,
+    Unload = function()
+        stopSnap()
         for _, v in pairs(ConeState) do if v.folder then pcall(function() v.folder:Destroy() end) end end
-        table.clear(ConeState)
-    end
-end })
-bMain:AddSlider("Cone_Range", { Text = "Range (studs)", Default = 18, Min = 3, Max = 60, Rounding = 1, Callback = function(v) ConeCfg.Range = v end })
-bMain:AddSlider("Cone_Norm", { Text = "Normal Angle (deg)", Default = 35, Min = 10, Max = 90, Rounding = 1, Callback = function(v) ConeCfg.NormalAngle = v; if v > ConeCfg.MaxAngle then ConeCfg.MaxAngle = v end end })
-bMain:AddSlider("Cone_Max", { Text = "Max Angle (deg)", Default = 100, Min = 20, Max = 180, Rounding = 1, Callback = function(v) ConeCfg.MaxAngle = math.max(v, ConeCfg.NormalAngle) end })
-bMain:AddSlider("Cone_Trans", { Text = "Transparency", Default = 0.65, Min = 0, Max = 1, Rounding = 2, Callback = function(v) ConeCfg.Transparency = v end })
-bMain:AddToggle("Cone_Show_T", { Text = "Show Cone Visual", Default = true, Callback = function(v) ConeCfg.ShowBox = v end })
+        for _, d in ipairs(PlayerESPData) do removePlayerESP(d.model) end
+        for _, m in ipairs(ObjectESPData) do removeObjESP(m) end
+        sk8Stop()
+    end,
+}
 
-local bHdt = BlockTab:AddRightGroupbox("HDT")
-bHdt:AddToggle("HDT_T", { Text = "Enable HDT", Default = false, Callback = function(v) HDT_Enabled = v end })
-bHdt:AddSlider("HDT_Spd_S", { Text = "Dash Speed", Default = 40, Min = 5, Max = 500, Rounding = 0, Callback = function(v) HDT.Speed = math.clamp(tonumber(v) or 40, 5, 500) end })
-bHdt:AddSlider("HDT_Dur_S", { Text = "Dash Duration (s)", Default = 0.6, Min = 0.05, Max = 3, Rounding = 2, Callback = function(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 0.05, 3) end })
+print("[Cupcake Hub Core] Loaded. Configure via _G.CupcakeHubConfig")
 
--- Stab Tab
-local sMain = StabTab:AddLeftGroupbox("Backstab")
-sMain:AddToggle("Backstab_T", { Text = "Enable Backstab", Default = false, Callback = function(v) stabBack = v end })
-sMain:AddToggle("Dashstab_T", { Text = "Enable Dashstab", Default = false, Callback = function(v) stabDash = v end })
-local sCfg = StabTab:AddRightGroupbox("Settings")
-sCfg:AddSlider("Behind_S", { Text = "Behind Studs", Default = 4, Min = 1, Max = 10, Rounding = 1, Callback = function(v) behindStuds = v end })
-sCfg:AddSlider("BackDelay_S", { Text = "Backstab Delay", Default = 0.05, Min = 0, Max = 0.5, Rounding = 2, Callback = function(v) backDelay = v end })
-sCfg:AddSlider("BackDur_S", { Text = "Backstab Duration", Default = 0.5, Min = 0.1, Max = 2, Rounding = 2, Callback = function(v) backDur = v end })
-sCfg:AddSlider("DashDelay_S", { Text = "Dashstab Delay", Default = 0.25, Min = 0, Max = 0.5, Rounding = 2, Callback = function(v) dashDelay = v end })
+-- ═══════════════════════════════════════════════════════════
+-- OBSIDIAN UI
+-- ═══════════════════════════════════════════════════════════
+local REPO        = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library     = loadstring(game:HttpGet(REPO .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(REPO .. "addons/ThemeManager.lua"))()
+local SaveManager  = loadstring(game:HttpGet(REPO .. "addons/SaveManager.lua"))()
 
--- Sk8 Tab
-local k8Main = Sk8Tab:AddLeftGroupbox("Main")
-k8Main:AddToggle("Sk8Ctrl_T", { Text = "Enable SK8 Control", Default = false, Callback = function(v)
-    sk8Enabled = v
-    if not v and sk8Active then sk8Stop() end
-end })
-local k8Right = Sk8Tab:AddRightGroupbox("Fast Spray")
-k8Right:AddToggle("FastSpray_T", { Text = "Enable Fast Spray", Default = false, Callback = function(v)
-    sprayOn = v
-    if not v then sprayPhase = 0; sprayBase = nil end
-end })
-k8Right:AddSlider("SpraySpeed_S", { Text = "Spray Speed", Default = 4.5, Min = 0.5, Max = 10, Rounding = 1, Callback = function(v) spraySpeed = v end })
-
--- UI Settings Tab
-local uiMain = UITab:AddLeftGroupbox("Menu")
-uiMain:AddToggle("CustomCursor_T", { Text = "Custom Cursor", Default = false, Callback = function(v) Library.ShowCustomCursor = v end })
-uiMain:AddDropdown("NotifySide_D", { Values = { "Left", "Right" }, Default = "Right", Text = "Notification Side", Callback = function(v) Library:SetNotifySide(v) end })
-uiMain:AddDivider()
-uiMain:AddLabel("Menu Keybind")
-uiMain:AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu Keybind" })
-uiMain:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
-
-if Library.Options and Library.Options.MenuKeybind then
-    Library.ToggleKeybind = Library.Options.MenuKeybind
-end
+local Window = Library:CreateWindow({
+    Title    = "Opal Hub",
+    Center   = true,
+    AutoShow = true,
+})
 
 Library:OnUnload(function()
-    stopSnap()
-    for _, v in pairs(ConeState) do if v.folder then pcall(function() v.folder:Destroy() end) end end
-    print("[Cupcake Hub] Unloaded")
+    pcall(function() _G.CupcakeHub.Unload() end)
 end)
 
-print("[Cupcake Hub] Loaded — Obsidian Custom Red")
+-- ═══════════════════════════════════════════════════════════
+-- TAB: ESP
+-- ═══════════════════════════════════════════════════════════
+local EspTab   = Window:AddTab("ESP")
+local EspLeft  = EspTab:AddLeftGroupbox("Players")
+local EspRight = EspTab:AddRightGroupbox("Objects")
+
+-- ── Players (Left) ───────────────────────────────────────
+EspLeft:AddToggle("KillerESP",     { Text = "Killer ESP",         Default = ESP.killerESP,   Callback = function(v) ESP.killerESP   = v end })
+EspLeft:AddColorpicker("KillerCol",{ Text = "Killer Color",       Default = ESP.killerColor, Callback = function(c) ESP.killerColor = c end })
+EspLeft:AddSlider("KillerFill",    { Text = "Killer Fill Trans",   Default = ESP.killerFill,   Min=0, Max=1, Rounding=2, Callback = function(v) ESP.killerFill    = v end })
+EspLeft:AddSlider("KillerOutline", { Text = "Killer Outline Trans",Default = ESP.killerOutline,Min=0, Max=1, Rounding=2, Callback = function(v) ESP.killerOutline = v end })
+EspLeft:AddToggle("KillerName",    { Text = "Show Killer Name",    Default = ESP.killerName,   Callback = function(v) ESP.killerName   = v end })
+EspLeft:AddToggle("KillerHealth",  { Text = "Show Killer HP",      Default = ESP.killerHealth, Callback = function(v) ESP.killerHealth = v end })
+EspLeft:AddToggle("KillerSkin",    { Text = "Show Killer Skin",    Default = ESP.killerSkin,   Callback = function(v) ESP.killerSkin   = v end })
+EspLeft:AddDivider()
+EspLeft:AddToggle("SurvivorESP",     { Text = "Survivor ESP",          Default = ESP.survivorESP,   Callback = function(v) ESP.survivorESP   = v end })
+EspLeft:AddColorpicker("SurvivorCol",{ Text = "Survivor Color",        Default = ESP.survivorColor, Callback = function(c) ESP.survivorColor = c end })
+EspLeft:AddSlider("SurvivorFill",    { Text = "Survivor Fill Trans",   Default = ESP.survivorFill,   Min=0, Max=1, Rounding=2, Callback = function(v) ESP.survivorFill    = v end })
+EspLeft:AddSlider("SurvivorOutline", { Text = "Survivor Outline Trans",Default = ESP.survivorOutline,Min=0, Max=1, Rounding=2, Callback = function(v) ESP.survivorOutline = v end })
+EspLeft:AddToggle("SurvivorName",    { Text = "Show Survivor Name",    Default = ESP.survivorName,   Callback = function(v) ESP.survivorName   = v end })
+EspLeft:AddToggle("SurvivorHealth",  { Text = "Show Survivor HP",      Default = ESP.survivorHealth, Callback = function(v) ESP.survivorHealth = v end })
+EspLeft:AddToggle("SurvivorSkin",    { Text = "Show Survivor Skin",    Default = ESP.survivorSkin,   Callback = function(v) ESP.survivorSkin   = v end })
+
+-- ── Objects (Right) ──────────────────────────────────────
+EspRight:AddToggle("GenESP",        { Text = "Generator ESP",    Default = ESP.genESP,      Callback = function(v) ESP.genESP      = v end })
+EspRight:AddColorpicker("GenCol",   { Text = "Generator Color",  Default = ESP.genColor,    Callback = function(c) ESP.genColor    = c end })
+EspRight:AddToggle("ItemESP",       { Text = "Item ESP",         Default = ESP.itemESP,     Callback = function(v) ESP.itemESP     = v end })
+EspRight:AddColorpicker("ItemCol",  { Text = "Item Color",       Default = ESP.itemColor,   Callback = function(c) ESP.itemColor   = c end })
+EspRight:AddDivider()
+EspRight:AddToggle("PizzaESP",         { Text = "Pizza ESP",          Default = ESP.pizzaESP,    Callback = function(v) ESP.pizzaESP    = v end })
+EspRight:AddColorpicker("PizzaCol",    { Text = "Pizza Color",        Default = ESP.pizzaColor,  Callback = function(c) ESP.pizzaColor  = c end })
+EspRight:AddToggle("DeliveryESP",      { Text = "Delivery NPC ESP",   Default = ESP.deliveryESP, Callback = function(v) ESP.deliveryESP = v end })
+EspRight:AddColorpicker("DeliveryCol", { Text = "Delivery Color",     Default = ESP.deliveryColor,Callback = function(c) ESP.deliveryColor = c end })
+EspRight:AddToggle("ZombieESP",        { Text = "Zombie ESP",         Default = ESP.zombieESP,   Callback = function(v) ESP.zombieESP   = v end })
+EspRight:AddColorpicker("ZombieCol",   { Text = "Zombie Color",       Default = ESP.zombieColor, Callback = function(c) ESP.zombieColor = c end })
+EspRight:AddDivider()
+EspRight:AddToggle("TripwireESP",      { Text = "Tripwire ESP",        Default = ESP.tripwireESP,  Callback = function(v) ESP.tripwireESP  = v end })
+EspRight:AddColorpicker("TripwireCol", { Text = "Tripwire Color",      Default = ESP.tripwireColor,Callback = function(c) ESP.tripwireColor = c end })
+EspRight:AddToggle("MineESP",          { Text = "Mine ESP",            Default = ESP.mineESP,      Callback = function(v) ESP.mineESP      = v end })
+EspRight:AddColorpicker("MineCol",     { Text = "Mine Color",          Default = ESP.mineColor,    Callback = function(c) ESP.mineColor    = c end })
+EspRight:AddDivider()
+EspRight:AddToggle("GraffitiESP",      { Text = "Graffiti ESP",        Default = ESP.graffitiESP,  Callback = function(v) ESP.graffitiESP  = v end })
+EspRight:AddColorpicker("GraffitiCol", { Text = "Graffiti Color",      Default = ESP.graffitiColor,Callback = function(c) ESP.graffitiColor = c end })
+EspRight:AddToggle("RespawnESP",       { Text = "Respawn ESP",         Default = ESP.respawnESP,   Callback = function(v) ESP.respawnESP   = v end })
+EspRight:AddColorpicker("RespawnCol",  { Text = "Respawn Color",       Default = ESP.respawnColor, Callback = function(c) ESP.respawnColor = c end })
+EspRight:AddToggle("BulbESP",          { Text = "Ground Bulb ESP",     Default = ESP.bulbESP,      Callback = function(v) ESP.bulbESP      = v end })
+EspRight:AddColorpicker("BulbCol",     { Text = "Bulb Color",          Default = ESP.bulbColor,    Callback = function(c) ESP.bulbColor    = c end })
+EspRight:AddToggle("VineESP",          { Text = "Vine ESP",            Default = ESP.vineESP,      Callback = function(v) ESP.vineESP      = v end })
+EspRight:AddColorpicker("VineCol",     { Text = "Vine Color",          Default = ESP.vineColor,    Callback = function(c) ESP.vineColor    = c end })
+
+-- ═══════════════════════════════════════════════════════════
+-- TAB: AIM
+-- ═══════════════════════════════════════════════════════════
+local AimTab   = Window:AddTab("Aim")
+local AimLeft  = AimTab:AddLeftGroupbox("Settings & Abilities")
+local AimRight = AimTab:AddRightGroupbox("Killer Animation Aim")
+
+AimLeft:AddSlider("AimDist",  { Text = "Distance",   Default = aimSettings.distance,   Min = 10, Max = 500, Rounding = 0, Callback = function(v) aimSettings.distance   = v end })
+AimLeft:AddSlider("AimPred",  { Text = "Prediction", Default = aimSettings.prediction, Min = 0,  Max = 20,  Rounding = 1, Callback = function(v) aimSettings.prediction = v end })
+AimLeft:AddDivider()
+AimLeft:AddLabel({ Text = "Ability-Button Triggers", DoesWrap = false })
+AimLeft:AddToggle("AimSlash",    { Text = "Slash / Swing / Sword",   Default = false, Callback = function(v) toggleAim("Slash",      v) end })
+AimLeft:AddToggle("AimPunch",    { Text = "Punch / Parry",           Default = false, Callback = function(v) toggleAim("Punch",      v) end })
+AimLeft:AddToggle("AimDagger",   { Text = "Dagger / Stab",           Default = false, Callback = function(v) toggleAim("Dagger",     v) end })
+AimLeft:AddToggle("AimJaneDoe",  { Text = "Jane Doe — Hatchet",      Default = false, Callback = function(v) toggleAim("JaneDoe",    v) end })
+AimLeft:AddToggle("AimJDAxe",    { Text = "Jane Doe — Axe",          Default = false, Callback = function(v) toggleAim("JaneDoeAxe", v) end })
+AimLeft:AddToggle("AimChance",   { Text = "Chance — Flintlock",      Default = false, Callback = function(v) toggleAim("Chance",     v) end })
+AimLeft:AddToggle("AimDusekkar", { Text = "Dusekkar (Camera Lock)",  Default = false, Callback = function(v) toggleAim("Dusekkar",   v) end })
+
+AimRight:AddToggle("Aim1x4",       { Text = "1x4",                  Default = false, Callback = function(v) toggleAim("1x4",       v) end })
+AimRight:AddToggle("AimC00kidd",   { Text = "C00kidd (Camera)",     Default = false, Callback = function(v) toggleAim("C00kidd",   v) end })
+AimRight:AddToggle("AimJohnDoe",   { Text = "John Doe (Camera)",    Default = false, Callback = function(v) toggleAim("JohnDoe",   v) end })
+AimRight:AddToggle("AimNosferatu", { Text = "Nosferatu (Camera)",   Default = false, Callback = function(v) toggleAim("Nosferatu", v) end })
+
+-- ═══════════════════════════════════════════════════════════
+-- TAB: SILENT AIM
+-- ═══════════════════════════════════════════════════════════
+local SilentTab   = Window:AddTab("Silent Aim")
+local SilentLeft  = SilentTab:AddLeftGroupbox("Corrupt Nature & Plasma Beam")
+local SilentRight = SilentTab:AddRightGroupbox("Crystal Pitch")
+
+SilentLeft:AddToggle("CnEnable",  { Text = "Enable Corrupt Nature", Default = false, Callback = function(v) CONFIG.SILENT.CorruptNature.Enabled = v end })
+SilentLeft:AddSlider("CnSpeed",   { Text = "CN Speed",              Default = CONFIG.SILENT.CorruptNature.Speed, Min=10, Max=400, Rounding=0, Callback = function(v) CONFIG.SILENT.CorruptNature.Speed = v end })
+SilentLeft:AddDivider()
+SilentLeft:AddToggle("PbEnable",  { Text = "Enable Plasma Beam",    Default = false, Callback = function(v) CONFIG.SILENT.PlasmaBeam.Enabled = v end })
+SilentLeft:AddSlider("PbSpeed",   { Text = "PB Speed",              Default = CONFIG.SILENT.PlasmaBeam.Speed, Min=10, Max=600, Rounding=0, Callback = function(v) CONFIG.SILENT.PlasmaBeam.Speed = v end })
+
+SilentRight:AddToggle("CpEnable",     { Text = "Enable Crystal Pitch",  Default = false, Callback = function(v) CONFIG.SILENT.CrystalPitch.Enabled       = v end })
+SilentRight:AddSlider("CpSpeed",      { Text = "Speed",                 Default = CONFIG.SILENT.CrystalPitch.Speed,         Min=10, Max=300, Rounding=0,  Callback = function(v) CONFIG.SILENT.CrystalPitch.Speed         = v end })
+SilentRight:AddSlider("CpThrowDist",  { Text = "Throw Distance",        Default = CONFIG.SILENT.CrystalPitch.ThrowDistance, Min=0,  Max=20,  Rounding=2,  Callback = function(v) CONFIG.SILENT.CrystalPitch.ThrowDistance = v end })
+SilentRight:AddSlider("CpThrowDown",  { Text = "Throw Down Offset",     Default = CONFIG.SILENT.CrystalPitch.ThrowDown,     Min=0,  Max=10,  Rounding=2,  Callback = function(v) CONFIG.SILENT.CrystalPitch.ThrowDown     = v end })
+
+-- ═══════════════════════════════════════════════════════════
+-- TAB: BLOCK / PARRY / HDT
+-- ═══════════════════════════════════════════════════════════
+local BlockTab   = Window:AddTab("Block / Parry")
+local BlockLeft  = BlockTab:AddLeftGroupbox("Auto Block (Facing Cone)")
+local BlockRight = BlockTab:AddRightGroupbox("Auto Parry  &  HDT")
+
+BlockLeft:AddToggle("BlockEnable",  { Text = "Enable Auto Block",   Default = false,                     Callback = function(v) CONFIG.BLOCK.Enabled = v end })
+BlockLeft:AddToggle("BlockShowBox", { Text = "Show Cone Visual",    Default = CONFIG.BLOCK.ShowBox,      Callback = function(v) CONFIG.BLOCK.ShowBox = v end })
+BlockLeft:AddDivider()
+BlockLeft:AddSlider("BlockRange",        { Text = "Range (studs)",         Default = CONFIG.BLOCK.Range,          Min=5,   Max=60,  Rounding=0,  Callback = function(v) CONFIG.BLOCK.Range          = v end })
+BlockLeft:AddSlider("BlockNormAngle",    { Text = "Normal Angle (°)",      Default = CONFIG.BLOCK.NormalAngle,    Min=10,  Max=180, Rounding=0,  Callback = function(v) CONFIG.BLOCK.NormalAngle    = v end })
+BlockLeft:AddSlider("BlockMaxAngle",     { Text = "Max Angle (°)",         Default = CONFIG.BLOCK.MaxAngle,       Min=10,  Max=360, Rounding=0,  Callback = function(v) CONFIG.BLOCK.MaxAngle       = v end })
+BlockLeft:AddSlider("BlockExpandSpd",   { Text = "Expansion Speed",       Default = CONFIG.BLOCK.ExpansionSpeed, Min=10,  Max=600, Rounding=0,  Callback = function(v) CONFIG.BLOCK.ExpansionSpeed = v end })
+BlockLeft:AddSlider("BlockRecoverSpd",  { Text = "Recovery Speed",        Default = CONFIG.BLOCK.RecoverySpeed,  Min=10,  Max=600, Rounding=0,  Callback = function(v) CONFIG.BLOCK.RecoverySpeed  = v end })
+BlockLeft:AddSlider("BlockWindow",      { Text = "Window Duration (s)",   Default = CONFIG.BLOCK.WindowDuration, Min=0.1, Max=2,   Rounding=2,  Callback = function(v) CONFIG.BLOCK.WindowDuration = v end })
+BlockLeft:AddSlider("BlockYTol",        { Text = "Y Tolerance",           Default = CONFIG.BLOCK.YTolerance,     Min=1,   Max=30,  Rounding=0,  Callback = function(v) CONFIG.BLOCK.YTolerance     = v end })
+BlockLeft:AddSlider("BlockSegments",    { Text = "Cone Segments",         Default = CONFIG.BLOCK.Segments,       Min=4,   Max=72,  Rounding=0,  Callback = function(v) CONFIG.BLOCK.Segments       = v end })
+BlockLeft:AddDivider()
+BlockLeft:AddColorpicker("BlockColor",    { Text = "Cone Color",   Default = CONFIG.BLOCK.Color,    Callback = function(c) CONFIG.BLOCK.Color    = c end })
+BlockLeft:AddColorpicker("BlockColorHit", { Text = "Hit Color",    Default = CONFIG.BLOCK.ColorHit, Callback = function(c) CONFIG.BLOCK.ColorHit = c end })
+BlockLeft:AddSlider("BlockTrans",         { Text = "Transparency", Default = CONFIG.BLOCK.Transparency, Min=0, Max=1, Rounding=2, Callback = function(v) CONFIG.BLOCK.Transparency = v end })
+BlockLeft:AddSlider("BlockThickness",     { Text = "Thickness",    Default = CONFIG.BLOCK.Thickness,    Min=0.01, Max=1, Rounding=2, Callback = function(v) CONFIG.BLOCK.Thickness    = v end })
+
+BlockRight:AddToggle("ParryEnable",  { Text = "Enable Auto Parry",  Default = false,                      Callback = function(v) CONFIG.PARRY.Enabled       = v end })
+BlockRight:AddToggle("ParryPredict", { Text = "Use Prediction",     Default = CONFIG.PARRY.UsePrediction, Callback = function(v) CONFIG.PARRY.UsePrediction = v end })
+BlockRight:AddSlider("ParryDelay",   { Text = "Parry Delay (s)",    Default = CONFIG.PARRY.Delay, Min=0, Max=2, Rounding=2, Callback = function(v) CONFIG.PARRY.Delay = v end })
+BlockRight:AddDivider()
+BlockRight:AddToggle("HDTEnable",   { Text = "Enable HDT",          Default = false,              Callback = function(v) CONFIG.HDT.Enabled = v end })
+BlockRight:AddSlider("HDTSpeed",    { Text = "Dash Speed",          Default = CONFIG.HDT.Speed,   Min=5, Max=200, Rounding=0, Callback = function(v) CONFIG.HDT.Speed    = v; HDT.Speed    = v end })
+BlockRight:AddSlider("HDTDuration", { Text = "Dash Duration (s)",   Default = CONFIG.HDT.Duration,Min=0.1, Max=3, Rounding=2, Callback = function(v) CONFIG.HDT.Duration = v; HDT.Duration = v end })
+BlockRight:AddDivider()
+BlockRight:AddButton({ Text = "Force HDT Now", Func = function()
+    local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+    if kf then
+        for _, k in ipairs(kf:GetChildren()) do
+            if k:IsA("Model") then task.spawn(HDT_Fire, k); break end
+        end
+    end
+end })
+
+-- ═══════════════════════════════════════════════════════════
+-- TAB: STAB / SK8
+-- ═══════════════════════════════════════════════════════════
+local StabTab   = Window:AddTab("Stab / Sk8")
+local StabLeft  = StabTab:AddLeftGroupbox("Stab")
+local StabRight = StabTab:AddRightGroupbox("Sk8 (Veeronica)")
+
+StabLeft:AddToggle("Backstab",   { Text = "Backstab  (stab anim)",  Default = false, Callback = function(v) CONFIG.STAB.Backstab  = v end })
+StabLeft:AddToggle("Dashstab",   { Text = "Dashstab  (dash anim)",  Default = false, Callback = function(v) CONFIG.STAB.Dashstab  = v end })
+StabLeft:AddDivider()
+StabLeft:AddSlider("StabBehind", { Text = "Behind Studs",   Default = CONFIG.STAB.BehindStuds, Min=0,   Max=10, Rounding=2, Callback = function(v) CONFIG.STAB.BehindStuds = v end })
+StabLeft:AddSlider("StabBkDly",  { Text = "Back Delay (s)", Default = CONFIG.STAB.BackDelay,   Min=0,   Max=1,  Rounding=2, Callback = function(v) CONFIG.STAB.BackDelay   = v end })
+StabLeft:AddSlider("StabBkDur",  { Text = "Back Duration",  Default = CONFIG.STAB.BackDur,     Min=0.1, Max=2,  Rounding=2, Callback = function(v) CONFIG.STAB.BackDur     = v end })
+StabLeft:AddSlider("StabDshDly", { Text = "Dash Delay (s)", Default = CONFIG.STAB.DashDelay,   Min=0,   Max=1,  Rounding=2, Callback = function(v) CONFIG.STAB.DashDelay   = v end })
+
+StabRight:AddToggle("Sk8Ctrl",    { Text = "Sk8 Control",  Default = false, Callback = function(v) CONFIG.SK8.ControlEnabled = v end })
+StabRight:AddToggle("FastSpray",  { Text = "Fast Spray",   Default = false, Callback = function(v) CONFIG.SK8.FastSpray      = v end })
+StabRight:AddDivider()
+StabRight:AddSlider("Sk8Speed",   { Text = "Sk8 Speed",   Default = CONFIG.SK8.Speed,      Min=10, Max=200, Rounding=0,  Callback = function(v) CONFIG.SK8.Speed      = v end })
+StabRight:AddSlider("SpraySpeed", { Text = "Spray Speed", Default = CONFIG.SK8.SpraySpeed, Min=1,  Max=20,  Rounding=2,  Callback = function(v) CONFIG.SK8.SpraySpeed = v end })
+
+-- ═══════════════════════════════════════════════════════════
+-- TAB: STAMINA
+-- ═══════════════════════════════════════════════════════════
+local StamTab   = Window:AddTab("Stamina")
+local StamLeft  = StamTab:AddLeftGroupbox("Stamina")
+local StamRight = StamTab:AddRightGroupbox("Override Values")
+
+StamLeft:AddToggle("InfStam",       { Text = "Infinite Stamina",       Default = false, Callback = function(v) CONFIG.STAMINA.Infinite        = v end })
+StamLeft:AddSlider("InfGain",       { Text = "Infinite Stamina Gain",  Default = CONFIG.STAMINA.InfiniteGain, Min=100, Max=99999, Rounding=0, Callback = function(v) CONFIG.STAMINA.InfiniteGain  = v end })
+StamLeft:AddDivider()
+StamLeft:AddLabel({ Text = "Per-value override toggles:", DoesWrap = false })
+StamLeft:AddToggle("ModMaxStam",    { Text = "Override Max Stamina",   Default = false, Callback = function(v) CONFIG.STAMINA.ModMaxStamina   = v end })
+StamLeft:AddToggle("ModStamGain",   { Text = "Override Stamina Gain",  Default = false, Callback = function(v) CONFIG.STAMINA.ModStaminaGain  = v end })
+StamLeft:AddToggle("ModStamLoss",   { Text = "Override Stamina Loss",  Default = false, Callback = function(v) CONFIG.STAMINA.ModStaminaLoss  = v end })
+StamLeft:AddToggle("ModSprintSpd",  { Text = "Override Sprint Speed",  Default = false, Callback = function(v) CONFIG.STAMINA.ModSprintSpeed  = v end })
+
+StamRight:AddSlider("MaxStam",    { Text = "Max Stamina",   Default = CONFIG.STAMINA.MaxStamina,  Min=10,  Max=1000, Rounding=0, Callback = function(v) CONFIG.STAMINA.MaxStamina   = v end })
+StamRight:AddSlider("StamGain",   { Text = "Stamina Gain",  Default = CONFIG.STAMINA.StaminaGain, Min=1,   Max=500,  Rounding=0, Callback = function(v) CONFIG.STAMINA.StaminaGain  = v end })
+StamRight:AddSlider("StamLoss",   { Text = "Stamina Loss",  Default = CONFIG.STAMINA.StaminaLoss, Min=0,   Max=100,  Rounding=1, Callback = function(v) CONFIG.STAMINA.StaminaLoss  = v end })
+StamRight:AddSlider("SprintSpd",  { Text = "Sprint Speed",  Default = CONFIG.STAMINA.SprintSpeed, Min=1,   Max=100,  Rounding=1, Callback = function(v) CONFIG.STAMINA.SprintSpeed  = v end })
+
+-- ═══════════════════════════════════════════════════════════
+-- TAB: GENERATOR
+-- ═══════════════════════════════════════════════════════════
+local GenTab   = Window:AddTab("Generator")
+local GenLeft  = GenTab:AddLeftGroupbox("Generator Solver")
+local GenRight = GenTab:AddRightGroupbox("Timing")
+
+GenLeft:AddToggle("GenAutoSolve",   { Text = "Auto Solve", Default = false, Callback = function(v)
+    CONFIG.GENERATOR.AutoSolve = v
+    MinigameSolver.Generation += 1
+end })
+GenLeft:AddSlider("GenStartDelay",  { Text = "Start Delay (s)", Default = CONFIG.GENERATOR.StartDelay, Min=0, Max=5, Rounding=2, Callback = function(v) CONFIG.GENERATOR.StartDelay  = v end })
+
+GenRight:AddSlider("GenActionDelay",  { Text = "Action Delay  (Flow / Lock)", Default = CONFIG.GENERATOR.ActionDelay,  Min=0.01, Max=0.5, Rounding=2, Callback = function(v) CONFIG.GENERATOR.ActionDelay  = v end })
+GenRight:AddSlider("GenConnectDelay", { Text = "Connect Delay",               Default = CONFIG.GENERATOR.ConnectDelay, Min=0.1,  Max=3,   Rounding=2, Callback = function(v) CONFIG.GENERATOR.ConnectDelay = v end })
+GenRight:AddSlider("GenGearDelay",    { Text = "Gear Delay",                  Default = CONFIG.GENERATOR.GearDelay,   Min=0.01, Max=0.5, Rounding=2, Callback = function(v) CONFIG.GENERATOR.GearDelay    = v end })
+
+-- ═══════════════════════════════════════════════════════════
+-- TAB: SETTINGS (Theme + Save/Load)
+-- ═══════════════════════════════════════════════════════════
+local SettingsTab = Window:AddTab("Settings")
+local AppGroup    = SettingsTab:AddLeftGroupbox("Appearance")
+local CfgGroup    = SettingsTab:AddRightGroupbox("Config")
+
+ThemeManager:SetLibrary(Library)
+ThemeManager:SetFolder("OpalHub")
+ThemeManager:SetDefaultTheme("Dark")
+ThemeManager:ApplyToTab(AppGroup)
+
+SaveManager:SetLibrary(Library)
+SaveManager:SetFolder("OpalHub")
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreList({})
+SaveManager:BuildConfigSection(CfgGroup)
+
+ThemeManager:LoadDefault()
+SaveManager:LoadAutoloadConfig()
+
+Library:Notify({ Title = "Opal Hub", Content = "Loaded successfully.", Time = 4 })
