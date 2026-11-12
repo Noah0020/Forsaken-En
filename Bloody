@@ -1,4 +1,4 @@
---// CupcakeHub | Starlight Interface — Corrected Build
+--// CupcakeHub | Starlight Interface — Fixed Build
 --// Crimson Theme
 
 --═══════════════════════════════════════════════════════════
@@ -59,20 +59,39 @@ local ESP = CONFIG.ESP
 local aimSettings = CONFIG.AIM
 
 --═══════════════════════════════════════════════════════════
--- 3. LIBRARY LOADERS (with error isolation)
+-- 3. LIBRARY LOADERS (with strict verification)
 --═══════════════════════════════════════════════════════════
 local Starlight, NebulaIcons
-local ok1, err1 = pcall(function()
-    Starlight = loadstring(game:HttpGet("https://raw.nebulasoftworks.xyz/starlight"))()
-end)
-if not ok1 or not Starlight then
-    error("[CupcakeHub] Failed to load Starlight: " .. tostring(err1))
+do
+    local url = "https://raw.nebulasoftworks.xyz/starlight"
+    local ok, res = pcall(function() return game:HttpGet(url) end)
+    if not ok or not res or res == "" then
+        error("[CupcakeHub] Starlight download failed from " .. url .. " (" .. tostring(res) .. ")")
+    end
+    local compiled = loadstring(res)
+    if not compiled then
+        error("[CupcakeHub] Starlight source is not valid Lua (URL: " .. url .. ")")
+    end
+    local runOk, lib = pcall(compiled)
+    if not runOk or not lib or type(lib) ~= "table" or not lib.CreateWindow then
+        error("[CupcakeHub] Starlight loaded but missing expected API (CreateWindow)")
+    end
+    Starlight = lib
 end
-local ok2, err2 = pcall(function()
-    NebulaIcons = loadstring(game:HttpGet("https://raw.nebulasoftworks.xyz/nebula-icon-library-loader"))()
-end)
-if not ok2 or not NebulaIcons then
-    warn("[CupcakeHub] Failed to load NebulaIcons: " .. tostring(err2))
+
+do
+    local url = "https://raw.nebulasoftworks.xyz/nebula-icon-library-loader"
+    local ok, res = pcall(function() return game:HttpGet(url) end)
+    if ok and res and res ~= "" then
+        local compiled = loadstring(res)
+        if compiled then
+            local runOk, lib = pcall(compiled)
+            if runOk and lib then NebulaIcons = lib end
+        end
+    end
+    if not NebulaIcons then
+        warn("[CupcakeHub] NebulaIcons unavailable — falling back to Cupcake icon")
+    end
 end
 
 local HubName = "CupcakeHub"
@@ -84,7 +103,7 @@ local function Ico(name)
         local ok, icon = pcall(function() return NebulaIcons:GetIcon(name, "Material") end)
         if ok and icon then return icon end
     end
-    return CupcakeIcon -- fallback
+    return CupcakeIcon
 end
 
 --═══════════════════════════════════════════════════════════
@@ -140,7 +159,7 @@ Welcome:CreateButton({Name="Test Notification", Callback=function()
 end}, "TEST_NOTIF")
 
 --═══════════════════════════════════════════════════════════
--- 7. VISUALS (NO COLOR PICKERS)
+-- 7. VISUALS
 --═══════════════════════════════════════════════════════════
 local plrGB   = Visuals:CreateGroupbox({Name="Players", Column=1}, "PLR_GB")
 local lookGB  = Visuals:CreateGroupbox({Name="Appearance", Column=2}, "LOOK_GB")
@@ -272,7 +291,7 @@ timeGB:CreateSlider({Name="Connect Delay", CurrentValue=1.0, Range={0.1,5}, Incr
 timeGB:CreateSlider({Name="Gear Delay", CurrentValue=0.03, Range={0.01,0.5}, Increment=0.01, Callback=function(v) CONFIG.GENERATOR.GearDelay=v end}, "T_G")
 
 --═══════════════════════════════════════════════════════════
--- 13. TOOLS
+-- 13. TOOLS (Lighting fixed — see FIX 1)
 --═══════════════════════════════════════════════════════════
 local camGB   = Tools:CreateGroupbox({Name="Camera", Column=1}, "CAM")
 local lightGB = Tools:CreateGroupbox({Name="Lighting", Column=2}, "LIGHT")
@@ -284,42 +303,117 @@ camGB:CreateToggle({Name="Enable FOV", CurrentValue=false, Style=2, Callback=fun
 camGB:CreateSlider({Name="FOV", CurrentValue=70, Range={70,120}, Increment=1, Callback=function(v) fovVal=v; if _G.FOV then Workspace.CurrentCamera.FieldOfView=v end end}, "CAM_FV")
 task.spawn(function() while true do if _G.FOV then Workspace.CurrentCamera.FieldOfView = fovVal end task.wait() end end)
 
-_G.Fullbright = false
-local bright = 0
-lightGB:CreateToggle({Name="Fullbright", CurrentValue=false, Style=2, Callback=function(v)
-    _G.Fullbright = v
-    if not v then Lighting.OutdoorAmbient=Color3.fromRGB(55,55,55); Lighting.Brightness=0; Lighting.GlobalShadows=true end
-end}, "LG_FB")
-lightGB:CreateSlider({Name="Brightness", CurrentValue=0, Range={0,3}, Increment=0.1, Callback=function(v) bright=v end}, "LG_B")
-lightGB:CreateToggle({Name="No Shadows", CurrentValue=false, Style=2, Callback=function(v) _G.NoShadows=v end}, "LG_NS")
-lightGB:CreateToggle({Name="No Fog", CurrentValue=false, Style=2, Callback=function(v) _G.NoFog=v end}, "LG_NF")
-task.spawn(function()
-    while true do
+-- FIX 1: No Shadows / No Fog act independently of Fullbright
+_G.Fullbright   = false
+_G.NoShadows    = false
+_G.NoFog        = false
+local bright    = 0
+
+local LightOrig = {
+    Brightness=nil, GlobalShadows=nil, OutdoorAmbient=nil,
+    FogStart=nil, FogEnd=nil, Atmosphere=nil, AtmosphereDensity=nil,
+}
+local function captureLighting()
+    if LightOrig.Brightness ~= nil then return end
+    pcall(function()
+        LightOrig.Brightness     = Lighting.Brightness
+        LightOrig.GlobalShadows  = Lighting.GlobalShadows
+        LightOrig.OutdoorAmbient = Lighting.OutdoorAmbient
+        LightOrig.FogStart       = Lighting.FogStart
+        LightOrig.FogEnd         = Lighting.FogEnd
+        local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+        if atm then
+            LightOrig.Atmosphere        = atm
+            LightOrig.AtmosphereDensity = atm.Density
+        end
+    end)
+end
+local function applyFullbright()
+    captureLighting()
+    pcall(function()
         if _G.Fullbright then
             Lighting.OutdoorAmbient = Color3.new(1,1,1)
-            Lighting.Brightness = bright
-            Lighting.GlobalShadows = not (_G.NoShadows or false)
+            Lighting.Brightness     = bright
+        else
+            if LightOrig.OutdoorAmbient then Lighting.OutdoorAmbient = LightOrig.OutdoorAmbient end
+            if LightOrig.Brightness     then Lighting.Brightness     = LightOrig.Brightness     end
+        end
+    end)
+end
+local function applyShadows()
+    captureLighting()
+    pcall(function()
+        if _G.NoShadows then
+            Lighting.GlobalShadows = false
+        elseif LightOrig.GlobalShadows ~= nil then
+            Lighting.GlobalShadows = LightOrig.GlobalShadows
+        end
+    end)
+end
+local function applyFog()
+    captureLighting()
+    pcall(function()
+        local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+        if _G.NoFog then
+            Lighting.FogStart = 0
+            Lighting.FogEnd   = 1e9
+            if atm then atm.Density = 0 end
+        else
+            if LightOrig.FogStart ~= nil then Lighting.FogStart = LightOrig.FogStart end
+            if LightOrig.FogEnd   ~= nil then Lighting.FogEnd   = LightOrig.FogEnd   end
+            if atm and LightOrig.AtmosphereDensity ~= nil then atm.Density = LightOrig.AtmosphereDensity end
+        end
+    end)
+end
+
+lightGB:CreateToggle({Name="Fullbright", CurrentValue=false, Style=2, Callback=function(v)
+    _G.Fullbright = v; applyFullbright()
+end}, "LG_FB")
+lightGB:CreateSlider({Name="Brightness", CurrentValue=0, Range={0,3}, Increment=0.1, Callback=function(v)
+    bright = v; if _G.Fullbright then applyFullbright() end
+end}, "LG_B")
+lightGB:CreateToggle({Name="No Shadows", CurrentValue=false, Style=2, Callback=function(v)
+    _G.NoShadows = v; applyShadows()
+end}, "LG_NS")
+lightGB:CreateToggle({Name="No Fog", CurrentValue=false, Style=2, Callback=function(v)
+    _G.NoFog = v; applyFog()
+end}, "LG_NF")
+
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if _G.Fullbright or _G.NoShadows or _G.NoFog then
+            if _G.Fullbright and (Lighting.Brightness ~= bright or Lighting.OutdoorAmbient ~= Color3.new(1,1,1)) then
+                applyFullbright()
+            end
+            if _G.NoShadows and Lighting.GlobalShadows then
+                applyShadows()
+            end
             if _G.NoFog then
-                Lighting.FogStart = 0; Lighting.FogEnd = math.huge
-                local atm = Lighting:FindFirstChildOfClass("Atmosphere"); if atm then atm.Density = 0 end
+                local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+                if Lighting.FogEnd < 1e8 or (atm and atm.Density > 0.001) then
+                    applyFog()
+                end
             end
         end
-        task.wait()
     end
 end)
 
 --═══════════════════════════════════════════════════════════
--- 14. SETTINGS (BuildThemeGroupbox on TAB, not Groupbox)
+-- 14. SETTINGS
 --═══════════════════════════════════════════════════════════
 local actionsGB = Settings:CreateGroupbox({Name="Actions", Column=2}, "ACTIONS")
-Settings:BuildThemeGroupbox(2) -- Correct: called on the Tab
+Settings:BuildThemeGroupbox(2)
 actionsGB:CreateButton({Name="Unload", Callback=function() Starlight:Destroy() end}, "UNLOAD_BTN")
 
 --═══════════════════════════════════════════════════════════
--- 15. ESP CORE
+-- 15. ESP CORE (with dynamic MapFolder — see FIX 3)
 --═══════════════════════════════════════════════════════════
-local MapFolder = Workspace:FindFirstChild("Map")
-MapFolder = MapFolder and MapFolder:FindFirstChild("Ingame")
+local function getMapFolder()
+    local m = Workspace:FindFirstChild("Map")
+    return m and m:FindFirstChild("Ingame")
+end
+
 local DummyNames = {"PizzaDeliveryRig","Mafiaso1","Mafiaso2","Builderman","Elliot","ShedletskyCORRUPT","ChancecORRUPT","ChanceCORRUPT",
     "Mafia1","Mafia2","Mafia3","Mafia4","Mafia5","Mafia6","Mafia7","Mafia8","Mafia9",
     "GreenGuy","RedGuy","BlueGuy","PurpleGuy","PinkGuy","YellowGuy","OrangeGuy","GreyGuy"}
@@ -464,6 +558,8 @@ local function updateESP()
             else removePlayerESP(s) end
         end end
     end
+    -- FIX 3: dynamic map lookup — re-resolves every tick
+    local MapFolder = getMapFolder()
     if not MapFolder then return end
     if MapFolder:FindFirstChild("Map") then
         for _, g in ipairs(MapFolder.Map:GetChildren()) do
@@ -652,7 +748,7 @@ task.spawn(function()
     end
     mui.DescendantAdded:Connect(function(c)
         task.wait(0.05)
-        if c:IsA("GuiObject") and (c:FindFirstChild("CooldownTime") or c:FindFirstChild("CooldownTime") or c:FindFirstAncestor("AbilityContainer")) then pcall(bindBtn, c) end
+        if c:IsA("GuiObject") and (c:FindFirstChild("CooldownTime") or c:FindFirstAncestor("AbilityContainer")) then pcall(bindBtn, c) end
     end)
 end)
 
@@ -1202,32 +1298,44 @@ RunService.RenderStepped:Connect(function(dt)
 end)
 
 --═══════════════════════════════════════════════════════════
--- 22. STAMINA
+-- 22. STAMINA (FIX 2: restore originals on disable)
 --═══════════════════════════════════════════════════════════
 local StamSettings = CONFIG.STAMINA
 local StamModule = nil
 pcall(function()
     StamModule = require(ReplicatedStorage:WaitForChild("Systems", 5):WaitForChild("Character", 5):WaitForChild("Game", 5):WaitForChild("Sprinting", 5))
 end)
+
+local StamOrig = { StaminaLoss = nil, StaminaGain = nil }
 task.spawn(function()
     while true do
         if StamModule then
-            for _, key in ipairs({"MaxStamina","StaminaGain","StaminaLoss","SprintSpeed"}) do
-                if StamSettings["Mod"..key] then pcall(function() StamModule[key] = StamSettings[key] end) end
-            end
-        end
-        task.wait(0.5)
-    end
-end)
-task.spawn(function()
-    while true do
-        if StamModule then
-            if StamSettings.Infinite then
-                StamModule.StaminaLoss = 0
-                StamModule.StaminaGain = StamSettings.InfiniteGain
-            elseif not StamSettings.ModStaminaLoss then
-                StamModule.StaminaLoss = 10
-            end
+            pcall(function()
+                if StamOrig.StaminaLoss == nil then
+                    StamOrig.StaminaLoss = StamModule.StaminaLoss
+                    StamOrig.StaminaGain = StamModule.StaminaGain
+                end
+                if StamSettings.ModMaxStamina then
+                    StamModule.MaxStamina = StamSettings.MaxStamina
+                end
+                if StamSettings.ModSprintSpeed then
+                    StamModule.SprintSpeed = StamSettings.SprintSpeed
+                end
+                if StamSettings.Infinite then
+                    StamModule.StaminaGain = StamSettings.InfiniteGain
+                elseif StamSettings.ModStaminaGain then
+                    StamModule.StaminaGain = StamSettings.StaminaGain
+                elseif StamOrig.StaminaGain ~= nil then
+                    StamModule.StaminaGain = StamOrig.StaminaGain
+                end
+                if StamSettings.Infinite then
+                    StamModule.StaminaLoss = 0
+                elseif StamSettings.ModStaminaLoss then
+                    StamModule.StaminaLoss = StamSettings.StaminaLoss
+                elseif StamOrig.StaminaLoss ~= nil then
+                    StamModule.StaminaLoss = StamOrig.StaminaLoss
+                end
+            end)
         end
         task.wait(0.25)
     end
