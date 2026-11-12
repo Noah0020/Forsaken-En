@@ -53,9 +53,12 @@ local Settings = {
     SILENT_Prediction = 4,
     SILENT_Range = 55,
     SILENT_MinDist = 3,
+    SILENT_OverrideMouseTarget = false,
+    SILENT_Debug = false,
 
     AIM_Enabled = false, AIM_Mode = "Character",
     AIM_Prediction = 4, AIM_MinDist = 3, AIM_Range = 55,
+    AIM_Debug = false,
 
     ESP_Killer = false, ESP_Survivor = false, ESP_Generator = false,
     ESP_Medkit = false, ESP_Bloxy = false,
@@ -75,177 +78,7 @@ for _, id in ipairs({100926346851492,102517104852347,115706752305794,11650690086
 local HDT_Anims = {}
 for _, id in ipairs({72722244508749,96959123077498,95802026624883,140671644163156,100926346851492}) do HDT_Anims["rbxassetid://"..id] = true end
 
---═══════════════════════════════════════════════════════════════════
--- NEW AIM TRIGGER SYSTEM (HunterAim pattern)
---   • Reads ability Anim + Sound IDs from ReplicatedStorage.Assets
---   • Watches LOCAL player's Animator.AnimationPlayed + Sound.Playing
---   • Ref-counted event gate arms aim only while ability is playing
---   • Zero FireServer hooks — abilities cannot break
---═══════════════════════════════════════════════════════════════════
-local AbilityAnimIds = {}   -- [id_string] = true
-local AbilitySoundIds = {}  -- [id_string] = true
-local AimEventActive = false
-local AimEventRefCount = 0
-local AimDebug = false
-
-local function PushIdToSet(set, value)
-    if type(value) == "string" or type(value) == "number" then
-        local id = tostring(value):match("%d+")
-        if id then set[id] = true end
-    elseif type(value) == "table" then
-        for _, v in pairs(value) do PushIdToSet(set, v) end
-    end
-end
-
-local function ReadConfigModule(module)
-    local ok, cfg = pcall(require, module)
-    if not ok or type(cfg) ~= "table" then return 0 end
-    local count = 0
-    if type(cfg.Animations) == "table" then
-        for _, value in pairs(cfg.Animations) do
-            PushIdToSet(AbilityAnimIds, value); count += 1
-        end
-    end
-    for _, field in ipairs({"Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds"}) do
-        if type(cfg[field]) == "table" then
-            for _, value in pairs(cfg[field]) do
-                PushIdToSet(AbilitySoundIds, value); count += 1
-            end
-        end
-    end
-    return count
-end
-
-local function LoadAbilityConfigs(char)
-    AbilityAnimIds = {}
-    AbilitySoundIds = {}
-    local assets = ReplicatedStorage:FindFirstChild("Assets")
-    if not assets then
-        print("[Cr4zyAim] Assets folder not found — using fallback (Action priority anims)")
-        return
-    end
-    local charName = char:GetAttribute("CharacterName") or char.Name
-    local skinName = char:GetAttribute("SkinName") or "Default"
-    local total = 0
-    for _, team in ipairs({"Killers", "Survivors"}) do
-        local teamFolder = assets:FindFirstChild(team)
-        local charFolder = teamFolder and teamFolder:FindFirstChild(charName)
-        if charFolder then
-            local cfg = charFolder:FindFirstChild("Config")
-            if cfg then total += ReadConfigModule(cfg) end
-        end
-    end
-    if skinName ~= "Default" then
-        local skins = assets:FindFirstChild("Skins")
-        if skins then
-            for _, team in ipairs({"Killers", "Survivors"}) do
-                local teamFolder = skins:FindFirstChild(team)
-                local charFolder = teamFolder and teamFolder:FindFirstChild(charName)
-                local skinFolder = charFolder and charFolder:FindFirstChild(skinName)
-                if skinFolder then
-                    local cfg = skinFolder:FindFirstChild("Config")
-                    if cfg then total += ReadConfigModule(cfg) end
-                end
-            end
-        end
-    end
-    local nA, nS = 0, 0
-    for _ in pairs(AbilityAnimIds) do nA += 1 end
-    for _ in pairs(AbilitySoundIds) do nS += 1 end
-    print(string.format("[Cr4zyAim] %s:%s — %d anim IDs, %d sound IDs", charName, skinName, nA, nS))
-end
-
-local function PushAimEvent(kind, id)
-    AimEventRefCount += 1
-    AimEventActive = true
-    if AimDebug then
-        print(string.format("[Cr4zyAim] START (%d) [%s] id=%s", AimEventRefCount, kind, tostring(id)))
-    end
-end
-
-local function PopAimEvent(kind, id)
-    AimEventRefCount = math.max(0, AimEventRefCount - 1)
-    if AimEventRefCount == 0 then
-        AimEventActive = false
-        if AimDebug then
-            print(string.format("[Cr4zyAim] END [%s] id=%s", kind, tostring(id)))
-        end
-    end
-end
-
-local function AttachAnimWatcher(char)
-    local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
-    local animator = hum:WaitForChild("Animator", 5); if not animator then return end
-    animator.AnimationPlayed:Connect(function(track)
-        local anim = track.Animation
-        if not anim then return end
-        local animId = tostring(anim.AnimationId):match("%d+")
-        if not animId then return end
-        local isKnownAbility = AbilityAnimIds[animId] == true
-        local isActionPriority = track.Priority == Enum.AnimationPriority.Action
-            or track.Priority == Enum.AnimationPriority.Action2
-            or track.Priority == Enum.AnimationPriority.Action3
-            or track.Priority == Enum.AnimationPriority.Action4
-        local noConfigLoaded = next(AbilityAnimIds) == nil
-        local shouldTrigger = isKnownAbility or (noConfigLoaded and isActionPriority)
-        if not shouldTrigger then return end
-        PushAimEvent("anim", animId)
-        local ended = false
-        local function finish()
-            if ended then return end
-            ended = true
-            PopAimEvent("anim", animId)
-        end
-        track.Stopped:Once(finish)
-        local dur = track.Length
-        if not dur or dur <= 0 then dur = 0.5 end
-        task.delay(dur + 0.2, finish)
-    end)
-end
-
-local function AttachSoundWatcher(char)
-    local function hookSound(s)
-        if not s:IsA("Sound") then return end
-        s.Playing:Connect(function()
-            local sid = tostring(s.SoundId):match("%d+")
-            if not sid then return end
-            if not AbilitySoundIds[sid] then return end
-            PushAimEvent("sound", sid)
-            local dur = s.TimeLength
-            if not dur or dur <= 0 then dur = 0.4 end
-            task.delay(dur + 0.15, function()
-                PopAimEvent("sound", sid)
-            end)
-        end)
-    end
-    for _, s in ipairs(char:GetDescendants()) do
-        if s:IsA("Sound") then hookSound(s) end
-    end
-    char.DescendantAdded:Connect(function(d)
-        if d:IsA("Sound") then hookSound(d) end
-    end)
-end
-
-local function AttachToCharacter(char)
-    if char ~= LocalPlayer.Character then return end
-    local t0 = os.clock()
-    while not char:GetAttribute("CharacterName") and os.clock() - t0 < 3 do
-        task.wait(0.1)
-    end
-    LoadAbilityConfigs(char)
-    task.spawn(AttachAnimWatcher, char)
-    task.spawn(AttachSoundWatcher, char)
-end
-
-if LocalPlayer.Character then task.spawn(AttachToCharacter, LocalPlayer.Character) end
-LocalPlayer.CharacterAdded:Connect(function(c)
-    AimEventActive = false
-    AimEventRefCount = 0
-    task.wait(0.3)
-    task.spawn(AttachToCharacter, c)
-end)
-
---═══ TARGET HELPERS ═══
+--═══ TARGET HELPERS (shared by both aim systems) ═══
 local function GetTargetFolder()
     local char = LocalPlayer.Character
     if not char then return nil end
@@ -260,13 +93,33 @@ local function GetTargetFolder()
     return nil
 end
 
+-- Velocity cache: uses AssemblyLinearVelocity when reliable, falls back to
+-- position-delta which works for killers that move via CFrame teleports.
+local targetVelCache = {}
+local function GetTargetVelocity(hrp)
+    local now = os.clock()
+    local cached = targetVelCache[hrp]
+    local v = hrp.AssemblyLinearVelocity
+    if v and v.Magnitude > 5 then
+        targetVelCache[hrp] = { pos = hrp.Position, time = now }
+        return v
+    end
+    if cached and (now - cached.time) > 0.01 then
+        local computed = (hrp.Position - cached.pos) / (now - cached.time)
+        targetVelCache[hrp] = { pos = hrp.Position, time = now }
+        return computed
+    end
+    targetVelCache[hrp] = { pos = hrp.Position, time = now }
+    return Vector3.zero
+end
+
 local function GetPredictedTarget(maxRange, minDist, prediction)
     local char = LocalPlayer.Character
-    if not char then return nil end
+    if not char then return nil, nil end
     local folder = GetTargetFolder()
-    if not folder then return nil end
+    if not folder then return nil, nil end
     local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
+    if not hrp then return nil, nil end
     local bestHrp, bestDist = nil, maxRange
     for _, model in ipairs(folder:GetChildren()) do
         if model:IsA("Model") and model ~= char then
@@ -280,21 +133,28 @@ local function GetPredictedTarget(maxRange, minDist, prediction)
             end
         end
     end
-    if not bestHrp then return nil end
-    local vel = bestHrp.AssemblyLinearVelocity
-    if not vel or vel.Magnitude < 0.1 then vel = bestHrp.Velocity end
+    if not bestHrp then return nil, nil end
+    local vel = GetTargetVelocity(bestHrp)
     if vel.Magnitude > 60 then vel = vel.Unit * 60 end
     local lead = math.clamp(prediction or 4, 1, 10) * 0.1
     return bestHrp.Position + vel * lead, bestHrp
 end
 
 --═══════════════════════════════════════════════════════════════════
--- SILENT AIM (HunterAim-triggered, mouse override only)
+-- SILENT AIM — always-on while enabled
+--   • Mouse.Hit / UnitRay override (CFrame / Ray — correct types)
+--   • workspace:Raycast + FindPartOnRay* redirect to target
+--   • Optional Mouse.Target override for games that validate via Target
 --═══════════════════════════════════════════════════════════════════
-local SilentAim = { mouseHookDone = false, aimPoint = nil, aimTargetPart = nil }
+local SilentAim = {
+    aimPoint = nil,
+    aimTargetPart = nil,
+    mouseHookDone = false,
+    namecallHookDone = false,
+}
 
 RunService.RenderStepped:Connect(function()
-    if not Settings.SILENT_Enabled or not AimEventActive then
+    if not Settings.SILENT_Enabled then
         SilentAim.aimPoint = nil
         SilentAim.aimTargetPart = nil
         return
@@ -322,7 +182,7 @@ local function SilentAim_SetupMouseHook()
                     if cam then
                         return Ray.new(cam.CFrame.Position, (SilentAim.aimPoint - cam.CFrame.Position).Unit)
                     end
-                elseif key == "Target" and SilentAim.aimTargetPart and SilentAim.aimTargetPart.Parent then
+                elseif key == "Target" and Settings.SILENT_OverrideMouseTarget and SilentAim.aimTargetPart and SilentAim.aimTargetPart.Parent then
                     return SilentAim.aimTargetPart
                 end
             end
@@ -332,15 +192,62 @@ local function SilentAim_SetupMouseHook()
         SilentAim.mouseHookDone = true
     end)
 end
+
+-- Redirect workspace:Raycast / FindPartOnRay* calls to the target
+local function SilentAim_SetupRaycastHook()
+    if SilentAim.namecallHookDone or not hookmetamethod or not newcclosure then return end
+    pcall(function()
+        local old
+        old = hookmetamethod(game, "__namecall", function(self, ...)
+            if not SilentAim.aimPoint then return old(self, ...) end
+            if self ~= Workspace then return old(self, ...) end
+            local method = getnamecallmethod and getnamecallmethod() or nil
+            if not method then return old(self, ...) end
+            local args = table.pack(...)
+
+            if method == "Raycast" then
+                if typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
+                    local origin = args[1]
+                    local toTarget = SilentAim.aimPoint - origin
+                    if toTarget.Magnitude > 0.1 then
+                        args[2] = toTarget.Unit * 1000
+                        if Settings.SILENT_Debug then
+                            print(("[SilentAim] Raycast redirected to %s"):format(tostring(SilentAim.aimPoint)))
+                        end
+                        return old(self, table.unpack(args, 1, args.n))
+                    end
+                end
+            elseif method == "FindPartOnRay" or method == "findPartOnRay"
+                or method == "FindPartOnRayWithIgnoreList"
+                or method == "FindPartOnRayWithWhitelist" then
+                if typeof(args[1]) == "Ray" then
+                    local origin = args[1].Origin
+                    local toTarget = SilentAim.aimPoint - origin
+                    if toTarget.Magnitude > 0.1 then
+                        args[1] = Ray.new(origin, toTarget.Unit * 1000)
+                        if Settings.SILENT_Debug then
+                            print(("[SilentAim] %s redirected"):format(method))
+                        end
+                        return old(self, table.unpack(args, 1, args.n))
+                    end
+                end
+            end
+            return old(self, ...)
+        end)
+        SilentAim.namecallHookDone = true
+    end)
+end
+
 SilentAim_SetupMouseHook()
+SilentAim_SetupRaycastHook()
 
 --═══════════════════════════════════════════════════════════════════
--- NORMAL AIM (HunterAim-triggered, character/camera rotation)
+-- NORMAL AIM — always-on while enabled
 --═══════════════════════════════════════════════════════════════════
 local NormalAim = { rotating = false }
 
 RunService.RenderStepped:Connect(function()
-    if not Settings.AIM_Enabled or not AimEventActive then
+    if not Settings.AIM_Enabled then
         if NormalAim.rotating then
             local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
             if hum then hum.AutoRotate = true end
@@ -377,6 +284,9 @@ RunService.RenderStepped:Connect(function()
             end)
         end
     end
+    if Settings.AIM_Debug then
+        print(("[NormalAim] aim=(%.1f,%.1f,%.1f)"):format(aim.X, aim.Y, aim.Z))
+    end
 end)
 
 --═══ BOX ═══
@@ -398,7 +308,6 @@ local function Box_DestroyRootFolder()
     if f then pcall(function() f:Destroy() end); BoxState.rootFolder = nil end
 end
 local function Box_Alpha(dt) return 1 - math.exp(-dt / math.max(Settings.BoxFollowDelay, 0.001)) end
-
 local function Box_UpdateSmoothing(dt)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -602,7 +511,6 @@ LocalPlayer.CharacterAdded:Connect(function()
     if BoxState.playerBox and BoxState.playerBox.parts then Box_HideWireframe(BoxState.playerBox.parts) end
 end)
 
---═══ AUTO BLOCK ═══
 local function AB_IsBlockReady()
     local mainUI = PlayerGui:FindFirstChild("MainUI")
     local ac = mainUI and mainUI:FindFirstChild("AbilityContainer")
@@ -1625,8 +1533,8 @@ do
     a:AddDropdown("NA_Mode_D", { Text = "Aim Mode", Values = {"Character","Camera","Both"}, Default = "Character", Multi = false, Callback = function(v) Settings.AIM_Mode = v end })
     a:AddSlider("NA_Pred_S",   { Text = "Prediction (1-10)", Default = 4,   Min = 1,   Max = 10, Rounding = 0, Callback = function(v) Settings.AIM_Prediction = v end })
     a:AddSlider("NA_Range_S",  { Text = "Range",             Default = 55,  Min = 5,   Max = 200,Rounding = 0, Callback = function(v) Settings.AIM_Range = v end })
-    a:AddToggle("NA_Debug_T",  { Text = "Debug (print anims/sounds)", Default = false, Callback = function(v) AimDebug = v end })
-    a:AddLabel({ Text = "Triggered by ability Anim / Sound IDs read from ReplicatedStorage.Assets. Aim is active ONLY while an ability is playing.", DoesWrap = true })
+    a:AddToggle("NA_Debug_T",  { Text = "Debug (print aim)", Default = false, Callback = function(v) Settings.AIM_Debug = v end })
+    a:AddLabel({ Text = "Always-on: rotates your character/camera toward nearest opposite-team target every frame while enabled.", DoesWrap = true })
 end
 
 do
@@ -1634,7 +1542,9 @@ do
     g:AddToggle("SA_Enable_T", { Text = "Enable Silent Aim", Default = false, Callback = function(v) Settings.SILENT_Enabled = v end })
     g:AddSlider("SA_Pred_S",  { Text = "Prediction (1-10)", Default = 4, Min = 1, Max = 10, Rounding = 0, Callback = function(v) Settings.SILENT_Prediction = v end })
     g:AddSlider("SA_Range_S", { Text = "Range", Default = 55, Min = 5, Max = 200, Rounding = 0, Callback = function(v) Settings.SILENT_Range = v end })
-    g:AddLabel({ Text = "Same trigger as Normal Aim (Assets config). Overrides Mouse.Hit / UnitRay / Target only while ability is playing.", DoesWrap = true })
+    g:AddToggle("SA_OverrideTarget_T", { Text = "Override Mouse.Target", Default = false, Callback = function(v) Settings.SILENT_OverrideMouseTarget = v end })
+    g:AddToggle("SA_Debug_T", { Text = "Debug (print redirects)", Default = false, Callback = function(v) Settings.SILENT_Debug = v end })
+    g:AddLabel({ Text = "Overrides Mouse.Hit / UnitRay + workspace:Raycast + FindPartOnRay*. Always-on while enabled. Character rotation caused by the game reacting to fake mouse is expected.", DoesWrap = true })
 end
 
 do
@@ -1682,10 +1592,7 @@ _G.Godsaken = {
         Enable = function() Settings.SILENT_Enabled = true end,
         Disable = function() Settings.SILENT_Enabled = false end,
         GetAimPoint = function() return SilentAim.aimPoint end,
-        GetEventActive = function() return AimEventActive end,
-        ReloadConfigs = function()
-            if LocalPlayer.Character then LoadAbilityConfigs(LocalPlayer.Character) end
-        end,
+        GetTargetFolder = GetTargetFolder,
     },
     ESP = {
         SetKiller=function(v) Settings.ESP_Killer=v; ES_Refresh() end,
@@ -1738,6 +1645,6 @@ Library:OnUnload(function()
     end)
 end)
 
-Library:Notify({ Title = "Cr4zy HuB", Content = "Crimson Edition — HunterAim-style trigger", Time = 4 })
+Library:Notify({ Title = "Cr4zy HuB", Content = "Crimson Edition — always-on silent + normal aim", Time = 4 })
 
 print("[Cr4zy HuB] Loaded.")
