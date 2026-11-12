@@ -55,7 +55,6 @@ local Settings = {
     ABT_Duration = 0.5, AP_Delay = 0.5, PA_Prediction = 4,
     HDT_Speed = 40, HDT_Delay = 0.05, HDT_Duration = 0.6,
 
-    -- Silent Aim (metatable, no cam/char movement)
     SILENT_Enabled = false,
     SILENT_Prediction = 4,
     SILENT_Range = 55,
@@ -63,7 +62,6 @@ local Settings = {
     SILENT_OnCorrupt = true, SILENT_OnNova = true, SILENT_OnDemonic = true,
     SILENT_OnAscension = true, SILENT_OnPlasma = true, SILENT_OnCrystal = true,
 
-    -- Normal Aim (character rotation)
     AIM_Enabled = false, AIM_Mode = "Character",
     AIM_Prediction = 4, AIM_LockTime = 0.7, AIM_MinDist = 3, AIM_Range = 55,
     AIM_OnSlash = true, AIM_OnBlock = true, AIM_OnDagger = true,
@@ -988,20 +986,20 @@ end)
 local SilentAim = {
     active = false,
     aimPoint = nil,
+    aimTarget = nil,
+    expires = 0,
     fireHookDone = false,
     mouseHookDone = false,
     buttonConns = {},
     scanConn = nil,
-    lastAim = nil,
-    lastAimTime = 0,
 }
 
 local function SilentAim_ComputeAimPoint()
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
+    if not hrp then return nil, nil end
     local kf = GetKillersFolder()
-    if not kf then return nil end
+    if not kf then return nil, nil end
 
     local killer, kr, dist = nil, nil, math.huge
     for _, k in ipairs(kf:GetChildren()) do
@@ -1013,37 +1011,26 @@ local function SilentAim_ComputeAimPoint()
         end
     end
     if not killer or dist > Settings.SILENT_Range or dist < Settings.SILENT_MinDist then
-        return nil
+        return nil, nil
     end
 
-    -- Predict killer's position (studs in front)
     local vel = kr.AssemblyLinearVelocity
     if not vel or vel.Magnitude < 0.1 then vel = kr.Velocity end
     if vel.Magnitude > 60 then vel = vel.Unit * 60 end
     local leadTime = math.clamp(Settings.SILENT_Prediction or 4, 1, 10) * 0.1
-    return kr.Position + vel * leadTime
+    return kr.Position + vel * leadTime, kr
 end
 
-local function SilentAim_Arm(duration)
-    local aim = SilentAim_ComputeAimPoint()
-    if not aim then return false end
-    SilentAim.aimPoint = aim
-    SilentAim.active = true
-    SilentAim.lastAim = aim
-    SilentAim.lastAimTime = os.clock()
-    local myGen = SilentAim.lastAimTime
-    task.delay(duration or 0.15, function()
-        if SilentAim.lastAimTime == myGen then
-            SilentAim.active = false
-            SilentAim.aimPoint = nil
-        end
-    end)
+local function SilentAim_IsActive()
+    if not SilentAim.active then return false end
+    if os.clock() >= SilentAim.expires then
+        SilentAim.active = false
+        SilentAim.aimPoint = nil
+        SilentAim.aimTarget = nil
+        SilentAim.expires = 0
+        return false
+    end
     return true
-end
-
-local function SilentAim_Disarm()
-    SilentAim.active = false
-    SilentAim.aimPoint = nil
 end
 
 local function IsSilentAimAbility(name)
@@ -1058,7 +1045,6 @@ local function IsSilentAimAbility(name)
     return false
 end
 
--- Replace any Vector3 / CFrame position args with the aim point
 local function SilentAim_RewriteArgs(args, aim)
     if not aim then return end
     for i = 2, #args do
@@ -1084,23 +1070,23 @@ end
 local function SilentAim_SetupMouseHook()
     if SilentAim.mouseHookDone then return end
     pcall(function()
+        if not getrawmetatable or not setreadonly or not newcclosure then return end
         local mouse = LocalPlayer:GetMouse()
         local mt = getrawmetatable(game)
+        if not mt then return end
         local oldIndex = mt.__index
         setreadonly(mt, false)
         mt.__index = newcclosure(function(self, key)
-            if SilentAim.active and self == mouse and SilentAim.aimPoint then
-                if key == "Hit" or key == "Target" then
+            if SilentAim_IsActive() and self == mouse then
+                if key == "Hit" then
                     return CFrame.new(SilentAim.aimPoint)
+                elseif key == "Target" then
+                    return SilentAim.aimTarget or oldIndex(self, key)
                 elseif key == "UnitRay" then
                     local cam = Workspace.CurrentCamera
                     if cam then
                         return Ray.new(cam.CFrame.Position, (SilentAim.aimPoint - cam.CFrame.Position).Unit)
                     end
-                elseif key == "X" then
-                    return SilentAim.aimPoint.X
-                elseif key == "Y" then
-                    return SilentAim.aimPoint.Y
                 end
             end
             return oldIndex(self, key)
@@ -1115,27 +1101,35 @@ local function SilentAim_SetupFireHook()
     pcall(function()
         local old
         old = hookmetamethod(game, "__namecall", function(self, ...)
-            if Settings.SILENT_Enabled and getnamecallmethod() == "FireServer" and self == NetworkEvent then
-                local args = {...}
-                if args[1] == "UseActorAbility" then
-                    local n = ExtractAbility(args[2])
-                    if IsSilentAimAbility(n) then
-                        -- Arm aim (also enables mouse.Hit override in case the
-                        -- game reads it right before firing)
-                        local aim = SilentAim_ComputeAimPoint()
-                        if aim then
-                            SilentAim.aimPoint = aim
-                            SilentAim.active = true
-                            -- Rewrite any position args in the FireServer call
-                            SilentAim_RewriteArgs(args, aim)
-                        end
-                        local result = old(self, table.unpack(args, 1, #args))
-                        SilentAim_Disarm()
-                        return result
-                    end
-                end
-            end
-            return old(self, ...)
+            if not Settings.SILENT_Enabled then return old(self, ...) end
+            if getnamecallmethod() ~= "FireServer" then return old(self, ...) end
+            if self ~= NetworkEvent then return old(self, ...) end
+
+            local args = {...}
+            if args[1] ~= "UseActorAbility" then return old(self, ...) end
+
+            local n = ExtractAbility(args[2])
+            if not IsSilentAimAbility(n) then return old(self, ...) end
+
+            local aim, target = SilentAim_ComputeAimPoint()
+            if not aim then return old(self, ...) end
+
+            SilentAim.aimPoint = aim
+            SilentAim.aimTarget = target
+            SilentAim.active = true
+            SilentAim.expires = os.clock() + 0.15
+
+            SilentAim_RewriteArgs(args, aim)
+
+            local ok, result = pcall(old, self, table.unpack(args))
+
+            SilentAim.active = false
+            SilentAim.aimPoint = nil
+            SilentAim.aimTarget = nil
+            SilentAim.expires = 0
+
+            if ok then return result end
+            return
         end)
         SilentAim.fireHookDone = true
     end)
@@ -1145,11 +1139,13 @@ local function SilentAim_HookButton(btn)
     if not btn or not btn:IsA("GuiButton") or SilentAim.buttonConns[btn] then return end
     local conn = btn.MouseButton1Down:Connect(function()
         if not Settings.SILENT_Enabled then return end
-        if IsSilentAimAbility(btn.Name) then
-            -- Pre-arm so if the game reads mouse.Hit BEFORE calling FireServer,
-            -- it already sees the aim point
-            SilentAim_Arm(0.15)
-        end
+        if not IsSilentAimAbility(btn.Name) then return end
+        local aim, target = SilentAim_ComputeAimPoint()
+        if not aim then return end
+        SilentAim.aimPoint = aim
+        SilentAim.aimTarget = target
+        SilentAim.active = true
+        SilentAim.expires = os.clock() + 0.05
     end)
     SilentAim.buttonConns[btn] = conn
 end
@@ -1893,11 +1889,19 @@ do
     local g = Tabs.SilentAim:AddLeftGroupbox("True Silent Aim")
     g:AddToggle("SA_Enable_T", { Text = "Enable Silent Aim", Default = false, Callback = function(v)
         Settings.SILENT_Enabled = v
-        if v then SilentAim_Setup() else SilentAim_ClearButtons(); SilentAim_Disarm() end
+        if v then
+            SilentAim_Setup()
+        else
+            SilentAim_ClearButtons()
+            SilentAim.active = false
+            SilentAim.aimPoint = nil
+            SilentAim.aimTarget = nil
+            SilentAim.expires = 0
+        end
     end })
     g:AddSlider("SA_Pred_S",  { Text = "Prediction (1-10) — studs in front of killer", Default = 4, Min = 1, Max = 10, Rounding = 0, Callback = function(v) Settings.SILENT_Prediction = v end })
     g:AddSlider("SA_Range_S", { Text = "Range", Default = 55, Min = 5, Max = 200, Rounding = 0, Callback = function(v) Settings.SILENT_Range = v end })
-    g:AddLabel({ Text = "Hooks mouse.Hit / mouse.Target / mouse.UnitRay only for the instant the ability fires. No camera, no character rotation — server receives the aim point as if you aimed at the killer.", DoesWrap = true })
+    g:AddLabel({ Text = "True silent aim: mouse.Hit / Target / UnitRay are redirected only for the instant an ability fires. No camera movement, no character rotation.", DoesWrap = true })
 
     local p = Tabs.SilentAim:AddRightGroupbox("Trigger Abilities")
     p:AddToggle("SA_Corrupt_T",   { Text = "C00lkidd — Corrupt Nature",        Default = true, Callback = function(v) Settings.SILENT_OnCorrupt   = v end })
@@ -1960,9 +1964,16 @@ _G.Godsaken = {
         Disable=function() Settings.AIM_Enabled=false end,
     },
     SilentAim = {
-        Enable=function() Settings.SILENT_Enabled=true; SilentAim_Setup() end,
-        Disable=function() Settings.SILENT_Enabled=false; SilentAim_ClearButtons(); SilentAim_Disarm() end,
-        GetLastAim=function() return SilentAim.lastAim end,
+        Enable = function() Settings.SILENT_Enabled = true; SilentAim_Setup() end,
+        Disable = function()
+            Settings.SILENT_Enabled = false
+            SilentAim_ClearButtons()
+            SilentAim.active = false
+            SilentAim.aimPoint = nil
+            SilentAim.aimTarget = nil
+            SilentAim.expires = 0
+        end,
+        GetAimPoint = function() return SilentAim.aimPoint end,
     },
     ESP = {
         SetKiller=function(v) Settings.ESP_Killer=v; ES_Refresh() end,
@@ -2001,7 +2012,15 @@ Library:OnUnload(function()
     pcall(function() AP_Disable() end)
     pcall(function() PA_Disable() end)
     pcall(function() HDT_Disable() end)
-    pcall(function() Settings.AIM_Enabled = false; Settings.SILENT_Enabled = false; SilentAim_ClearButtons(); SilentAim_Disarm() end)
+    pcall(function()
+        Settings.AIM_Enabled = false
+        Settings.SILENT_Enabled = false
+        SilentAim_ClearButtons()
+        SilentAim.active = false
+        SilentAim.aimPoint = nil
+        SilentAim.aimTarget = nil
+        SilentAim.expires = 0
+    end)
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
     pcall(function() Vee.AutoTrick = false; VeerATStop() end)
@@ -2021,7 +2040,7 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Crimson Edition — TRUE Silent Aim (metatable)",
+    Content = "Crimson Edition — Silent Aim FIXED",
     Time = 4,
 })
 
