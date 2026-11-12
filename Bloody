@@ -53,13 +53,9 @@ local Settings = {
     SILENT_Prediction = 4,
     SILENT_Range = 55,
     SILENT_MinDist = 3,
-    SILENT_OnCorrupt = true, SILENT_OnNova = true, SILENT_OnDemonic = true,
-    SILENT_OnAscension = true, SILENT_OnPlasma = true, SILENT_OnCrystal = true,
 
     AIM_Enabled = false, AIM_Mode = "Character",
-    AIM_Prediction = 4, AIM_LockTime = 0.7, AIM_MinDist = 3, AIM_Range = 55,
-    AIM_OnSlash = true, AIM_OnBlock = true, AIM_OnDagger = true,
-    AIM_OnAxe = true, AIM_OnShoot = true,
+    AIM_Prediction = 4, AIM_MinDist = 3, AIM_Range = 55,
 
     ESP_Killer = false, ESP_Survivor = false, ESP_Generator = false,
     ESP_Medkit = false, ESP_Bloxy = false,
@@ -69,6 +65,7 @@ local Settings = {
     GS_ConnectDelay = 1.0, GS_GearDelay = 0.03, GS_LockDelay = 0.08,
 }
 
+--═══ DATA TABLES ═══
 local ParrySounds = {}
 for _, id in ipairs({102808968188291,114975236395509,116616310968045,117828699507982,120902177402976,123825742002486,125854302746190,132298811847315,135209101640984,18568553101,423041300,423041325,423041356,81114852524420,82772022662025,86208973578215,91165993312513,95135835034592}) do ParrySounds["rbxassetid://"..id] = true end
 local PunchAnims = {}
@@ -77,6 +74,310 @@ local AntiBaitAnims = {}
 for _, id in ipairs({100926346851492,102517104852347,115706752305794,116506900864624,120725067908621,120748030255574,120773807614836,123548100869928,127040663332045,133292581373127,138407964761603,140671644163156,72182155407310,72722244508749,82036084568393,82605295530067,83036817079068,88287038085804,88557287105521,90970641235403,95421685049902,95802026624883,96959123077498}) do AntiBaitAnims["rbxassetid://"..id] = true end
 local HDT_Anims = {}
 for _, id in ipairs({72722244508749,96959123077498,95802026624883,140671644163156,100926346851492}) do HDT_Anims["rbxassetid://"..id] = true end
+
+--═══════════════════════════════════════════════════════════════════
+-- NEW AIM TRIGGER SYSTEM (HunterAim pattern)
+--   • Reads ability Anim + Sound IDs from ReplicatedStorage.Assets
+--   • Watches LOCAL player's Animator.AnimationPlayed + Sound.Playing
+--   • Ref-counted event gate arms aim only while ability is playing
+--   • Zero FireServer hooks — abilities cannot break
+--═══════════════════════════════════════════════════════════════════
+local AbilityAnimIds = {}   -- [id_string] = true
+local AbilitySoundIds = {}  -- [id_string] = true
+local AimEventActive = false
+local AimEventRefCount = 0
+local AimDebug = false
+
+local function PushIdToSet(set, value)
+    if type(value) == "string" or type(value) == "number" then
+        local id = tostring(value):match("%d+")
+        if id then set[id] = true end
+    elseif type(value) == "table" then
+        for _, v in pairs(value) do PushIdToSet(set, v) end
+    end
+end
+
+local function ReadConfigModule(module)
+    local ok, cfg = pcall(require, module)
+    if not ok or type(cfg) ~= "table" then return 0 end
+    local count = 0
+    if type(cfg.Animations) == "table" then
+        for _, value in pairs(cfg.Animations) do
+            PushIdToSet(AbilityAnimIds, value); count += 1
+        end
+    end
+    for _, field in ipairs({"Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds"}) do
+        if type(cfg[field]) == "table" then
+            for _, value in pairs(cfg[field]) do
+                PushIdToSet(AbilitySoundIds, value); count += 1
+            end
+        end
+    end
+    return count
+end
+
+local function LoadAbilityConfigs(char)
+    AbilityAnimIds = {}
+    AbilitySoundIds = {}
+    local assets = ReplicatedStorage:FindFirstChild("Assets")
+    if not assets then
+        print("[Cr4zyAim] Assets folder not found — using fallback (Action priority anims)")
+        return
+    end
+    local charName = char:GetAttribute("CharacterName") or char.Name
+    local skinName = char:GetAttribute("SkinName") or "Default"
+    local total = 0
+    for _, team in ipairs({"Killers", "Survivors"}) do
+        local teamFolder = assets:FindFirstChild(team)
+        local charFolder = teamFolder and teamFolder:FindFirstChild(charName)
+        if charFolder then
+            local cfg = charFolder:FindFirstChild("Config")
+            if cfg then total += ReadConfigModule(cfg) end
+        end
+    end
+    if skinName ~= "Default" then
+        local skins = assets:FindFirstChild("Skins")
+        if skins then
+            for _, team in ipairs({"Killers", "Survivors"}) do
+                local teamFolder = skins:FindFirstChild(team)
+                local charFolder = teamFolder and teamFolder:FindFirstChild(charName)
+                local skinFolder = charFolder and charFolder:FindFirstChild(skinName)
+                if skinFolder then
+                    local cfg = skinFolder:FindFirstChild("Config")
+                    if cfg then total += ReadConfigModule(cfg) end
+                end
+            end
+        end
+    end
+    local nA, nS = 0, 0
+    for _ in pairs(AbilityAnimIds) do nA += 1 end
+    for _ in pairs(AbilitySoundIds) do nS += 1 end
+    print(string.format("[Cr4zyAim] %s:%s — %d anim IDs, %d sound IDs", charName, skinName, nA, nS))
+end
+
+local function PushAimEvent(kind, id)
+    AimEventRefCount += 1
+    AimEventActive = true
+    if AimDebug then
+        print(string.format("[Cr4zyAim] START (%d) [%s] id=%s", AimEventRefCount, kind, tostring(id)))
+    end
+end
+
+local function PopAimEvent(kind, id)
+    AimEventRefCount = math.max(0, AimEventRefCount - 1)
+    if AimEventRefCount == 0 then
+        AimEventActive = false
+        if AimDebug then
+            print(string.format("[Cr4zyAim] END [%s] id=%s", kind, tostring(id)))
+        end
+    end
+end
+
+local function AttachAnimWatcher(char)
+    local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
+    local animator = hum:WaitForChild("Animator", 5); if not animator then return end
+    animator.AnimationPlayed:Connect(function(track)
+        local anim = track.Animation
+        if not anim then return end
+        local animId = tostring(anim.AnimationId):match("%d+")
+        if not animId then return end
+        local isKnownAbility = AbilityAnimIds[animId] == true
+        local isActionPriority = track.Priority == Enum.AnimationPriority.Action
+            or track.Priority == Enum.AnimationPriority.Action2
+            or track.Priority == Enum.AnimationPriority.Action3
+            or track.Priority == Enum.AnimationPriority.Action4
+        local noConfigLoaded = next(AbilityAnimIds) == nil
+        local shouldTrigger = isKnownAbility or (noConfigLoaded and isActionPriority)
+        if not shouldTrigger then return end
+        PushAimEvent("anim", animId)
+        local ended = false
+        local function finish()
+            if ended then return end
+            ended = true
+            PopAimEvent("anim", animId)
+        end
+        track.Stopped:Once(finish)
+        local dur = track.Length
+        if not dur or dur <= 0 then dur = 0.5 end
+        task.delay(dur + 0.2, finish)
+    end)
+end
+
+local function AttachSoundWatcher(char)
+    local function hookSound(s)
+        if not s:IsA("Sound") then return end
+        s.Playing:Connect(function()
+            local sid = tostring(s.SoundId):match("%d+")
+            if not sid then return end
+            if not AbilitySoundIds[sid] then return end
+            PushAimEvent("sound", sid)
+            local dur = s.TimeLength
+            if not dur or dur <= 0 then dur = 0.4 end
+            task.delay(dur + 0.15, function()
+                PopAimEvent("sound", sid)
+            end)
+        end)
+    end
+    for _, s in ipairs(char:GetDescendants()) do
+        if s:IsA("Sound") then hookSound(s) end
+    end
+    char.DescendantAdded:Connect(function(d)
+        if d:IsA("Sound") then hookSound(d) end
+    end)
+end
+
+local function AttachToCharacter(char)
+    if char ~= LocalPlayer.Character then return end
+    local t0 = os.clock()
+    while not char:GetAttribute("CharacterName") and os.clock() - t0 < 3 do
+        task.wait(0.1)
+    end
+    LoadAbilityConfigs(char)
+    task.spawn(AttachAnimWatcher, char)
+    task.spawn(AttachSoundWatcher, char)
+end
+
+if LocalPlayer.Character then task.spawn(AttachToCharacter, LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(function(c)
+    AimEventActive = false
+    AimEventRefCount = 0
+    task.wait(0.3)
+    task.spawn(AttachToCharacter, c)
+end)
+
+--═══ TARGET HELPERS ═══
+local function GetTargetFolder()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local players = Workspace:FindFirstChild("Players")
+    if not players then return nil end
+    local kf = players:FindFirstChild("Killers")
+    local sf = players:FindFirstChild("Survivors")
+    if kf and (char:IsDescendantOf(kf) or char.Parent == kf) then return sf end
+    if sf and (char:IsDescendantOf(sf) or char.Parent == sf) then return kf end
+    if kf and #kf:GetChildren() > 0 then return kf end
+    if sf and #sf:GetChildren() > 0 then return sf end
+    return nil
+end
+
+local function GetPredictedTarget(maxRange, minDist, prediction)
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local folder = GetTargetFolder()
+    if not folder then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local bestHrp, bestDist = nil, maxRange
+    for _, model in ipairs(folder:GetChildren()) do
+        if model:IsA("Model") and model ~= char then
+            local mHrp = model:FindFirstChild("HumanoidRootPart")
+            local mHum = model:FindFirstChildOfClass("Humanoid")
+            if mHrp and mHum and mHum.Health > 0 then
+                local d = (mHrp.Position - hrp.Position).Magnitude
+                if d < bestDist and d >= minDist then
+                    bestHrp, bestDist = mHrp, d
+                end
+            end
+        end
+    end
+    if not bestHrp then return nil end
+    local vel = bestHrp.AssemblyLinearVelocity
+    if not vel or vel.Magnitude < 0.1 then vel = bestHrp.Velocity end
+    if vel.Magnitude > 60 then vel = vel.Unit * 60 end
+    local lead = math.clamp(prediction or 4, 1, 10) * 0.1
+    return bestHrp.Position + vel * lead, bestHrp
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- SILENT AIM (HunterAim-triggered, mouse override only)
+--═══════════════════════════════════════════════════════════════════
+local SilentAim = { mouseHookDone = false, aimPoint = nil, aimTargetPart = nil }
+
+RunService.RenderStepped:Connect(function()
+    if not Settings.SILENT_Enabled or not AimEventActive then
+        SilentAim.aimPoint = nil
+        SilentAim.aimTargetPart = nil
+        return
+    end
+    local aim, part = GetPredictedTarget(Settings.SILENT_Range, Settings.SILENT_MinDist, Settings.SILENT_Prediction)
+    SilentAim.aimPoint = aim
+    SilentAim.aimTargetPart = part
+end)
+
+local function SilentAim_SetupMouseHook()
+    if SilentAim.mouseHookDone then return end
+    pcall(function()
+        if not getrawmetatable or not setreadonly or not newcclosure then return end
+        local mouse = LocalPlayer:GetMouse()
+        local mt = getrawmetatable(game)
+        if not mt then return end
+        local oldIndex = mt.__index
+        setreadonly(mt, false)
+        mt.__index = newcclosure(function(self, key)
+            if self == mouse and SilentAim.aimPoint then
+                if key == "Hit" then
+                    return CFrame.new(SilentAim.aimPoint)
+                elseif key == "UnitRay" then
+                    local cam = Workspace.CurrentCamera
+                    if cam then
+                        return Ray.new(cam.CFrame.Position, (SilentAim.aimPoint - cam.CFrame.Position).Unit)
+                    end
+                elseif key == "Target" and SilentAim.aimTargetPart and SilentAim.aimTargetPart.Parent then
+                    return SilentAim.aimTargetPart
+                end
+            end
+            return oldIndex(self, key)
+        end)
+        setreadonly(mt, true)
+        SilentAim.mouseHookDone = true
+    end)
+end
+SilentAim_SetupMouseHook()
+
+--═══════════════════════════════════════════════════════════════════
+-- NORMAL AIM (HunterAim-triggered, character/camera rotation)
+--═══════════════════════════════════════════════════════════════════
+local NormalAim = { rotating = false }
+
+RunService.RenderStepped:Connect(function()
+    if not Settings.AIM_Enabled or not AimEventActive then
+        if NormalAim.rotating then
+            local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.AutoRotate = true end
+            NormalAim.rotating = false
+        end
+        return
+    end
+    local char = LocalPlayer.Character
+    if not char then NormalAim.rotating = false; return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then NormalAim.rotating = false; return end
+    local aim = GetPredictedTarget(Settings.AIM_Range, Settings.AIM_MinDist, Settings.AIM_Prediction)
+    if not aim then
+        if NormalAim.rotating then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then hum.AutoRotate = true end
+            NormalAim.rotating = false
+        end
+        return
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if Settings.AIM_Mode == "Character" or Settings.AIM_Mode == "Both" then
+        if hum and hum.AutoRotate then hum.AutoRotate = false end
+        NormalAim.rotating = true
+        pcall(function()
+            hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(aim.X, hrp.Position.Y, aim.Z))
+        end)
+    end
+    if Settings.AIM_Mode == "Camera" or Settings.AIM_Mode == "Both" then
+        local cam = Workspace.CurrentCamera
+        if cam then
+            pcall(function()
+                cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aim)
+            end)
+        end
+    end
+end)
 
 --═══ BOX ═══
 local AB = { running=false, frameConn=nil, perKiller={}, lastBlock=0, BLOCK_COOLDOWN=27 }
@@ -88,8 +389,7 @@ local function Box_GetRootFolder()
     local f = BoxState.rootFolder
     if f and f.Parent then return f end
     if f and not f.Parent then pcall(function() f:Destroy() end) end
-    local folder = Instance.new("Folder")
-    folder.Name = "GS_BoxVisuals"; folder.Parent = Workspace
+    local folder = Instance.new("Folder"); folder.Name = "GS_BoxVisuals"; folder.Parent = Workspace
     BoxState.rootFolder = folder
     return folder
 end
@@ -114,7 +414,7 @@ local function Box_UpdateSmoothing(dt)
                 if khrp then
                     local st = BoxState.killers[k]
                     if not st then
-                        st = { pos = khrp.Position, look = khrp.CFrame.LookVector, facingDot = 0, lastFacingDot = 0, turnRate = 0 }
+                        st = { pos = khrp.Position, look = khrp.CFrame.LookVector, facingDot=0, lastFacingDot=0, turnRate=0 }
                         BoxState.killers[k] = st
                     else
                         local a = Box_Alpha(dt)
@@ -140,7 +440,6 @@ local function Box_UpdateSmoothing(dt)
     end
     for k in pairs(BoxState.killers) do if not k.Parent then BoxState.killers[k] = nil end end
 end
-
 local function AB_IsFacingPlayer(killer)
     local st = BoxState.killers[killer]
     if not st or not BoxState.player then return false end
@@ -151,7 +450,6 @@ local function AB_IsFacingPlayer(killer)
     if fl.Magnitude < 0.01 or ft.Magnitude < 0.01 then return false end
     return fl.Unit:Dot(ft.Unit) >= Settings.BoxFacingDot
 end
-
 local function AB_ShouldBlock(killer)
     local st = BoxState.killers[killer]
     if not st or not BoxState.player then return false end
@@ -167,9 +465,7 @@ local function AB_ShouldBlock(killer)
         local kv = khrp.AssemblyLinearVelocity
         if kv.Magnitude > Settings.BoxFastThreshold then
             local fv = Vector3.new(kv.X, 0, kv.Z)
-            if fv.Magnitude > 0.5 and fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then
-                return false
-            end
+            if fv.Magnitude > 0.5 and fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then return false end
         end
     end
     local blockLen = math.max(Settings.BoxRange - Settings.BoxBlockDistance, 0.5)
@@ -181,21 +477,14 @@ local function AB_ShouldBlock(killer)
     end
     return false
 end
-
 local _WIRE = nil
 local function GetWire()
     if _WIRE then return _WIRE end
-    local c = {
-        Vector3.new(-0.5,-0.5,-0.5), Vector3.new(0.5,-0.5,-0.5),
-        Vector3.new(0.5,-0.5,0.5), Vector3.new(-0.5,-0.5,0.5),
-        Vector3.new(-0.5,0.5,-0.5), Vector3.new(0.5,0.5,-0.5),
-        Vector3.new(0.5,0.5,0.5), Vector3.new(-0.5,0.5,0.5),
-    }
+    local c = { Vector3.new(-0.5,-0.5,-0.5), Vector3.new(0.5,-0.5,-0.5), Vector3.new(0.5,-0.5,0.5), Vector3.new(-0.5,-0.5,0.5), Vector3.new(-0.5,0.5,-0.5), Vector3.new(0.5,0.5,-0.5), Vector3.new(0.5,0.5,0.5), Vector3.new(-0.5,0.5,0.5) }
     local e = {{1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},{1,5},{2,6},{3,7},{4,8}}
     _WIRE = { corners = c, edges = e }
     return _WIRE
 end
-
 local function Box_CreateWireframe(parent)
     local wire = GetWire(); local parts = {}
     for i, e in ipairs(wire.edges) do
@@ -313,6 +602,7 @@ LocalPlayer.CharacterAdded:Connect(function()
     if BoxState.playerBox and BoxState.playerBox.parts then Box_HideWireframe(BoxState.playerBox.parts) end
 end)
 
+--═══ AUTO BLOCK ═══
 local function AB_IsBlockReady()
     local mainUI = PlayerGui:FindFirstChild("MainUI")
     local ac = mainUI and mainUI:FindFirstChild("AbilityContainer")
@@ -334,13 +624,6 @@ local function AB_FireBlock()
         pcall(function() NetworkEvent:FireServer("UseActorAbility", { buffer.fromstring("\3\5\0\0\0"..name) }) end)
     end
     pcall(function() NetworkEvent:FireServer("UseActorAbility", {name}) end)
-    local mainUI = PlayerGui:FindFirstChild("MainUI")
-    local ac = mainUI and mainUI:FindFirstChild("AbilityContainer")
-    local btn = ac and ac:FindFirstChild(name)
-    if btn and firesignal then
-        local sig = btn:FindFirstChildOfClass("MouseButton1Click")
-        if sig then pcall(firesignal, sig) end
-    end
 end
 local function AB_FireSpam()
     if not NetworkEvent then return end
@@ -348,9 +631,7 @@ local function AB_FireSpam()
     local count = math.max(1, tonumber(Settings.AB_SpamCount) or 4)
     if buffer and buffer.fromstring then
         local buf = buffer.fromstring("\3\5\0\0\0"..name)
-        for _ = 1, count do
-            task.spawn(function() pcall(function() NetworkEvent:FireServer("UseActorAbility", {buf}) end) end)
-        end
+        for _ = 1, count do task.spawn(function() pcall(function() NetworkEvent:FireServer("UseActorAbility", {buf}) end) end) end
     end
     local dur = tonumber(Settings.AB_SpamDuration) or 0.05
     if dur > 0 then
@@ -580,9 +861,7 @@ end
 local function PA_Loop()
     while PA.running do
         RunService.Heartbeat:Wait()
-        if PA.looking and PA.lookStarted and (tick() - PA.lookStarted) > 2 then
-            PA.looking = false; PA.lookStarted = nil
-        end
+        if PA.looking and PA.lookStarted and (tick() - PA.lookStarted) > 2 then PA.looking = false; PA.lookStarted = nil end
         if not PA.looking then
             local char = LocalPlayer.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -646,32 +925,22 @@ local function HDT_Dash(killer)
     if not killer or not killer.Parent then return end
     local kr = killer:FindFirstChild("HumanoidRootPart"); if not kr then return end
     if (kr.Position - hrp.Position).Magnitude < 2.5 then return end
-
     HDT.debounce = true; HDT.dashId = HDT.dashId + 1
     local thisBind = HDT.bind .. tostring(HDT.dashId)
     local startT = tick(); local active = true
-
     local bv = Instance.new("BodyVelocity")
-    bv.Name = "GS_HDT_BV"; bv.MaxForce = Vector3.new(1e6, 0, 1e6)
-    bv.Velocity = Vector3.zero; bv.Parent = hrp
-
+    bv.Name = "GS_HDT_BV"; bv.MaxForce = Vector3.new(1e6, 0, 1e6); bv.Velocity = Vector3.zero; bv.Parent = hrp
     local bg = Instance.new("BodyGyro")
-    bg.Name = "GS_HDT_BG"; bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-    bg.P = 100000; bg.D = 1000; bg.Parent = hrp
-
+    bg.Name = "GS_HDT_BG"; bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge); bg.P = 100000; bg.D = 1000; bg.Parent = hrp
     local oldWS = hum.WalkSpeed; local oldAR = hum.AutoRotate
     hum.WalkSpeed = 0; hum.AutoRotate = false
-
     local function stop()
         if not active then return end
         active = false; HDT.debounce = false
         pcall(function() RunService:UnbindFromRenderStep(thisBind) end)
         if bv and bv.Parent then bv:Destroy() end
         if bg and bg.Parent then bg:Destroy() end
-        if hum and hum.Parent then
-            pcall(function() hum.WalkSpeed = oldWS end)
-            pcall(function() hum.AutoRotate = oldAR end)
-        end
+        if hum and hum.Parent then pcall(function() hum.WalkSpeed = oldWS end); pcall(function() hum.AutoRotate = oldAR end) end
     end
     pcall(function() RunService:UnbindFromRenderStep(thisBind) end)
     RunService:BindToRenderStep(thisBind, Enum.RenderPriority.Camera.Value, function()
@@ -727,461 +996,6 @@ local function HDT_SetSpeed(v) HDT.Speed = math.clamp(tonumber(v) or 40, 5, 500)
 local function HDT_SetDuration(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 0.05, 3); Settings.HDT_Duration = HDT.Duration end
 local function HDT_SetDelay(v) HDT.Delay = math.clamp(tonumber(v) or 0.05, 0, 2); Settings.HDT_Delay = HDT.Delay end
 local function HDT_ForceNow() local k = HDT_Nearest(); if k then HDT_Dash(k) end end
-
---═══ AIM HELPERS ═══
-local function ExtractAbility(arg)
-    if arg == nil then return nil end
-    local t = type(arg)
-    if t == "string" then return arg end
-    if t == "buffer" then
-        local ok, s = pcall(function()
-            local len = buffer.readu8(arg, 1)
-            if len < 1 or len > 64 then return nil end
-            local out = ""
-            for i = 5, 5 + len - 1 do
-                local b = buffer.readu8(arg, i)
-                if b >= 32 and b <= 126 then out = out .. string.char(b) end
-            end
-            return out
-        end)
-        return ok and s or nil
-    end
-    if t == "table" then return ExtractAbility(arg[1]) end
-    return nil
-end
-
-local function GetTargetGeneric(folder, char, maxRange, minDist, pred)
-    if not folder or not char then return nil, nil end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil, nil end
-    local best, bestHrp, bestDist = nil, nil, math.huge
-    for _, model in ipairs(folder:GetChildren()) do
-        if model:IsA("Model") and model ~= char then
-            local mHrp = model:FindFirstChild("HumanoidRootPart")
-            local mHum = model:FindFirstChildOfClass("Humanoid")
-            if mHrp and mHum and mHum.Health > 0 then
-                local d = (mHrp.Position - hrp.Position).Magnitude
-                if d < bestDist and d <= maxRange and d >= minDist then
-                    best, bestHrp, bestDist = model, mHrp, d
-                end
-            end
-        end
-    end
-    if not bestHrp then return nil, nil end
-    local vel = bestHrp.AssemblyLinearVelocity
-    if not vel or vel.Magnitude < 0.1 then vel = bestHrp.Velocity end
-    if vel.Magnitude > 60 then vel = vel.Unit * 60 end
-    local leadTime = math.clamp(pred or 4, 1, 10) * 0.1
-    return bestHrp.Position + vel * leadTime, bestHrp
-end
-
-local function GetOppositeFolder()
-    local char = LocalPlayer.Character
-    if not char then return nil end
-    local kf = GetKillersFolder(); local sf = GetSurvivorsFolder()
-    if kf and (char:IsDescendantOf(kf) or char.Parent == kf) then return sf end
-    if sf and (char:IsDescendantOf(sf) or char.Parent == sf) then return kf end
-    if kf and #kf:GetChildren() > 0 then return kf end
-    if sf and #sf:GetChildren() > 0 then return sf end
-    return nil
-end
-
---═══ NORMAL AIM ═══
-local NormalAim = { active=false, endT=0, hookDone=false }
-local function IsNormalAimAbility(name)
-    if type(name) ~= "string" or name == "" then return false end
-    local l = name:lower()
-    if Settings.AIM_OnSlash and l == "slash" then return true end
-    if Settings.AIM_OnBlock and (l == "block" or l == "parry" or l == "punch") then return true end
-    if Settings.AIM_OnDagger and l:find("dagger", 1, true) then return true end
-    if Settings.AIM_OnAxe and (l == "axe" or l == "hatchet") then return true end
-    if Settings.AIM_OnShoot then
-        if l == "shoot" or l:find("oneshot",1,true) or l:find("flintlock",1,true)
-           or l:find("sixshot",1,true) or l:find("sixshooter",1,true)
-           or l:find("gun",1,true) or l:find("shot",1,true) then return true end
-    end
-    return false
-end
-local function NormalAim_Instant()
-    local char = LocalPlayer.Character
-    if not char then return false end
-    local folder = GetOppositeFolder(); if not folder then return false end
-    local target = GetTargetGeneric(folder, char, Settings.AIM_Range, Settings.AIM_MinDist, Settings.AIM_Prediction)
-    if not target then return false end
-    local hrp = char:FindFirstChild("HumanoidRootPart"); if not hrp then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then hum.AutoRotate = false end
-    pcall(function() hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(target.X, hrp.Position.Y, target.Z)) end)
-    local cam = Workspace.CurrentCamera
-    if cam and (Settings.AIM_Mode == "Camera" or Settings.AIM_Mode == "Both") then
-        pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, target) end)
-    end
-    NormalAim.active = true
-    NormalAim.endT = tick() + (Settings.AIM_LockTime or 0.7)
-    return true
-end
-local function NormalAim_SetupHook()
-    if NormalAim.hookDone or not hookmetamethod then return end
-    pcall(function()
-        local old
-        old = hookmetamethod(game, "__namecall", function(self, ...)
-            if Settings.AIM_Enabled then
-                local args = {...}
-                if type(args[1]) == "string" and args[1] == "UseActorAbility" then
-                    local n = ExtractAbility(args[2])
-                    if IsNormalAimAbility(n) then NormalAim_Instant() end
-                end
-            end
-            return old(self, ...)
-        end)
-        NormalAim.hookDone = true
-    end)
-end
-RunService.RenderStepped:Connect(function()
-    if not Settings.AIM_Enabled then
-        if NormalAim.active then
-            NormalAim.active = false
-            local h = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-            if h then h.AutoRotate = true end
-        end
-        return
-    end
-    if not NormalAim.active or tick() > NormalAim.endT then
-        if NormalAim.active then
-            NormalAim.active = false
-            local h = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-            if h then h.AutoRotate = true end
-        end
-        return
-    end
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then NormalAim.active = false; return end
-    local h = char:FindFirstChildOfClass("Humanoid")
-    if h then h.AutoRotate = false end
-    local folder = GetOppositeFolder()
-    if not folder then NormalAim.active = false; return end
-    local target = GetTargetGeneric(folder, char, Settings.AIM_Range, Settings.AIM_MinDist, Settings.AIM_Prediction)
-    if not target then
-        NormalAim.active = false
-        if h then h.AutoRotate = true end
-        return
-    end
-    if Settings.AIM_Mode == "Character" or Settings.AIM_Mode == "Both" then
-        pcall(function() hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(target.X, hrp.Position.Y, target.Z)) end)
-    end
-    if Settings.AIM_Mode == "Camera" or Settings.AIM_Mode == "Both" then
-        local cam = Workspace.CurrentCamera
-        if cam then pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, target) end) end
-    end
-end)
-task.spawn(function()
-    for _ = 1, 30 do
-        if NormalAim.hookDone then break end
-        NormalAim_SetupHook(); task.wait(1)
-    end
-end)
-
---═══ TRUE SILENT AIM (new detection system) ═══
-local SilentAim = {
-    active = false, aimPoint = nil, aimTarget = nil, expires = 0,
-    fireHookDone = false, mouseHookDone = false, attrWatcherDone = false,
-    buttonConns = {}, scanConn = nil, attrConns = {}, charConn = nil,
-}
-
-local function SA_ComputeAim()
-    local char = LocalPlayer.Character
-    if not char then return nil, nil end
-    local folder = GetOppositeFolder()
-    if not folder then return nil, nil end
-    return GetTargetGeneric(folder, char, Settings.SILENT_Range, Settings.SILENT_MinDist, Settings.SILENT_Prediction)
-end
-
-local function SA_IsActive()
-    if not SilentAim.active then return false end
-    if os.clock() >= SilentAim.expires then
-        SilentAim.active = false
-        SilentAim.aimPoint = nil
-        SilentAim.aimTarget = nil
-        SilentAim.expires = 0
-        return false
-    end
-    return true
-end
-
-local function SA_Arm(duration)
-    local aim, target = SA_ComputeAim()
-    if not aim then return false end
-    SilentAim.aimPoint = aim
-    SilentAim.aimTarget = target
-    SilentAim.active = true
-    SilentAim.expires = os.clock() + (duration or 0.5)
-    return true
-end
-
-local function SA_Disarm()
-    SilentAim.active = false
-    SilentAim.aimPoint = nil
-    SilentAim.aimTarget = nil
-    SilentAim.expires = 0
-end
-
-local function SA_IsAbility(name)
-    if type(name) ~= "string" or name == "" then return false end
-    local l = name:lower()
-    if Settings.SILENT_OnCorrupt and (l:find("corrupt", 1, true) or l:find("nature", 1, true)) then return true end
-    if Settings.SILENT_OnNova and (l:find("nova", 1, true) or l:find("void", 1, true)) then return true end
-    if Settings.SILENT_OnDemonic and (l:find("demonic", 1, true) or l:find("infernal", 1, true) or l:find("pursuit", 1, true)) then return true end
-    if Settings.SILENT_OnAscension and (l:find("ascension", 1, true) or l:find("cataclysm", 1, true)) then return true end
-    if Settings.SILENT_OnPlasma and l:find("plasma", 1, true) then return true end
-    if Settings.SILENT_OnCrystal and (l:find("crystal", 1, true) or l:find("pitch", 1, true)) then return true end
-    return false
-end
-
-local function SA_RewriteDeep(value, aim, depth, seen)
-    depth = depth or 0
-    if depth > 5 then return value end
-    local tv = typeof(value)
-    if tv == "Vector3" then return aim end
-    if tv == "CFrame" then return CFrame.new(aim) end
-    if tv == "Ray" then return Ray.new(value.Origin, (aim - value.Origin).Unit) end
-    if type(value) == "table" then
-        seen = seen or {}
-        if seen[value] then return value end
-        seen[value] = true
-        for k, v in pairs(value) do
-            value[k] = SA_RewriteDeep(v, aim, depth + 1, seen)
-        end
-    end
-    return value
-end
-
-local function SA_SetupFireHook()
-    if SilentAim.fireHookDone then return end
-    if not (hookmetamethod or getrawmetatable) then return end
-    if not newcclosure then return end
-
-    local function handleFire(args)
-        if not Settings.SILENT_Enabled then return nil end
-        local abilityName = nil
-        if type(args[1]) == "string" and args[1] == "UseActorAbility" then
-            abilityName = ExtractAbility(args[2])
-        elseif type(args[1]) == "string" and SA_IsAbility(args[1]) then
-            abilityName = args[1]
-        elseif type(args[2]) == "string" and SA_IsAbility(args[2]) then
-            abilityName = args[2]
-        elseif type(args[1]) == "table" then
-            local n = ExtractAbility(args[1])
-            if n and SA_IsAbility(n) then abilityName = n end
-        end
-        if not abilityName or not SA_IsAbility(abilityName) then return nil end
-        local aim, target = SA_ComputeAim()
-        if not aim then return nil end
-        SilentAim.aimPoint = aim
-        SilentAim.aimTarget = target
-        SilentAim.active = true
-        SilentAim.expires = os.clock() + 0.3
-        for i = 1, args.n do
-            args[i] = SA_RewriteDeep(args[i], aim)
-        end
-        return args
-    end
-
-    if hookmetamethod then
-        local ok = pcall(function()
-            local old
-            old = hookmetamethod(game, "__namecall", function(self, ...)
-                local args = table.pack(...)
-                local newArgs = handleFire(args)
-                if newArgs then
-                    return old(self, table.unpack(newArgs, 1, newArgs.n))
-                end
-                return old(self, ...)
-            end)
-        end)
-        if ok then SilentAim.fireHookDone = true; return true end
-    end
-
-    if getrawmetatable and setreadonly then
-        local ok = pcall(function()
-            local mt = getrawmetatable(game)
-            if not mt then return end
-            local oldNamecall = mt.__namecall
-            setreadonly(mt, false)
-            mt.__namecall = newcclosure(function(self, ...)
-                local args = table.pack(...)
-                local newArgs = handleFire(args)
-                if newArgs then
-                    return oldNamecall(self, table.unpack(newArgs, 1, newArgs.n))
-                end
-                return oldNamecall(self, ...)
-            end)
-            setreadonly(mt, true)
-        end)
-        if ok then SilentAim.fireHookDone = true; return true end
-    end
-    return false
-end
-
-local function SA_SetupMouseHook()
-    if SilentAim.mouseHookDone then return end
-    pcall(function()
-        if not getrawmetatable or not setreadonly or not newcclosure then return end
-        local mouse = LocalPlayer:GetMouse()
-        local mt = getrawmetatable(game)
-        if not mt then return end
-        local oldIndex = mt.__index
-        setreadonly(mt, false)
-        mt.__index = newcclosure(function(self, key)
-            if self == mouse and SA_IsActive() then
-                if key == "Hit" then
-                    return CFrame.new(SilentAim.aimPoint)
-                elseif key == "UnitRay" then
-                    local cam = Workspace.CurrentCamera
-                    if cam then
-                        return Ray.new(cam.CFrame.Position, (SilentAim.aimPoint - cam.CFrame.Position).Unit)
-                    end
-                end
-            end
-            return oldIndex(self, key)
-        end)
-        setreadonly(mt, true)
-        SilentAim.mouseHookDone = true
-    end)
-end
-
-local function SA_HookButton(btn)
-    if not btn or not btn:IsA("GuiButton") or SilentAim.buttonConns[btn] then return end
-    if not SA_IsAbility(btn.Name) then return end
-    SilentAim.buttonConns[btn] = true
-
-    local function armNow()
-        if Settings.SILENT_Enabled then SA_Arm(0.5) end
-    end
-
-    local reordered = false
-    if getconnections then
-        for _, sigName in ipairs({"Activated", "MouseButton1Down", "MouseButton1Click"}) do
-            local sig = btn[sigName]
-            if sig then
-                local ok, conns = pcall(getconnections, sig)
-                if ok and conns and #conns > 0 then
-                    for _, c in ipairs(conns) do
-                        pcall(function() c:Disable() end)
-                    end
-                    pcall(function()
-                        sig:Connect(function()
-                            armNow()
-                            for _, c in ipairs(conns) do
-                                pcall(function() c:Fire() end)
-                                pcall(function() c.Function() end)
-                            end
-                        end)
-                    end)
-                    reordered = true
-                end
-            end
-        end
-    end
-
-    if not reordered then
-        pcall(function() btn.MouseButton1Down:Connect(armNow) end)
-        pcall(function() btn.Activated:Connect(armNow) end)
-        pcall(function() btn.MouseButton1Click:Connect(armNow) end)
-    end
-end
-
-local function SA_ScanButtons()
-    local mainUI = PlayerGui:FindFirstChild("MainUI")
-    if not mainUI then return end
-    local ac = mainUI:FindFirstChild("AbilityContainer")
-    if not ac then return end
-    for _, btn in ipairs(ac:GetDescendants()) do
-        if btn:IsA("GuiButton") then SA_HookButton(btn) end
-    end
-    if not SilentAim.scanConn then
-        SilentAim.scanConn = ac.DescendantAdded:Connect(function(c)
-            if c:IsA("GuiButton") then SA_HookButton(c) end
-        end)
-    end
-end
-
-local function SA_ClearButtons()
-    SilentAim.buttonConns = {}
-    if SilentAim.scanConn then
-        pcall(function() SilentAim.scanConn:Disconnect() end)
-        SilentAim.scanConn = nil
-    end
-end
-
-local function SA_SetupAttrWatcher()
-    if SilentAim.attrWatcherDone then return end
-    local char = LocalPlayer.Character
-    local function hookOn(target)
-        if not target then return end
-        for _, attr in ipairs({"AbilityLastUsed", "AbilitiesUsed", "LastAbility", "Ability"}) do
-            local ok, sig = pcall(function() return target:GetAttributeChangedSignal(attr) end)
-            if ok and sig then
-                table.insert(SilentAim.attrConns, sig:Connect(function()
-                    if Settings.SILENT_Enabled then SA_Arm(0.5) end
-                end))
-            end
-        end
-    end
-    hookOn(LocalPlayer)
-    hookOn(char)
-    SilentAim.attrWatcherDone = true
-    if not SilentAim.charConn then
-        SilentAim.charConn = LocalPlayer.CharacterAdded:Connect(function(c)
-            task.wait(1)
-            SilentAim.attrWatcherDone = false
-            for _, conn in ipairs(SilentAim.attrConns) do pcall(function() conn:Disconnect() end) end
-            SilentAim.attrConns = {}
-            if Settings.SILENT_Enabled then SA_SetupAttrWatcher() end
-        end)
-    end
-end
-
-local function SA_Setup()
-    SA_SetupMouseHook()
-    SA_SetupFireHook()
-    SA_SetupAttrWatcher()
-    SA_ScanButtons()
-    task.spawn(function()
-        local m = PlayerGui:WaitForChild("MainUI", 30)
-        if not m or not Settings.SILENT_Enabled then return end
-        local ac = m:WaitForChild("AbilityContainer", 30)
-        if not ac or not Settings.SILENT_Enabled then return end
-        for _, btn in ipairs(ac:GetDescendants()) do
-            if btn:IsA("GuiButton") then SA_HookButton(btn) end
-        end
-    end)
-end
-
-local function SA_Shutdown()
-    SA_ClearButtons()
-    for _, c in ipairs(SilentAim.attrConns) do pcall(function() c:Disconnect() end) end
-    SilentAim.attrConns = {}
-    SilentAim.attrWatcherDone = false
-    SA_Disarm()
-end
-
-task.spawn(function()
-    for _ = 1, 30 do
-        if SilentAim.fireHookDone then break end
-        SA_Setup()
-        task.wait(1)
-    end
-end)
-
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(2)
-    SilentAim.attrWatcherDone = false
-    if Settings.SILENT_Enabled then
-        SA_ScanButtons()
-        SA_SetupAttrWatcher()
-    end
-end)
 
 --═══ ESP ═══
 local ESP_HL, ESP_Folder = {}, nil
@@ -1650,8 +1464,7 @@ local function VeerTriggerSprint()
             if V and V.SendMouseButtonEvent then
                 local x = btn.AbsolutePosition.X + btn.AbsoluteSize.X / 2
                 local y = btn.AbsolutePosition.Y + btn.AbsoluteSize.Y / 2
-                V:SendMouseButtonEvent(x, y, 0, true, game, 1)
-                task.wait(0.03)
+                V:SendMouseButtonEvent(x, y, 0, true, game, 1); task.wait(0.03)
                 V:SendMouseButtonEvent(x, y, 0, false, game, 1)
             end
         end)
@@ -1670,8 +1483,7 @@ local function VeerATMonitor(h)
         if not VeerState.atRunning then return end
         if not h.Parent then
             for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-            VeerState.atMonitors[h] = nil
-            return
+            VeerState.atMonitors[h] = nil; return
         end
         local ad = h.Adornee
         local ch = LocalPlayer.Character
@@ -1686,13 +1498,9 @@ local function VeerATMonitor(h)
 end
 local function VeerATAttach(f)
     if not f then return false end
-    for _, o in ipairs(f:GetDescendants()) do
-        if o:IsA("Highlight") then pcall(VeerATMonitor, o) end
-    end
+    for _, o in ipairs(f:GetDescendants()) do if o:IsA("Highlight") then pcall(VeerATMonitor, o) end end
     if not VeerState.atConn then
-        local ok, conn = pcall(function()
-            return f.DescendantAdded:Connect(function(c) if c:IsA("Highlight") then pcall(VeerATMonitor, c) end end)
-        end)
+        local ok, conn = pcall(function() return f.DescendantAdded:Connect(function(c) if c:IsA("Highlight") then pcall(VeerATMonitor, c) end end) end)
         if ok and conn then VeerState.atConn = conn end
     end
     return true
@@ -1715,9 +1523,7 @@ local function VeerATStop()
     if VeerState.atConn then pcall(function() VeerState.atConn:Disconnect() end); VeerState.atConn = nil end
     if VeerState.atRetry then pcall(task.cancel, VeerState.atRetry); VeerState.atRetry = nil end
     for _, conns in pairs(VeerState.atMonitors) do
-        if type(conns) == "table" then
-            for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-        end
+        if type(conns) == "table" then for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end end
     end
     VeerState.atMonitors = {}
 end
@@ -1728,11 +1534,7 @@ local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 Library.NotifySide = "Right"
-local Window = Library:CreateWindow({
-    Title = "Cr4zy HuB", Footer = "Crimson Edition",
-    ToggleKeybind = Enum.KeyCode.RightControl, Center = true,
-    AutoShow = true, Resizable = true, ShowCustomCursor = false, NotifySide = "Right",
-})
+local Window = Library:CreateWindow({ Title = "Cr4zy HuB", Footer = "Crimson Edition", ToggleKeybind = Enum.KeyCode.RightControl, Center = true, AutoShow = true, Resizable = true, ShowCustomCursor = false, NotifySide = "Right" })
 local Tabs = {
     ESP        = Window:AddTab("ESP", "eye"),
     Stam       = Window:AddTab("Stam", "zap"),
@@ -1744,6 +1546,7 @@ local Tabs = {
     Vee        = Window:AddTab("Vee", "gamepad-2"),
     Gen        = Window:AddTab("Gen", "cpu"),
 }
+
 do
     local g = Tabs.ESP:AddLeftGroupbox("ESP")
     g:AddToggle("ESPKiller_T",    { Text = "Killer ESP (Red)",       Default = false, Callback = function(v) Settings.ESP_Killer    = v; ES_Refresh() end })
@@ -1755,6 +1558,7 @@ do
     o:AddToggle("ESPWall_T",  { Text = "Wall Check",   Default = false, Callback = function(v) Settings.ESP_WallCheck = v end })
     o:AddSlider("ESPRange_S", { Text = "Max Distance", Default = 150, Min = 50, Max = 500, Rounding = 0, Callback = function(v) Settings.ESP_MaxDist = v end })
 end
+
 do
     local g = Tabs.Stam:AddLeftGroupbox("Infinite Stamina")
     g:AddToggle("Stam_Inf_T", { Text = "Infinite Stamina", Default = false, Callback = function(v) Stam_SetInfinite(v) end })
@@ -1766,6 +1570,7 @@ do
     o:AddSlider("Stam_Drain_S",  { Text = "Stamina Drain",    Default = STAM_DEFAULT.StaminaDrain,     Min = 0, Max = 1000, Rounding = 0, Callback = function(v) Stam_SetField("StaminaDrain", v) end })
     o:AddSlider("Stam_Regen_S",  { Text = "Regen Delay (s)",  Default = STAM_DEFAULT.StaminaRegenDelay,Min = 0, Max = 10,   Rounding = 2, Callback = function(v) Stam_SetField("StaminaRegenDelay", v) end })
 end
+
 do
     local g = Tabs.AutoBlock:AddLeftGroupbox("Auto Block")
     g:AddToggle("AB_Enable_T",   { Text = "Enable Auto Block",  Default = false, Callback = function(v) if v then AB_Enable() else AB_Disable() end end })
@@ -1777,6 +1582,7 @@ do
     s:AddSlider("AB_SpamCount_S", { Text = "Spam Count",    Default = 4,     Min = 1, Max = 10,  Rounding = 0, Callback = function(v) Settings.AB_SpamCount = v end })
     s:AddSlider("AB_SpamDur_S",   { Text = "Spam Duration", Default = 0.05,  Min = 0, Max = 0.5, Rounding = 3, Callback = function(v) Settings.AB_SpamDuration = v end })
 end
+
 do
     local bd = Tabs.Box:AddLeftGroupbox("Box Detection")
     bd:AddSlider("Box_Range_S", { Text = "Total Range (studs)", Default = 18, Min = 5, Max = 50, Rounding = 1, Callback = function(v) Settings.BoxRange = v end })
@@ -1794,6 +1600,7 @@ do
     dim:AddSlider("Box_KW_S", { Text = "Width",  Default = 6, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.BoxKillerW = v end })
     dim:AddSlider("Box_KH_S", { Text = "Height", Default = 6, Min = 1, Max = 30, Rounding = 1, Callback = function(v) Settings.BoxKillerH = v end })
 end
+
 do
     local h = Tabs.HDTABT:AddLeftGroupbox("HDT")
     h:AddToggle("HDT_T",       { Text = "Enable HDT", Default = false, Callback = function(v) if v then HDT_Enable() else HDT_Disable() end end })
@@ -1805,45 +1612,31 @@ do
     a:AddToggle("ABT_T",   { Text = "Enable Anti Bait", Default = false, Callback = function(v) if v then ABT_Enable() else ABT_Disable() end end })
     a:AddSlider("ABT_Dur", { Text = "Duration", Default = 0.5, Min = 0, Max = 3, Rounding = 1, Callback = function(v) Settings.ABT_Duration = v end })
 end
+
 do
     local s = Tabs.NormalAim:AddLeftGroupbox("Auto Parry & Punch Aim")
     s:AddToggle("AP_T",       { Text = "Auto Parry",       Default = false, Callback = function(v) if v then AP_Enable() else AP_Disable() end end })
     s:AddSlider("AP_Delay_S", { Text = "Parry Delay",      Default = 0.5, Min = 0, Max = 1, Rounding = 2, Callback = function(v) Settings.AP_Delay = v end })
     s:AddToggle("PA_T",       { Text = "Punch Aim",        Default = false, Callback = function(v) if v then PA_Enable() else PA_Disable() end end })
     s:AddSlider("PA_Pred_S",  { Text = "Punch Prediction", Default = 4, Min = 0, Max = 20, Rounding = 0, Callback = function(v) Settings.PA_Prediction = v end })
-    local a = Tabs.NormalAim:AddRightGroupbox("Normal Aim (Body Rotation)")
-    a:AddToggle("NA_Enable_T", { Text = "Enable Normal Aim", Default = false, Callback = function(v)
-        Settings.AIM_Enabled = v
-        if v then NormalAim_SetupHook() end
-    end })
+
+    local a = Tabs.NormalAim:AddRightGroupbox("Normal Aim")
+    a:AddToggle("NA_Enable_T", { Text = "Enable Normal Aim", Default = false, Callback = function(v) Settings.AIM_Enabled = v end })
     a:AddDropdown("NA_Mode_D", { Text = "Aim Mode", Values = {"Character","Camera","Both"}, Default = "Character", Multi = false, Callback = function(v) Settings.AIM_Mode = v end })
     a:AddSlider("NA_Pred_S",   { Text = "Prediction (1-10)", Default = 4,   Min = 1,   Max = 10, Rounding = 0, Callback = function(v) Settings.AIM_Prediction = v end })
-    a:AddSlider("NA_Lock_S",   { Text = "Lock Time (s)",     Default = 0.7, Min = 0.1, Max = 3,  Rounding = 2, Callback = function(v) Settings.AIM_LockTime = v end })
     a:AddSlider("NA_Range_S",  { Text = "Range",             Default = 55,  Min = 5,   Max = 200,Rounding = 0, Callback = function(v) Settings.AIM_Range = v end })
-    local p = Tabs.NormalAim:AddLeftGroupbox("Legacy Ability Triggers")
-    p:AddToggle("NA_Slash_T",  { Text = "Shedletsky — Slash",             Default = true, Callback = function(v) Settings.AIM_OnSlash  = v end })
-    p:AddToggle("NA_Block_T",  { Text = "Guest — Block / Parry / Punch",  Default = true, Callback = function(v) Settings.AIM_OnBlock  = v end })
-    p:AddToggle("NA_Dagger_T", { Text = "Two Time — Dagger",              Default = true, Callback = function(v) Settings.AIM_OnDagger = v end })
-    p:AddToggle("NA_Axe_T",    { Text = "Jane Doe — Hatchet",             Default = true, Callback = function(v) Settings.AIM_OnAxe    = v end })
-    p:AddToggle("NA_Shoot_T",  { Text = "Chance — Shoot / Oneshot / Gun", Default = true, Callback = function(v) Settings.AIM_OnShoot  = v end })
+    a:AddToggle("NA_Debug_T",  { Text = "Debug (print anims/sounds)", Default = false, Callback = function(v) AimDebug = v end })
+    a:AddLabel({ Text = "Triggered by ability Anim / Sound IDs read from ReplicatedStorage.Assets. Aim is active ONLY while an ability is playing.", DoesWrap = true })
 end
+
 do
     local g = Tabs.SilentAim:AddLeftGroupbox("Silent Aim")
-    g:AddToggle("SA_Enable_T", { Text = "Enable Silent Aim", Default = false, Callback = function(v)
-        Settings.SILENT_Enabled = v
-        if v then SA_Setup() else SA_Shutdown() end
-    end })
+    g:AddToggle("SA_Enable_T", { Text = "Enable Silent Aim", Default = false, Callback = function(v) Settings.SILENT_Enabled = v end })
     g:AddSlider("SA_Pred_S",  { Text = "Prediction (1-10)", Default = 4, Min = 1, Max = 10, Rounding = 0, Callback = function(v) Settings.SILENT_Prediction = v end })
     g:AddSlider("SA_Range_S", { Text = "Range", Default = 55, Min = 5, Max = 200, Rounding = 0, Callback = function(v) Settings.SILENT_Range = v end })
-    g:AddLabel({ Text = "Automatically aims at the OPPOSITE team. No camera / body rotation.", DoesWrap = true })
-    local p = Tabs.SilentAim:AddRightGroupbox("Trigger Abilities")
-    p:AddToggle("SA_Corrupt_T",   { Text = "C00lkidd — Corrupt Nature",        Default = true, Callback = function(v) Settings.SILENT_OnCorrupt   = v end })
-    p:AddToggle("SA_Nova_T",      { Text = "Noli — Nova / Void Rush",          Default = true, Callback = function(v) Settings.SILENT_OnNova      = v end })
-    p:AddToggle("SA_Demonic_T",   { Text = "Guest 666 — Demonic / Infernal",   Default = true, Callback = function(v) Settings.SILENT_OnDemonic   = v end })
-    p:AddToggle("SA_Ascension_T", { Text = "Nosferatu — Ascension / Cataclysm",Default = true, Callback = function(v) Settings.SILENT_OnAscension = v end })
-    p:AddToggle("SA_Plasma_T",    { Text = "Dusekkar — Plasma Beam",           Default = true, Callback = function(v) Settings.SILENT_OnPlasma    = v end })
-    p:AddToggle("SA_Crystal_T",   { Text = "Jane Doe — Crystal Pitch",         Default = true, Callback = function(v) Settings.SILENT_OnCrystal   = v end })
+    g:AddLabel({ Text = "Same trigger as Normal Aim (Assets config). Overrides Mouse.Hit / UnitRay / Target only while ability is playing.", DoesWrap = true })
 end
+
 do
     local v = Tabs.Vee:AddLeftGroupbox("Vee (Veeronica)")
     v:AddToggle("Vee_AutoTrick_T", { Text = "Auto Trick", Default = false, Callback = function(x) Vee.AutoTrick = x; if x then VeerATStart() else VeerATStop() end end })
@@ -1857,6 +1650,7 @@ do
     v:AddSlider("Vee_CD_S",       { Text = "Trick Cooldown",     Default = 1,    Min = 0.1, Max = 5,   Rounding = 2, Callback = function(x) Vee.Sk8TrickCooldown = x;      if Vee.CustomStats then Vee_ApplyStats() end end })
     v:AddButton({ Text = "Force Apply Stats Now", Func = function() Vee_ApplyStats(true); Library:Notify({ Title = "Vee", Content = "Stats re-applied", Time = 2 }) end })
 end
+
 do
     local g = Tabs.Gen:AddLeftGroupbox("Generator Solver")
     g:AddToggle("GS_Enabled_T", { Text = "Enable Generator Solver", Default = false, Callback = function(v)
@@ -1883,13 +1677,15 @@ _G.Godsaken = {
     AutoParry = { Enable=AP_Enable, Disable=AP_Disable },
     PunchAim = { Enable=PA_Enable, Disable=PA_Disable },
     HDT = { Enable=HDT_Enable, Disable=HDT_Disable, SetSpeed=HDT_SetSpeed, SetDelay=HDT_SetDelay, SetDuration=HDT_SetDuration, Force=HDT_ForceNow },
-    NormalAim = { Enable=function() Settings.AIM_Enabled=true; NormalAim_SetupHook() end, Disable=function() Settings.AIM_Enabled=false end },
+    NormalAim = { Enable=function() Settings.AIM_Enabled=true end, Disable=function() Settings.AIM_Enabled=false end },
     SilentAim = {
-        Enable = function() Settings.SILENT_Enabled = true; SA_Setup() end,
-        Disable = function() Settings.SILENT_Enabled = false; SA_Shutdown() end,
-        Arm = SA_Arm, Disarm = SA_Disarm,
+        Enable = function() Settings.SILENT_Enabled = true end,
+        Disable = function() Settings.SILENT_Enabled = false end,
         GetAimPoint = function() return SilentAim.aimPoint end,
-        GetTargetFolder = GetOppositeFolder,
+        GetEventActive = function() return AimEventActive end,
+        ReloadConfigs = function()
+            if LocalPlayer.Character then LoadAbilityConfigs(LocalPlayer.Character) end
+        end,
     },
     ESP = {
         SetKiller=function(v) Settings.ESP_Killer=v; ES_Refresh() end,
@@ -1928,7 +1724,7 @@ Library:OnUnload(function()
     pcall(function() AP_Disable() end)
     pcall(function() PA_Disable() end)
     pcall(function() HDT_Disable() end)
-    pcall(function() Settings.AIM_Enabled = false; Settings.SILENT_Enabled = false; SA_Shutdown() end)
+    pcall(function() Settings.AIM_Enabled = false; Settings.SILENT_Enabled = false end)
     pcall(function() GS_Disable() end)
     pcall(function() Stam_StopLoop(); Stam_Restore() end)
     pcall(function() Vee.AutoTrick = false; VeerATStop() end)
@@ -1942,10 +1738,6 @@ Library:OnUnload(function()
     end)
 end)
 
-Library:Notify({
-    Title = "Cr4zy HuB",
-    Content = "Crimson Edition — new detection + opposite-team aim",
-    Time = 4,
-})
+Library:Notify({ Title = "Cr4zy HuB", Content = "Crimson Edition — HunterAim-style trigger", Time = 4 })
 
 print("[Cr4zy HuB] Loaded.")
