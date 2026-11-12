@@ -47,13 +47,14 @@ local Settings = {
     FacingLength = 12,
     FacingWidth = 8,
     FacingHeight = 7,
-    FacingGridSpacing = 2,
     FacingLineThickness = 0.035,
     FacingTransparency = 0.15,
     FacingColor = Color3.fromRGB(255, 65, 75),
     FacingPlayerColor = Color3.fromRGB(80, 190, 255),
     FacingDuration = 0.4,
     FacingShowPlayer = false,
+    FacingM1Only = true,
+    FacingDebugLog = false,
     FacingTurnExpansion = false,
     FacingTurnThreshold = 35,
     FacingTurnSensitivity = 0.15,
@@ -73,24 +74,13 @@ local Settings = {
     SILENT_LockTime = 0.7,
     SILENT_Range = 55,
     SILENT_MinDist = 3,
-    SILENT_OnCorrupt = true,
-    SILENT_OnNova = true,
-    SILENT_OnDemonic = true,
-    SILENT_OnAscension = true,
-    SILENT_OnPlasma = true,
-    SILENT_OnCrystal = true,
+    SILENT_OnCorrupt = true, SILENT_OnNova = true, SILENT_OnDemonic = true,
+    SILENT_OnAscension = true, SILENT_OnPlasma = true, SILENT_OnCrystal = true,
 
-    AIM_Enabled = false,
-    AIM_Mode = "Character",
-    AIM_Prediction = 4,
-    AIM_LockTime = 0.7,
-    AIM_MinDist = 3,
-    AIM_Range = 55,
-    AIM_OnSlash = true,
-    AIM_OnBlock = true,
-    AIM_OnDagger = true,
-    AIM_OnAxe = true,
-    AIM_OnShoot = true,
+    AIM_Enabled = false, AIM_Mode = "Character",
+    AIM_Prediction = 4, AIM_LockTime = 0.7, AIM_MinDist = 3, AIM_Range = 55,
+    AIM_OnSlash = true, AIM_OnBlock = true, AIM_OnDagger = true,
+    AIM_OnAxe = true, AIM_OnShoot = true,
 
     ESP_Killer = false, ESP_Survivor = false, ESP_Generator = false,
     ESP_Medkit = false, ESP_Bloxy = false,
@@ -110,6 +100,71 @@ local AntiBaitAnims = {}
 for _, id in ipairs({100926346851492,102517104852347,115706752305794,116506900864624,120725067908621,120748030255574,120773807614836,123548100869928,127040663332045,133292581373127,138407964761603,140671644163156,72182155407310,72722244508749,82036084568393,82605295530067,83036817079068,88287038085804,88557287105521,90970641235403,95421685049902,95802026624883,96959123077498}) do AntiBaitAnims["rbxassetid://"..id] = true end
 local HDT_Anims = {}
 for _, id in ipairs({72722244508749,96959123077498,95802026624883,140671644163156,100926346851492}) do HDT_Anims["rbxassetid://"..id] = true end
+
+--═══ M1 FILTER ═══
+-- These are SPECIAL ABILITIES, not M1s. Skip the box for these.
+local SKIP_ABILITY_PATTERNS = {
+    -- Silent Aim abilities (killer specials)
+    "corrupt", "nature", "nova", "void", "demonic", "infernal", "pursuit",
+    "ascension", "cataclysm", "plasma", "crystal", "pitch",
+    -- Normal Aim abilities (special attacks)
+    "dagger", "axe", "hatchet",
+    "shoot", "oneshot", "gun", "flintlock", "sixshot", "sixshooter",
+    -- Defensive / utility
+    "block", "parry", "dodge",
+}
+
+local function GetKillerAbilityName(killer)
+    for _, attr in ipairs({"AbilityName", "LastAbility", "CurrentAbility", "AbilityUsed", "Ability", "LastAbilityName"}) do
+        local ok, v = pcall(function() return killer:GetAttribute(attr) end)
+        if ok and type(v) == "string" and v ~= "" then return v end
+    end
+    return nil
+end
+
+local function NameMatchesSkipList(name)
+    local l = name:lower()
+    for _, p in ipairs(SKIP_ABILITY_PATTERNS) do
+        if l:find(p, 1, true) then return p end
+    end
+    return nil
+end
+
+local function KillerIsM1(killer)
+    if not Settings.FacingM1Only then return true end
+    local name = GetKillerAbilityName(killer)
+    if name then
+        local matched = NameMatchesSkipList(name)
+        if matched then
+            if Settings.FacingDebugLog then
+                print(("[Cr4zy Box] SKIP ability '%s' (matched '%s')"):format(name, matched))
+            end
+            return false
+        end
+        if Settings.FacingDebugLog then
+            print(("[Cr4zy Box] SHOW — M1 '%s'"):format(name))
+        end
+        return true
+    end
+    -- No name found → check animations for known ability animations
+    local hum = killer:FindFirstChildOfClass("Humanoid")
+    local anim = hum and hum:FindFirstChildOfClass("Animator")
+    if anim then
+        for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+            local aid = track.Animation and track.Animation.AnimationId
+            if aid and (AntiBaitAnims[aid] or HDT_Anims[aid]) then
+                if Settings.FacingDebugLog then
+                    print("[Cr4zy Box] SKIP — ability animation detected")
+                end
+                return false
+            end
+        end
+    end
+    if Settings.FacingDebugLog then
+        print("[Cr4zy Box] SHOW — no name, no ability animation (assume M1)")
+    end
+    return true
+end
 
 --═══ FACING BOX SYSTEM ═══
 local FacingBox = {
@@ -153,36 +208,36 @@ local function FB_AddLine(parts, color, a, b)
     table.insert(parts, part)
 end
 
-local function FB_DrawGrid(parts, cf, size, color)
+-- OUTLINE ONLY: 8 corners, 12 edges. No internal grid.
+local function FB_DrawBox(parts, cf, size, color)
     FB_ClearParts(parts)
     local hx, hy, hz = size.X/2, size.Y/2, size.Z/2
-    local spacing = Settings.FacingGridSpacing
     local function point(x, y, z) return cf:PointToWorldSpace(Vector3.new(x, y, z)) end
 
-    for x = -hx, hx, spacing do
-        for z = -hz, hz, spacing do
-            FB_AddLine(parts, color, point(x, -hy, z), point(x, hy, z))
-        end
-    end
-    for y = -hy, hy, spacing do
-        for x = -hx, hx, spacing do
-            FB_AddLine(parts, color, point(x, y, -hz), point(x, y, hz))
-        end
-        for z = -hz, hz, spacing do
-            FB_AddLine(parts, color, point(-hx, y, z), point(hx, y, z))
-        end
-    end
-    for _, x in ipairs({-hx, hx}) do
-        for _, z in ipairs({-hz, hz}) do
-            FB_AddLine(parts, color, point(x, -hy, z), point(x, hy, z))
-        end
-    end
-    for _, y in ipairs({-hy, hy}) do
-        FB_AddLine(parts, color, point(-hx, y, -hz), point(hx, y, -hz))
-        FB_AddLine(parts, color, point(-hx, y, hz), point(hx, y, hz))
-        FB_AddLine(parts, color, point(-hx, y, -hz), point(-hx, y, hz))
-        FB_AddLine(parts, color, point(hx, y, -hz), point(hx, y, hz))
-    end
+    local c1 = point(-hx, -hy, -hz)
+    local c2 = point( hx, -hy, -hz)
+    local c3 = point( hx, -hy,  hz)
+    local c4 = point(-hx, -hy,  hz)
+    local c5 = point(-hx,  hy, -hz)
+    local c6 = point( hx,  hy, -hz)
+    local c7 = point( hx,  hy,  hz)
+    local c8 = point(-hx,  hy,  hz)
+
+    -- Bottom face (4 edges)
+    FB_AddLine(parts, color, c1, c2)
+    FB_AddLine(parts, color, c2, c3)
+    FB_AddLine(parts, color, c3, c4)
+    FB_AddLine(parts, color, c4, c1)
+    -- Top face (4 edges)
+    FB_AddLine(parts, color, c5, c6)
+    FB_AddLine(parts, color, c6, c7)
+    FB_AddLine(parts, color, c7, c8)
+    FB_AddLine(parts, color, c8, c5)
+    -- Verticals (4 edges)
+    FB_AddLine(parts, color, c1, c5)
+    FB_AddLine(parts, color, c2, c6)
+    FB_AddLine(parts, color, c3, c7)
+    FB_AddLine(parts, color, c4, c8)
 end
 
 local function FB_IsPlayerInBox(killerRoot, playerRoot)
@@ -235,13 +290,13 @@ local function FB_Show(killer)
                     Settings.FacingLength
                 )
                 local cf = killerRoot.CFrame * CFrame.new(0, 0, -Settings.FacingLength / 2)
-                FB_DrawGrid(FacingBox.killerParts, cf, size, Settings.FacingColor)
+                FB_DrawBox(FacingBox.killerParts, cf, size, Settings.FacingColor)
 
                 if Settings.FacingShowPlayer then
                     local char = LocalPlayer.Character
                     if char then
                         local pcf, psize = char:GetBoundingBox()
-                        FB_DrawGrid(FacingBox.playerParts, pcf, psize, Settings.FacingPlayerColor)
+                        FB_DrawBox(FacingBox.playerParts, pcf, psize, Settings.FacingPlayerColor)
                     end
                 end
             end
@@ -263,10 +318,7 @@ local function FB_Stop()
 end
 
 --═══ AUTO BLOCK ═══
-local AB = {
-    running=false, frameConn=nil, perKiller={}, lastBlock=0,
-    BLOCK_COOLDOWN=27, turnRate={},
-}
+local AB = { running=false, frameConn=nil, perKiller={}, lastBlock=0, BLOCK_COOLDOWN=27, turnRate={} }
 
 local function AB_UpdateTurnRates(dt)
     local kf = GetKillersFolder()
@@ -282,24 +334,17 @@ local function AB_UpdateTurnRates(dt)
                 local fl = Vector3.new(kr.CFrame.LookVector.X, 0, kr.CFrame.LookVector.Z)
                 local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
                 local dot = 0
-                if fl.Magnitude > 0.01 and ft.Magnitude > 0.01 then
-                    dot = fl.Unit:Dot(ft.Unit)
-                end
+                if fl.Magnitude > 0.01 and ft.Magnitude > 0.01 then dot = fl.Unit:Dot(ft.Unit) end
                 if not st then
                     AB.turnRate[k] = { dot = dot, lastDot = dot, rate = 0 }
                 else
-                    st.lastDot = st.dot
-                    st.dot = dot
+                    st.lastDot = st.dot; st.dot = dot
                     st.rate = (st.dot - st.lastDot) / math.max(dt, 0.001)
                 end
-            else
-                AB.turnRate[k] = nil
-            end
+            else AB.turnRate[k] = nil end
         end
     end
-    for k in pairs(AB.turnRate) do
-        if not k.Parent then AB.turnRate[k] = nil end
-    end
+    for k in pairs(AB.turnRate) do if not k.Parent then AB.turnRate[k] = nil end end
 end
 
 function AB_ShouldBlock(killer)
@@ -307,28 +352,20 @@ function AB_ShouldBlock(killer)
     local char = LocalPlayer.Character
     local playerRoot = char and char:FindFirstChild("HumanoidRootPart")
     if not killerRoot or not playerRoot then return false end
-
     local dist = (playerRoot.Position - killerRoot.Position).Magnitude
     if dist > Settings.BoxRange or dist < 0.5 then return false end
-
     local kv = killerRoot.AssemblyLinearVelocity
     if kv.Magnitude > Settings.BoxFastThreshold then
         local toPlayer = playerRoot.Position - killerRoot.Position
-        local fv = Vector3.new(kv.X, 0, kv.Z)
-        local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
-        if fv.Magnitude > 0.5 and ft.Magnitude > 0.1
-           and fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then
+        local fv = Vector3.new(kv.X, 0, kv.Z); local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
+        if fv.Magnitude > 0.5 and ft.Magnitude > 0.1 and fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then
             return false
         end
     end
-
     if FB_IsPlayerInBox(killerRoot, playerRoot) then return true end
-
     if Settings.BoxAntiBait then
         local st = AB.turnRate[killer]
-        if st and st.rate > Settings.BoxTurnRate and st.dot >= 0.15 then
-            return true
-        end
+        if st and st.rate > Settings.BoxTurnRate and st.dot >= 0.15 then return true end
     end
     return false
 end
@@ -396,9 +433,7 @@ function AB_TryFire(killer)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
     if not AB_ShouldBlock(killer) then return end
-    st.pendingUntil = 0
-    st.lastFireAt = tick()
-    AB.lastBlock = tick()
+    st.pendingUntil = 0; st.lastFireAt = tick(); AB.lastBlock = tick()
     AB_Fire()
 end
 
@@ -410,10 +445,7 @@ local function AB_HookKiller(killer)
         baitFlag = false, pendingUntil = 0, lastFireAt = 0,
     }
 end
-
-local function AB_UnhookKiller(killer)
-    AB.perKiller[killer] = nil
-end
+local function AB_UnhookKiller(killer) AB.perKiller[killer] = nil end
 
 local function AB_FrameLoop(dt)
     if not AB.running then return end
@@ -445,12 +477,10 @@ local function AB_Disable()
     FB_Stop()
 end
 
--- ═══ FACING WATCHER: THIS IS THE FIX ═══
--- Watches AbilityLastUsed on every killer, shows the box + triggers block.
--- Runs continuously, independent of AB state.
+--═══ FACING WATCHER (M1-FILTERED) ═══
 local FacingWatchers = {}
 
-local function Facing_OnAbilityUsed(killer)
+local function Facing_Fire(killer)
     if Settings.FacingEnabled then FB_Show(killer) end
     if AB.running then
         if not AB.perKiller[killer] then AB_HookKiller(killer) end
@@ -460,6 +490,11 @@ local function Facing_OnAbilityUsed(killer)
             AB_TryFire(killer)
         end
     end
+end
+
+local function Facing_OnAbilityUsed(killer)
+    if not KillerIsM1(killer) then return end
+    Facing_Fire(killer)
 end
 
 local function Facing_Hook(killer)
@@ -498,7 +533,7 @@ task.spawn(function()
     end
 end)
 
--- Optional secondary trigger: KillerM1Visual remote (if the game has it)
+-- Secondary trigger: KillerM1Visual (already M1-only, bypasses filter)
 do
     task.spawn(function()
         for _ = 1, 30 do
@@ -506,7 +541,8 @@ do
             if ev then
                 ev.OnClientEvent:Connect(function(killer)
                     if typeof(killer) ~= "Instance" or not killer:IsA("Model") then return end
-                    Facing_OnAbilityUsed(killer)
+                    if Settings.FacingDebugLog then print("[Cr4zy Box] SHOW — KillerM1Visual remote") end
+                    Facing_Fire(killer)
                 end)
                 return
             end
@@ -694,7 +730,7 @@ local function PA_Disable()
     PA.looking = false; PA.lookStarted = nil
 end
 
---═══ HDT (BodyGyro fix) ═══
+--═══ HDT ═══
 local HDT = {
     running = false, debounce = false, animConn = nil, watcher = nil,
     charConn = nil, bind = "GS_HDT_", dashId = 0,
@@ -732,27 +768,21 @@ local function HDT_Dash(killer)
     local active = true
 
     local bv = Instance.new("BodyVelocity")
-    bv.Name = "GS_HDT_BV"
-    bv.MaxForce = Vector3.new(1e6, 0, 1e6)
-    bv.Velocity = Vector3.zero
-    bv.Parent = hrp
+    bv.Name = "GS_HDT_BV"; bv.MaxForce = Vector3.new(1e6, 0, 1e6)
+    bv.Velocity = Vector3.zero; bv.Parent = hrp
 
     local bg = Instance.new("BodyGyro")
     bg.Name = "GS_HDT_BG"
     bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-    bg.P = 100000
-    bg.D = 1000
-    bg.Parent = hrp
+    bg.P = 100000; bg.D = 1000; bg.Parent = hrp
 
     local oldWS = hum.WalkSpeed
     local oldAR = hum.AutoRotate
-    hum.WalkSpeed = 0
-    hum.AutoRotate = false
+    hum.WalkSpeed = 0; hum.AutoRotate = false
 
     local function stop()
         if not active then return end
-        active = false
-        HDT.debounce = false
+        active = false; HDT.debounce = false
         pcall(function() RunService:UnbindFromRenderStep(thisBind) end)
         if bv and bv.Parent then bv:Destroy() end
         if bg and bg.Parent then bg:Destroy() end
@@ -772,13 +802,10 @@ local function HDT_Dash(killer)
         local flat = Vector3.new(toK.X, 0, toK.Z)
         if flat.Magnitude < 1 then stop(); return end
         if bv and bv.Parent then bv.Velocity = flat.Unit * HDT.Speed end
-        if bg and bg.Parent then
-            bg.CFrame = CFrame.new(hrp.Position, hrp.Position + flat.Unit)
-        end
+        if bg and bg.Parent then bg.CFrame = CFrame.new(hrp.Position, hrp.Position + flat.Unit) end
         if hum.WalkSpeed ~= 0 then hum.WalkSpeed = 0 end
         if hum.AutoRotate then hum.AutoRotate = false end
     end)
-
     task.delay(HDT.Duration + 0.2, stop)
 end
 
@@ -789,7 +816,6 @@ local function HDT_OnAnim(track)
     local k = HDT_Nearest(); if not k then return end
     task.delay(HDT.Delay, function() if HDT.running and not HDT.debounce then HDT_Dash(k) end end)
 end
-
 local function HDT_Attach()
     local char = LocalPlayer.Character; if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return end
@@ -797,14 +823,11 @@ local function HDT_Attach()
     if HDT.animConn then pcall(function() HDT.animConn:Disconnect() end) end
     HDT.animConn = anim.AnimationPlayed:Connect(HDT_OnAnim)
 end
-
 local function HDT_Enable()
     if HDT.running then return end
-    HDT.running = true
-    HDT_Attach()
+    HDT.running = true; HDT_Attach()
     HDT.charConn = LocalPlayer.CharacterAdded:Connect(function()
-        task.wait(0.5)
-        if HDT.running then HDT_Attach() end
+        task.wait(0.5); if HDT.running then HDT_Attach() end
     end)
     HDT.watcher = task.spawn(function()
         while HDT.running do
@@ -813,7 +836,6 @@ local function HDT_Enable()
         end
     end)
 end
-
 local function HDT_Disable()
     HDT.running = false; HDT.debounce = false
     if HDT.animConn then pcall(function() HDT.animConn:Disconnect() end); HDT.animConn=nil end
@@ -823,7 +845,6 @@ local function HDT_Disable()
         pcall(function() RunService:UnbindFromRenderStep(HDT.bind .. tostring(i)) end)
     end
 end
-
 local function HDT_SetSpeed(v) HDT.Speed = math.clamp(tonumber(v) or 40, 5, 500); Settings.HDT_Speed = HDT.Speed end
 local function HDT_SetDuration(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 0.05, 3); Settings.HDT_Duration = HDT.Duration end
 local function HDT_SetDelay(v) HDT.Delay = math.clamp(tonumber(v) or 0.05, 0, 2); Settings.HDT_Delay = HDT.Delay end
@@ -873,7 +894,7 @@ local function GetTarget(maxRange, minDist, pred)
     return hrp, kr.Position + vel * leadTime
 end
 
---═══ NORMAL AIM (body rotation) ═══
+--═══ NORMAL AIM ═══
 local NormalAim = { active=false, endT=0, hookDone=false }
 
 local function IsNormalAimAbility(name)
@@ -897,15 +918,12 @@ local function NormalAim_Instant()
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if hum then hum.AutoRotate = false end
-    pcall(function()
-        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(target.X, hrp.Position.Y, target.Z))
-    end)
+    pcall(function() hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(target.X, hrp.Position.Y, target.Z)) end)
     local cam = Workspace.CurrentCamera
     if cam and (Settings.AIM_Mode == "Camera" or Settings.AIM_Mode == "Both") then
         pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, target) end)
     end
-    NormalAim.active = true
-    NormalAim.endT = tick() + (Settings.AIM_LockTime or 0.7)
+    NormalAim.active = true; NormalAim.endT = tick() + (Settings.AIM_LockTime or 0.7)
     return true
 end
 
@@ -956,9 +974,7 @@ RunService.RenderStepped:Connect(function()
         return
     end
     if Settings.AIM_Mode == "Character" or Settings.AIM_Mode == "Both" then
-        pcall(function()
-            hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(target.X, hrp.Position.Y, target.Z))
-        end)
+        pcall(function() hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(target.X, hrp.Position.Y, target.Z)) end)
     end
     if Settings.AIM_Mode == "Camera" or Settings.AIM_Mode == "Both" then
         local cam = Workspace.CurrentCamera
@@ -974,7 +990,7 @@ task.spawn(function()
     end
 end)
 
---═══ SILENT AIM (camera only, no body rotation) ═══
+--═══ SILENT AIM ═══
 local SilentAim = { savedCam = nil, pending = false, hookDone = false, buttonConns = {}, scanConn = nil }
 
 local function IsSilentAimAbility(name)
@@ -1721,10 +1737,12 @@ do
     s:AddSlider("AB_SpamDur_S",   { Text = "Spam Duration", Default = 0.05,  Min = 0, Max = 0.5, Rounding = 3, Callback = function(v) Settings.AB_SpamDuration = v end })
 end
 
--- BOX TAB (Auto M1 REMOVED — facing check only)
+-- BOX TAB (outline only, M1-filtered)
 do
     local g = Tabs.Box:AddLeftGroupbox("Facing Check")
     g:AddToggle("FB_Enable_T",    { Text = "Show Facing Check on M1", Default = true,  Callback = function(v) Settings.FacingEnabled = v; if not v then FB_Stop() end end })
+    g:AddToggle("FB_M1Only_T",    { Text = "M1 Only (Filter Abilities)", Default = true, Tooltip = "Skips the box for special abilities (Corrupt Nature, Nova, Demonic, Ascension, Plasma, Crystal Pitch, Dagger, Axe, Shoot, etc.)", Callback = function(v) Settings.FacingM1Only = v end })
+    g:AddToggle("FB_Debug_T",     { Text = "Debug Log (F9 console)", Default = false, Tooltip = "Prints SKIP / SHOW for each ability so you can verify the filter", Callback = function(v) Settings.FacingDebugLog = v end })
     g:AddToggle("FB_ShowPlayer_T",{ Text = "Show Player Box",         Default = false, Callback = function(v) Settings.FacingShowPlayer = v end })
     g:AddSlider("FB_Length_S",    { Text = "Length",    Default = 12, Min = 4, Max = 40, Rounding = 1, Callback = function(v) Settings.FacingLength = v end })
     g:AddSlider("FB_Width_S",     { Text = "Width",     Default = 8,  Min = 2, Max = 30, Rounding = 1, Callback = function(v) Settings.FacingWidth = v end })
@@ -1732,7 +1750,6 @@ do
     g:AddSlider("FB_Duration_S",  { Text = "Show Duration (s)", Default = 0.4, Min = 0.1, Max = 2, Rounding = 2, Callback = function(v) Settings.FacingDuration = v end })
 
     local v = Tabs.Box:AddRightGroupbox("Visual")
-    v:AddSlider("FB_Grid_S",    { Text = "Grid Spacing",    Default = 2,     Min = 1,   Max = 5,   Rounding = 1, Callback = function(v) Settings.FacingGridSpacing = v end })
     v:AddSlider("FB_Thick_S",   { Text = "Line Thickness",  Default = 0.035, Min = 0.01,Max = 0.2, Rounding = 3, Callback = function(v) Settings.FacingLineThickness = v end })
     v:AddSlider("FB_Trans_S",   { Text = "Transparency",    Default = 0.15,  Min = 0,   Max = 1,   Rounding = 2, Callback = function(v) Settings.FacingTransparency = v end })
     v:AddToggle("FB_TurnExp_T", { Text = "Turn Expansion",  Default = false, Callback = function(v) Settings.FacingTurnExpansion = v end })
@@ -1761,20 +1778,32 @@ do
                 if d < bd then bd = d; best = k end
             end
         end
-        if best then FB_Show(best); Library:Notify({ Title="Debug", Content="Box shown on nearest killer", Time=2 }) end
+        if best then FB_Show(best); Library:Notify({ Title="Debug", Content="Box shown", Time=2 }) end
     end })
     t:AddButton({ Text = "Force Block Now", Func = function()
         local kf = GetKillersFolder()
         if not kf then return end
         for _, k in ipairs(kf:GetChildren()) do
             if AB_ShouldBlock(k) then
-                AB.lastBlock = tick()
-                AB_FireBlock()
+                AB.lastBlock = tick(); AB_FireBlock()
                 Library:Notify({ Title="Debug", Content="Block fired", Time=2 })
                 return
             end
         end
         Library:Notify({ Title="Debug", Content="No killer in zone", Time=2 })
+    end })
+    t:AddButton({ Text = "Print Killer Attributes", Func = function()
+        local kf = GetKillersFolder()
+        if not kf then return end
+        for _, k in ipairs(kf:GetChildren()) do
+            if k:IsA("Model") then
+                print("=== Killer:", k.Name, "===")
+                for _, attr in ipairs(k:GetAttributes()) do
+                    print("  ", attr, "=", k:GetAttribute(attr))
+                end
+            end
+        end
+        Library:Notify({ Title="Debug", Content="Printed attributes to F9", Time=3 })
     end })
 end
 
@@ -1799,7 +1828,6 @@ do
     g:AddSlider("SA_Pred_S",  { Text = "Prediction (1-10)", Default = 4,   Min = 1,   Max = 10,  Rounding = 0, Callback = function(v) Settings.SILENT_Prediction = v end })
     g:AddSlider("SA_Lock_S",  { Text = "Lock Time (s)",     Default = 0.7, Min = 0.05,Max = 3,   Rounding = 2, Callback = function(v) Settings.SILENT_LockTime = v end })
     g:AddSlider("SA_Range_S", { Text = "Range",             Default = 55,  Min = 5,   Max = 200, Rounding = 0, Callback = function(v) Settings.SILENT_Range = v end })
-    g:AddLabel({ Text = "Aims with mouse/touch — camera only, no body rotation.", DoesWrap = true })
     local p = Tabs.SilentAim:AddRightGroupbox("Trigger Abilities")
     p:AddToggle("SA_Corrupt_T",   { Text = "C00lkidd — Corrupt Nature",        Default = true, Callback = function(v) Settings.SILENT_OnCorrupt   = v end })
     p:AddToggle("SA_Nova_T",      { Text = "Noli — Nova / Void Rush",          Default = true, Callback = function(v) Settings.SILENT_OnNova      = v end })
@@ -1903,8 +1931,10 @@ _G.Godsaken = {
         SetLength=function(v) Settings.FacingLength = tonumber(v) or 12 end,
         SetWidth=function(v) Settings.FacingWidth = tonumber(v) or 8 end,
         SetHeight=function(v) Settings.FacingHeight = tonumber(v) or 7 end,
+        SetM1Only=function(v) Settings.FacingM1Only = v and true or false end,
         IsPlayerInBox=FB_IsPlayerInBox,
         Show=FB_Show, Stop=FB_Stop,
+        AddSkipPattern=function(p) table.insert(SKIP_ABILITY_PATTERNS, p:lower()) end,
     },
 }
 
@@ -1927,7 +1957,7 @@ end)
 
 Library:Notify({
     Title = "Cr4zy HuB",
-    Content = "Crimson Edition — Facing check FIXED (attribute watcher restored)",
+    Content = "Crimson Edition — Box outline only + M1 filter",
     Time = 4,
 })
 
