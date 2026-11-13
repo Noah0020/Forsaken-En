@@ -1,5 +1,5 @@
 --═══════════════════════════════════════════════════════════════════
--- Cupcake — Obsidian UI (HunterAim-style detection)
+-- Cupcake — Obsidian UI (all fixes)
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -15,6 +15,18 @@ local CoreGui = game:GetService("CoreGui")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local PlayerGui = LP:WaitForChild("PlayerGui")
+
+--═══ RESPAWN SAFETY NET — unstick humanoid on every spawn ═══
+LP.CharacterAdded:Connect(function(c)
+    task.wait(0.3)
+    local hum = c:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum.PlatformStand = false
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+        end)
+    end
+end)
 
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
@@ -98,28 +110,21 @@ local Settings = {
 -- ABILITY ID LOADING (HunterAim-style)
 --═══════════════════════════════════════════════════════════════════
 local STUN_ABILITY_NAMES = {
-    -- Shedletsky
     ["Slash"] = true,
-    -- Chance
     ["One Shot"] = true, ["OneShot"] = true, ["Shoot"] = true,
     ["AimGun"] = true, ["GunFire"] = true, ["GunExplode"] = true, ["GunFail"] = true,
-    -- Two Time
     ["Sacrificial Dagger"] = true, ["Dagger"] = true, ["Stab"] = true,
     ["Lunge"] = true, ["LungeStart"] = true,
 }
 
-local STUN_SOUND_FIELDS = {
-    "Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds",
-}
+local STUN_SOUND_FIELDS = { "Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds" }
 
 local STATIC_STUN_ANIM_IDS = {
-    -- Chance (confirmed from HunterAim v10)
     ["103601716322988"] = "GunFire",
     ["133491532453922"] = "AimGun",
     ["86371356500204"]  = "GunExplode",
     ["76649505662612"]  = "GunFail",
     ["81698196845041"]  = "GunFail",
-    -- Two Time
     ["100725497418533"] = "Stab",
     ["89448354637442"]  = "Lunge",
 }
@@ -127,7 +132,6 @@ local STATIC_STUN_ANIM_IDS = {
 local STUN_ANIM_IDS  = {}
 local STUN_SOUND_IDS = {}
 local PunchAnims     = {}
-
 for _, id in ipairs({100129666722695,108807732150251,108911997126897,111270184603402,113936304594883,114294293966030,115877419084531,116427323741607,119850211147676,121347891120512,122560631718612,123142632470371,127777649118195,129843313690921,130041116394309,132010205222516,133398613783505,135562195148584,136007065400978,138040001965654,138936949998619,140703210927645,255661850,71190646367497,7130144078,72007882634344,72685103823181,73737871217870,73908019523515,78440860685556,81905101227053,82137285150006,83161312898155,86096387000557,86709774283672,87259391926321,87716278630738,90604236361267,9113764330,91730605416216,91794561199608,91810464218576,94245829151472,99422325754526}) do PunchAnims["rbxassetid://"..id] = true end
 
 local function pushIdsFromValue(value, intoSet, abilityName)
@@ -142,7 +146,6 @@ end
 local function readConfig(module, label)
     local ok, cfg = pcall(require, module)
     if not ok or type(cfg) ~= "table" then return end
-
     if type(cfg.Animations) == "table" then
         for abilityName, animValue in pairs(cfg.Animations) do
             local normalized = abilityName:lower():gsub("[%s_%-]", "")
@@ -153,7 +156,6 @@ local function readConfig(module, label)
             if isStun then pushIdsFromValue(animValue, STUN_ANIM_IDS, abilityName) end
         end
     end
-
     for _, field in ipairs(STUN_SOUND_FIELDS) do
         local soundTable = cfg[field]
         if type(soundTable) == "table" then
@@ -173,15 +175,12 @@ end
 local function LoadAbilityIds(char)
     STUN_ANIM_IDS  = {}
     STUN_SOUND_IDS = {}
-
-    -- Static fallback first
     for id, name in pairs(STATIC_STUN_ANIM_IDS) do STUN_ANIM_IDS[id] = name end
 
     local assets = ReplicatedStorage:FindFirstChild("Assets")
     if not assets then
-        local n = 0
-        for _ in pairs(STUN_ANIM_IDS) do n = n + 1 end
-        print(("[Cupcake] No Assets folder — using static fallback: %d IDs"):format(n))
+        local n = 0; for _ in pairs(STUN_ANIM_IDS) do n = n + 1 end
+        print(("[Cupcake] No Assets folder — static fallback only: %d IDs"):format(n))
         return
     end
 
@@ -225,7 +224,7 @@ local function LoadAbilityIds(char)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- PREDICTION
+-- PREDICTION (pre-warmed, works for CFrame-teleport killers)
 --═══════════════════════════════════════════════════════════════════
 local PRED_MIN = 2
 local PRED_MAX = 3
@@ -282,7 +281,27 @@ local function PredictPosition(hrp, sliderPred)
     return pos + horiz.Unit * lead
 end
 
--- Debug marker
+--═══ PRE-WARM LOOP (critical — feeds history before aim starts) ═══
+task.spawn(function()
+    while true do
+        task.wait(0.03)
+        local kf = GetKillersFolder()
+        if kf then
+            for _, m in ipairs(kf:GetChildren()) do
+                if m:IsA("Model") then
+                    local mHrp = m:FindFirstChild("HumanoidRootPart")
+                    if mHrp and mHrp.Parent then
+                        pcall(smoothedVelocity, mHrp)
+                    end
+                end
+            end
+        end
+        for k in pairs(_velHistory) do if not k.Parent then _velHistory[k] = nil end end
+        for k in pairs(_posHistory) do if not k.Parent then _posHistory[k] = nil end end
+    end
+end)
+
+--═══ Debug marker ═══
 local DebugMarker = nil
 local function ShowDebugPrediction(hrp)
     if not Settings.PredictionDebug then
@@ -309,6 +328,7 @@ local function ShowDebugPrediction(hrp)
     DebugMarker.CFrame = CFrame.new(predPos)
 end
 
+--═══ NEAREST KILLER (works for 1-killer and 12v2 mode) ═══
 local function GetNearestKillerHrp()
     local char = LP.Character
     if not char then return nil end
@@ -331,7 +351,7 @@ local function GetNearestKillerHrp()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- HARD LOCK
+-- HARD LOCK (no PlatformStand — physics safe)
 --═══════════════════════════════════════════════════════════════════
 local function HardLockFacing(duration, prediction, wantCamera)
     local char = LP.Character
@@ -344,20 +364,19 @@ local function HardLockFacing(duration, prediction, wantCamera)
     local savedJP = hum.JumpPower
     local savedJH = hum.JumpHeight
     local savedAR = hum.AutoRotate
-    local savedPS = hum.PlatformStand
 
     hum.WalkSpeed = 0
     hum.JumpPower = 0
     hum.JumpHeight = 0
     hum.AutoRotate = false
-    hum.PlatformStand = true
-    hrp.AssemblyLinearVelocity = Vector3.zero
+    pcall(function() hum:Move(Vector3.zero, false) end)
 
     local startT = tick()
     local conn
     conn = RunService.RenderStepped:Connect(function()
         if not char.Parent or not hrp.Parent or not hum.Parent then
-            pcall(function() conn:Disconnect() end); return
+            pcall(function() conn:Disconnect() end)
+            return
         end
         if tick() - startT > (duration or 0.5) then
             pcall(function() conn:Disconnect() end)
@@ -366,7 +385,7 @@ local function HardLockFacing(duration, prediction, wantCamera)
                 hum.JumpPower = savedJP
                 hum.JumpHeight = savedJH
                 hum.AutoRotate = savedAR
-                hum.PlatformStand = savedPS
+                hum:ChangeState(Enum.HumanoidStateType.Running)
             end)
             if DebugMarker and DebugMarker.Parent then pcall(function() DebugMarker:Destroy() end) end
             DebugMarker = nil
@@ -377,12 +396,7 @@ local function HardLockFacing(duration, prediction, wantCamera)
         local aimPos = PredictPosition(targetHrp, prediction) or targetHrp.Position
         ShowDebugPrediction(targetHrp)
         local myPos = hrp.Position
-        local cf = CFrame.new(myPos, Vector3.new(aimPos.X, myPos.Y, aimPos.Z))
-        hrp.CFrame = cf
-        hrp.CFrame = cf
-        hrp.CFrame = cf
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
+        hrp.CFrame = CFrame.lookAt(myPos, Vector3.new(aimPos.X, myPos.Y, aimPos.Z))
     end)
 
     if wantCamera then
@@ -426,18 +440,14 @@ local function AttachAnimWatcher(char)
     if NA.animConn then pcall(function() NA.animConn:Disconnect() end); NA.animConn = nil end
     local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
     local animator = hum:WaitForChild("Animator", 5); if not animator then return end
-
     NA.animConn = animator.AnimationPlayed:Connect(function(track)
         local anim = track.Animation
         if not anim then return end
         local aid = tostring(anim.AnimationId):match("%d+")
         if not aid then return end
-
         if Settings.PredictionDebug then
-            print(("[Cupcake Anim] id=%s name=%q len=%.2f"):format(
-                aid, tostring(anim.Name or ""), track.Length or 0))
+            print(("[Cupcake Anim] id=%s name=%q len=%.2f"):format(aid, tostring(anim.Name or ""), track.Length or 0))
         end
-
         if STUN_ANIM_IDS[aid] then
             if Settings.PredictionDebug then
                 print(("[Cupcake AIM] STUN → id=%s ability=%s"):format(aid, STUN_ANIM_IDS[aid]))
@@ -455,7 +465,6 @@ end
 local function AttachSoundWatcher(char)
     for _, c in ipairs(NA.soundConns) do pcall(function() c:Disconnect() end) end
     NA.soundConns = {}
-
     local function hook(s)
         if not s:IsA("Sound") then return end
         local conn = s.Playing:Connect(function()
@@ -463,8 +472,7 @@ local function AttachSoundWatcher(char)
             local sid = tostring(s.SoundId):match("%d+")
             if not sid then return end
             if Settings.PredictionDebug then
-                print(("[Cupcake Sound] id=%s name=%q len=%.2f"):format(
-                    sid, tostring(s.Name or ""), s.TimeLength or 0))
+                print(("[Cupcake Sound] id=%s name=%q len=%.2f"):format(sid, tostring(s.Name or ""), s.TimeLength or 0))
             end
             if STUN_SOUND_IDS[sid] then
                 if Settings.PredictionDebug then
@@ -477,7 +485,6 @@ local function AttachSoundWatcher(char)
         end)
         table.insert(NA.soundConns, conn)
     end
-
     for _, d in ipairs(char:GetDescendants()) do hook(d) end
     table.insert(NA.soundConns, char.DescendantAdded:Connect(function(d) hook(d) end))
 end
@@ -487,7 +494,6 @@ local function NA_Disable() NA.active = false end
 local function PA_Enable() PA.active = true end
 local function PA_Disable() PA.active = false end
 
--- Character spawn hook — load configs + attach watchers
 local function OnCharacterSpawn(char)
     if not char or char ~= LP.Character then return end
     task.spawn(function()
@@ -497,7 +503,6 @@ local function OnCharacterSpawn(char)
         AttachSoundWatcher(char)
     end)
 end
-
 if LP.Character then OnCharacterSpawn(LP.Character) end
 LP.CharacterAdded:Connect(OnCharacterSpawn)
 
@@ -775,7 +780,7 @@ local function AB_Disable()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- ANTI BAIT, AUTO PARRY, HDT, ESP, STAMINA, GEN, VEE (unchanged)
+-- ANTI BAIT, AUTO PARRY, HDT
 --═══════════════════════════════════════════════════════════════════
 local AntiBaitAnims = {}
 for _, id in ipairs({100926346851492,102517104852347,115706752305794,116506900864624,120725067908621,120748030255574,120773807614836,123548100869928,127040663332045,133292581373127,138407964761603,140671644163156,72182155407310,72722244508749,82036084568393,82605295530067,83036817079068,88287038085804,88557287105521,90970641235403,95421685049902,95802026624883,96959123077498}) do AntiBaitAnims["rbxassetid://"..id] = true end
@@ -985,6 +990,9 @@ local function HDT_SetDuration(v) HDT.Duration = math.clamp(tonumber(v) or 0.6, 
 local function HDT_SetDelay(v) HDT.Delay = math.clamp(tonumber(v) or 0.05, 0, 2); Settings.HDT_Delay = HDT.Delay end
 local function HDT_ForceNow() local k = HDT_Nearest(); if k then HDT_Dash(k) end end
 
+--═══════════════════════════════════════════════════════════════════
+-- ESP
+--═══════════════════════════════════════════════════════════════════
 local ESP_HL, ESP_Folder = {}, nil
 local function ES_Ensure()
     if ESP_Folder and ESP_Folder.Parent then return ESP_Folder end
@@ -1175,7 +1183,7 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- GENERATOR SOLVER, VEE (unchanged — abbreviated for space)
+-- GENERATOR SOLVER
 --═══════════════════════════════════════════════════════════════════
 local GS = { installed=false, generation=0, lockBoard=nil }
 local GSM = {}
@@ -1349,6 +1357,9 @@ end
 local function GS_Enable() if not gs_install() then return false end; Settings.GS_Enabled = true; GS.generation = GS.generation + 1; return true end
 local function GS_Disable() Settings.GS_Enabled = false; GS.generation = GS.generation + 1 end
 
+--═══════════════════════════════════════════════════════════════════
+-- VEE
+--═══════════════════════════════════════════════════════════════════
 local Vee = { AutoTrick=false, SkateControl=false, CustomStats=false, Sk8Speed=1.15, Sk8StaminaCost=1.35, Sk8TrickAirborneSpeed=1.42, Sk8BumpPower=11.9, Sk8TrickStamina=4, Sk8TrickCooldown=1, _moduleCache=nil, _behaviorModule=nil }
 local function Vee_GetBehaviorFolder()
     local a = ReplicatedStorage:FindFirstChild("Assets"); if not a then return nil end
@@ -1545,7 +1556,8 @@ ABRight:AddSlider("AB_SpamCount", { Text = "Spam Count", Default = 4, Min = 1, M
 ABRight:AddSlider("AB_SpamDur", { Text = "Spam Duration (s)", Default = 0.05, Min = 0, Max = 0.5, Rounding = 3, Callback = function(v) Settings.AB_SpamDuration = v end })
 
 local ConeLeft = Tabs.Cone:AddLeftGroupbox("Cone Visualizer", "triangle")
-ConeLeft:AddToggle("Cone_Enable", { Text = "Enable Cone", Default = true, Callback = function(v) Settings.ConeEnabled = v end })
+ConeLeft:AddToggle("Cone_Enable", { Text = "Show Cone Visual", Default = true, Callback = function(v) Settings.ConeEnabled = v end })
+ConeLeft:AddLabel({ Text = "Detection always on — visibility only affects drawing.", DoesWrap = true })
 ConeLeft:AddSlider("Cone_Radius",   { Text = "Radius (studs)", Default = 15, Min = 3, Max = 50, Rounding = 1, Callback = function(v) Settings.ConeRadius = v end })
 ConeLeft:AddSlider("Cone_Angle",    { Text = "Angle (degrees)", Default = 90, Min = 10, Max = 180, Rounding = 0, Callback = function(v) Settings.ConeAngle = v end })
 ConeLeft:AddSlider("Cone_Segments", { Text = "Segments", Default = 32, Min = 8, Max = 64, Rounding = 0, Callback = function(v) Settings.ConeSegments = v end })
@@ -1596,7 +1608,7 @@ NARight:AddButton({ Text = "Reload Ability IDs (Manual)", Func = function()
         Library:Notify({ Title = "Cupcake", Description = "Reloaded ability IDs", Time = 2 })
     end
 end })
-NARight:AddLabel({ Text = "Fires only on stun abilities: Slash, One Shot, Dagger, Lunge. Reads IDs from Assets config + fallback.", DoesWrap = true })
+NARight:AddLabel({ Text = "Fires only on stun abilities. Targets nearest killer automatically (works in 12v2 mode).", DoesWrap = true })
 
 local VeeLeft = Tabs.Vee:AddLeftGroupbox("Vee (Veeronica)", "gamepad-2")
 VeeLeft:AddToggle("Vee_AutoTrick", { Text = "Auto Trick", Default = false, Callback = function(x) Vee.AutoTrick = x; if x then VeerATStart() else VeerATStop() end end })
@@ -1679,7 +1691,7 @@ Library:OnUnload(function() print("[Cupcake] Unloaded!") end)
 
 Library:Notify({
     Title = "Cupcake",
-    Description = "Loaded — HunterAim-style detection",
+    Description = "Loaded — all fixes applied",
     Time = 5,
 })
 
