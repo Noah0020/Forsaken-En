@@ -1,5 +1,5 @@
 --═══════════════════════════════════════════════════════════════════
--- Cupcake Hub v11 — Noli Fixes
+-- Cupcake Hub v12 — Noli v3 (Smooth Drift + Speed Slider + Miss Retarget)
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -76,6 +76,8 @@ local Settings = {
     Noli_LineColor = "255,0,0",
     Noli_LineThickness = 0.22,
     Noli_UseStraight = false,
+    Noli_MoveSpeed = 45,
+    Noli_TurnSmoothness = 10,
     VeeAutoTrick = false, VeeAutoPhase = false,
     VeeSkateControl = false, VeeCustomStats = false,
     VeeSk8Speed = 1.15, VeeSk8StaminaCost = 1.35, VeeSk8TrickAirborne = 1.42,
@@ -829,7 +831,7 @@ local function TTStop()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- NOLI VOID RUSH AUTO AIM
+-- NOLI VOID RUSH v3 — Smooth Drift + Speed + Miss Retarget
 --═══════════════════════════════════════════════════════════════════
 local NOLI_VOIDRUSH_ANIM_IDS = {
     ["93841120533318"] = true,
@@ -846,9 +848,14 @@ local NoliAim = {
     waypoints = {},
     currentWaypoint = 1,
     lastPathUpdate = 0,
+    lastRetarget = 0,
     currentTarget = nil,
     animConn = nil,
     charAddedConn = nil,
+    hooked = false,
+    smoothDir = nil,
+    cameWithin = nil,
+    savedWalkSpeed = nil,
 }
 
 local function NoliClearPath()
@@ -892,12 +899,12 @@ local function NoliDrawSegment(a, b)
     table.insert(NoliAim.segments, seg)
 end
 
-local function NoliGetNearestSurvivor()
-    local sf = GetSurvivorsFolder()
-    if not sf then return nil end
+local function NoliGetClosestSurvivor()
     local myChar = LP.Character
     local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myHRP then return nil end
+    local sf = GetSurvivorsFolder()
+    if not sf then return nil end
     local best, bestD = nil, Settings.Noli_MaxRange or 500
     for _, s in ipairs(sf:GetChildren()) do
         if s:IsA("Model") and s ~= myChar then
@@ -915,8 +922,8 @@ end
 local function NoliBuildPath()
     if not NoliAim.active then return end
     if not NoliAim.currentTarget or not NoliAim.currentTarget.Parent then
-        NoliAim.currentTarget = NoliGetNearestSurvivor()
-        if not NoliAim.currentTarget then return end
+        NoliAim.currentTarget = NoliGetClosestSurvivor()
+        if not NoliAim.currentTarget then NoliClearPath(); return end
     end
     local myChar = LP.Character
     local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
@@ -945,13 +952,54 @@ local function NoliBuildPath()
     end
 end
 
+-- Look-ahead aim point: aims at next waypoint when close to current, for smooth cornering
+local function NoliGetAimPoint(hrp)
+    if Settings.Noli_UseStraight then
+        local tgt = NoliAim.currentTarget
+        local tHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
+        if tHRP then return tHRP.Position end
+        return nil
+    end
+    local wps = NoliAim.waypoints
+    if #wps == 0 then
+        local tgt = NoliAim.currentTarget
+        local tHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
+        if tHRP then return tHRP.Position end
+        return nil
+    end
+    local closestIdx, closestD = 1, math.huge
+    for i = 1, #wps do
+        local d = (wps[i].Position - hrp.Position).Magnitude
+        if d < closestD then closestD = d; closestIdx = i end
+    end
+    while closestIdx < #wps and (wps[closestIdx].Position - hrp.Position).Magnitude < 4 do
+        closestIdx = closestIdx + 1
+    end
+    if closestD < 10 and closestIdx < #wps then
+        return wps[closestIdx + 1].Position
+    end
+    return wps[closestIdx].Position
+end
+
 local function NoliAimStop()
     if NoliAim.conn then pcall(function() NoliAim.conn:Disconnect() end); NoliAim.conn = nil end
     NoliClearPath()
     NoliAim.active = false
     NoliAim.currentTarget = nil
-    local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-    if hum then pcall(function() hum:Move(Vector3.zero, false) end) end
+    NoliAim.smoothDir = nil
+    NoliAim.cameWithin = nil
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum:Move(Vector3.zero, false)
+            hum.AutoRotate = true
+            if NoliAim.savedWalkSpeed then
+                hum.WalkSpeed = NoliAim.savedWalkSpeed
+            end
+        end)
+    end
+    NoliAim.savedWalkSpeed = nil
 end
 
 local function NoliAimStep(dt)
@@ -962,54 +1010,102 @@ local function NoliAimStep(dt)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum or hum.Health <= 0 then NoliAimStop(); return end
 
-    if tick() - NoliAim.lastPathUpdate > 0.3 then
+    hum.AutoRotate = false
+    hum.WalkSpeed = Settings.Noli_MoveSpeed or 45
+
+    -- Retarget only on death or miss
+    if tick() - (NoliAim.lastRetarget or 0) > 0.2 then
+        NoliAim.lastRetarget = tick()
+        local tgt = NoliAim.currentTarget
+        local tgtHum = tgt and tgt.Parent and tgt:FindFirstChildOfClass("Humanoid")
+        local tgtHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
+        local needRetarget = (not tgt) or (not tgtHRP) or (not tgtHum) or (tgtHum.Health <= 0)
+        if not needRetarget and tgtHRP then
+            local curDist = (tgtHRP.Position - hrp.Position).Magnitude
+            if curDist < 10 then
+                NoliAim.cameWithin = curDist
+            elseif NoliAim.cameWithin and NoliAim.cameWithin < 10 and curDist > 20 then
+                needRetarget = true
+            end
+        end
+        if needRetarget then
+            local newTgt = NoliGetClosestSurvivor()
+            if newTgt and newTgt ~= tgt then
+                NoliAim.currentTarget = newTgt
+                NoliAim.cameWithin = nil
+                NoliAim.smoothDir = nil
+                NoliAim.lastPathUpdate = 0
+            end
+        end
+    end
+
+    -- Rebuild path every 0.25s
+    if tick() - NoliAim.lastPathUpdate > 0.25 then
         NoliAim.lastPathUpdate = tick()
         NoliBuildPath()
     end
 
-    local targetPos = nil
-    if Settings.Noli_UseStraight then
+    -- Aim point (look-ahead smooth cornering)
+    local aimPos = NoliGetAimPoint(hrp)
+    if not aimPos then
         local tgt = NoliAim.currentTarget
         local tHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
-        if tHRP then targetPos = tHRP.Position end
+        if tHRP then aimPos = tHRP.Position end
+    end
+    if not aimPos then NoliAimStop(); return end
+
+    local targetDir = aimPos - hrp.Position
+    targetDir = Vector3.new(targetDir.X, 0, targetDir.Z)
+    if targetDir.Magnitude < 0.1 then return end
+    targetDir = targetDir.Unit
+
+    if not NoliAim.smoothDir then
+        NoliAim.smoothDir = targetDir
     else
-        local wp = NoliAim.waypoints[NoliAim.currentWaypoint]
-        if wp then
-            targetPos = wp.Position
-            if (hrp.Position - targetPos).Magnitude < 3 then
-                NoliAim.currentWaypoint = math.min(NoliAim.currentWaypoint + 1, math.max(#NoliAim.waypoints, 1))
-            end
-        end
-        if not targetPos then
-            local tgt = NoliAim.currentTarget
-            local tHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
-            if tHRP then targetPos = tHRP.Position end
+        local turnRate = Settings.Noli_TurnSmoothness or 10
+        local alpha = 1 - math.exp(-dt * turnRate)
+        NoliAim.smoothDir = NoliAim.smoothDir:Lerp(targetDir, alpha)
+        if NoliAim.smoothDir.Magnitude > 0.01 then
+            NoliAim.smoothDir = NoliAim.smoothDir.Unit
         end
     end
 
-    if targetPos then
-        local flat = Vector3.new(targetPos.X, hrp.Position.Y, targetPos.Z)
-        if (flat - hrp.Position).Magnitude > 0.1 then
-            pcall(function() hrp.CFrame = CFrame.lookAt(hrp.Position, flat) end)
-        end
-    end
+    pcall(function()
+        hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + NoliAim.smoothDir)
+    end)
+    pcall(function()
+        hum:Move(NoliAim.smoothDir, false)
+    end)
 end
 
 local function NoliAimTrigger()
     if not Settings.Noli_AIM_Enabled then return end
     if not IsPlayerKiller() then return end
     local char = LP.Character; if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    local target = NoliGetClosestSurvivor()
+    if not target then return end
 
     if NoliAim.active then
         NoliAim.endTime = math.max(NoliAim.endTime, tick() + (Settings.Noli_AimDuration or 3.5))
+        if target ~= NoliAim.currentTarget then
+            NoliAim.currentTarget = target
+            NoliAim.cameWithin = nil
+            NoliAim.smoothDir = nil
+            NoliAim.lastPathUpdate = 0
+        end
         return
     end
 
     NoliAim.active = true
     NoliAim.endTime = tick() + (Settings.Noli_AimDuration or 3.5)
     NoliAim.lastPathUpdate = 0
-    NoliAim.currentTarget = NoliGetNearestSurvivor()
-    if not NoliAim.currentTarget then NoliAimStop(); return end
+    NoliAim.lastRetarget = 0
+    NoliAim.currentTarget = target
+    NoliAim.smoothDir = nil
+    NoliAim.cameWithin = nil
+    if hum then NoliAim.savedWalkSpeed = hum.WalkSpeed end
 
     if not NoliAim.pathFolder or not NoliAim.pathFolder.Parent then
         NoliAim.pathFolder = Instance.new("Folder")
@@ -1018,6 +1114,46 @@ local function NoliAimTrigger()
     end
 
     NoliAim.conn = RunService.RenderStepped:Connect(NoliAimStep)
+end
+
+local function NoliIsVoidRushAbility(name)
+    if type(name) ~= "string" then return false end
+    local l = name:lower()
+    return l:find("voidrush") ~= nil
+        or l:find("void_rush") ~= nil
+        or l:find("void-rush") ~= nil
+end
+
+local function NoliInstallNamecallHook()
+    if NoliAim.hooked then return end
+    if not hookmetamethod or not getnamecallmethod then return end
+    NoliAim.hooked = true
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        if not _ShuttingDown and getnamecallmethod() == "FireServer" and self == NetworkEvent then
+            local args = {...}
+            if args[1] == "UseActorAbility" then
+                local ability = args[2]
+                if type(ability) == "table" then
+                    for _, v in ipairs(ability) do
+                        if type(v) == "buffer" then
+                            local ok, str = pcall(buffer.tostring, v)
+                            if ok and str and NoliIsVoidRushAbility(str) then
+                                pcall(NoliAimTrigger)
+                                break
+                            end
+                        elseif NoliIsVoidRushAbility(v) then
+                            pcall(NoliAimTrigger)
+                            break
+                        end
+                    end
+                elseif NoliIsVoidRushAbility(ability) then
+                    pcall(NoliAimTrigger)
+                end
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
 end
 
 local function NoliAimAttachAnim(char)
@@ -1034,6 +1170,7 @@ local function NoliAimAttachAnim(char)
 end
 
 local function NoliAimStart()
+    pcall(NoliInstallNamecallHook)
     if LP.Character then NoliAimAttachAnim(LP.Character) end
     NoliAim.charAddedConn = LP.CharacterAdded:Connect(function(c)
         task.wait(0.5)
@@ -1772,7 +1909,7 @@ TTLeft:AddToggle("TT_Enable_T", { Text="Enable Backstab", Default=false, Callbac
     Settings.TT_Enabled = v
     if v then TTStart() else TTStop() end
 end })
-TTLeft:AddLabel({ Text="Smooth dash toward the killer's back when you play a stab animation. Moves at fixed speed instead of teleporting.", DoesWrap=true })
+TTLeft:AddLabel({ Text="Smooth dash toward the killer's back when you play a stab animation.", DoesWrap=true })
 local TTRight = Tabs.TwoTime:AddRightGroupbox("Tuning", "sliders")
 TTRight:AddSlider("TT_BehindOffset_S", { Text="Behind Offset (studs)", Default=1.7, Min=0.5, Max=6, Rounding=2, Callback=function(v) Settings.TT_BehindOffset=v end })
 TTRight:AddSlider("TT_MaxRange_S", { Text="Max Range (studs)", Default=60, Min=10, Max=150, Rounding=0, Callback=function(v) Settings.TT_MaxRange=v end })
@@ -1788,14 +1925,15 @@ NoliLeft:AddToggle("Noli_Enable_T", { Text="Enable Void Rush Auto Aim", Default=
     Settings.Noli_AIM_Enabled = v
     if v then NoliAimStart() else NoliAimCleanup() end
 end })
-NoliLeft:AddLabel({ Text="Triggers on Noli's Void Rush anims. Rotates you toward the nearest survivor and draws the red walkable path. 3.5s matches void rush duration. Path follows ramps/stairs — no jumping.", DoesWrap=true })
+NoliLeft:AddLabel({ Text="Detects Void Rush via network + anim fallback. Locks onto closest survivor, drifts smoothly around corners, retargets only on miss. 3.5s = rush duration.", DoesWrap=true })
 NoliLeft:AddSlider("Noli_Duration_S", { Text="Aim Duration (s)", Default=3.5, Min=1, Max=15, Rounding=1, Callback=function(v) Settings.Noli_AimDuration=v end })
 NoliLeft:AddSlider("Noli_Range_S", { Text="Max Range (studs)", Default=500, Min=50, Max=1000, Rounding=0, Callback=function(v) Settings.Noli_MaxRange=v end })
+NoliLeft:AddSlider("Noli_Speed_S", { Text="Move Speed (studs/s)", Default=45, Min=10, Max=200, Rounding=0, Callback=function(v) Settings.Noli_MoveSpeed=v end })
+NoliLeft:AddSlider("Noli_Turn_S", { Text="Turn Smoothness (1=drift, 30=snap)", Default=10, Min=1, Max=30, Rounding=0, Callback=function(v) Settings.Noli_TurnSmoothness=v end })
 NoliLeft:AddButton({ Text="Force Aim Now", Func=function()
     NoliAimTrigger()
     Library:Notify({ Title="Noli", Description="Aim triggered", Time=2 })
 end })
-
 local NoliRight = Tabs.Noli:AddRightGroupbox("Path Visual", "square")
 NoliRight:AddToggle("Noli_Straight_T", { Text="Straight Line Mode", Default=false, Callback=function(v) Settings.Noli_UseStraight=v end })
 NoliRight:AddLabel({ Text="Off = pathfind around walls. On = direct line through walls.", DoesWrap=true })
@@ -1923,7 +2061,7 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function() _ShuttingDown = true; print("[Cupcake] Unloaded") end)
 Library:Notify({
     Title = "Cupcake",
-    Description = "Loaded v11 — Noli fixes",
+    Description = "Loaded v12 — Noli v3 smooth drift",
     Time = 5,
 })
-print("[Cupcake] Loaded v11")
+print("[Cupcake] Loaded v12")
