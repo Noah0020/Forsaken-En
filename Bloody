@@ -1,5 +1,5 @@
 --═══════════════════════════════════════════════════════════════════
--- Cupcake Hub v7 — Two Time + Prediction Fix + Vee Auto Trick Fix
+-- Cupcake Hub v8 — Two Time Clean Anim-ID Table
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -616,13 +616,18 @@ local function StopAutoBlock()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- HDT (Humanoid:Move — no more tripping)
+-- HDT (Humanoid:Move)
 --═══════════════════════════════════════════════════════════════════
-local HDT = { running=false, debounce=false, animConn=nil, charConn=nil, bind="Cupcake_HDT_", dashId=0, Speed=40, Duration=0.6 }
+local HDT = {
+    running=false, debounce=false,
+    animConn=nil, charAddedConn=nil,
+    Speed=40, Duration=0.6,
+}
 local HDT_Anims = {}
 for _, id in ipairs({72722244508749,96959123077498,95802026624883,140671644163156,100926346851492}) do
     HDT_Anims["rbxassetid://"..id] = true
 end
+
 local function HDT_Nearest()
     local kf = GetKillersFolder(); if not kf then return nil end
     local myRoot = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
@@ -637,6 +642,7 @@ local function HDT_Nearest()
     end
     return best
 end
+
 local function HDT_Dash(killer)
     if HDT.debounce then return end
     local char = LP.Character; if not char then return end
@@ -646,55 +652,50 @@ local function HDT_Dash(killer)
     if not killer or not killer.Parent then return end
     local kr = killer:FindFirstChild("HumanoidRootPart"); if not kr then return end
     if (kr.Position - hrp.Position).Magnitude < 2.5 then return end
+
     HDT.debounce = true
-    HDT.dashId = HDT.dashId + 1
-    local thisBind = HDT.bind..tostring(HDT.dashId)
-    local startT = tick()
-    local oWS = hum.WalkSpeed
-    local oAR = hum.AutoRotate
+
+    local oldWS = hum.WalkSpeed
+    local oldAR = hum.AutoRotate
     hum.WalkSpeed = HDT.Speed
-    hum.AutoRotate = false
-    pcall(function() RunService:UnbindFromRenderStep(thisBind) end)
-    RunService:BindToRenderStep(thisBind, Enum.RenderPriority.Last.Value + 1, function()
-        if not HDT.debounce then
-            pcall(function() RunService:UnbindFromRenderStep(thisBind) end); return
-        end
-        if not char.Parent or not hum.Parent or hum.Health <= 0 or not killer.Parent then
-            HDT.debounce = false
-            pcall(function() RunService:UnbindFromRenderStep(thisBind) end); return
-        end
-        local krCur = killer:FindFirstChild("HumanoidRootPart")
-        if not krCur then
-            HDT.debounce = false
-            pcall(function() RunService:UnbindFromRenderStep(thisBind) end); return
-        end
-        local flat = Vector3.new(krCur.Position.X - hrp.Position.X, 0, krCur.Position.Z - hrp.Position.Z)
-        if flat.Magnitude < 2 then
-            HDT.debounce = false
-            pcall(function() RunService:UnbindFromRenderStep(thisBind) end); return
-        end
-        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(krCur.Position.X, hrp.Position.Y, krCur.Position.Z))
-        hum.WalkSpeed = HDT.Speed
-        hum:Move(flat.Unit, false)
-        if tick() - startT > HDT.Duration then
-            HDT.debounce = false
-            pcall(function() RunService:UnbindFromRenderStep(thisBind) end)
-        end
-    end)
-    task.delay(HDT.Duration + 0.15, function()
-        if HDT.debounce then
-            HDT.debounce = false
-            pcall(function() RunService:UnbindFromRenderStep(thisBind) end)
-        end
+    hum.AutoRotate = true
+
+    local startT = tick()
+    local stopped = false
+    local conn
+
+    local function stop()
+        if stopped then return end
+        stopped = true
+        if conn then pcall(function() conn:Disconnect() end); conn = nil end
         if hum and hum.Parent then
             pcall(function()
                 hum:Move(Vector3.zero, false)
-                hum.WalkSpeed = oWS
-                hum.AutoRotate = oAR
+                hum.WalkSpeed = oldWS
+                hum.AutoRotate = oldAR
             end)
         end
+        HDT.debounce = false
+    end
+
+    conn = RunService.RenderStepped:Connect(function()
+        if not hrp.Parent or not hum.Parent or hum.Health <= 0 then stop(); return end
+        if not killer.Parent then stop(); return end
+        if tick() - startT > HDT.Duration then stop(); return end
+
+        local krCur = killer:FindFirstChild("HumanoidRootPart")
+        if not krCur then stop(); return end
+
+        local flat = Vector3.new(krCur.Position.X - hrp.Position.X, 0, krCur.Position.Z - hrp.Position.Z)
+        if flat.Magnitude < 2 then stop(); return end
+
+        hum.WalkSpeed = HDT.Speed
+        hum:Move(flat.Unit, false)
     end)
+
+    task.delay(HDT.Duration + 0.1, stop)
 end
+
 local function HDT_OnAnim(track)
     if not HDT.running or HDT.debounce then return end
     local aid = track.Animation and track.Animation.AnimationId
@@ -702,6 +703,7 @@ local function HDT_OnAnim(track)
     local k = HDT_Nearest(); if not k then return end
     task.delay(0.05, function() if HDT.running and not HDT.debounce then HDT_Dash(k) end end)
 end
+
 local function HDT_Attach()
     local char = LP.Character; if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return end
@@ -709,31 +711,45 @@ local function HDT_Attach()
     if HDT.animConn then pcall(function() HDT.animConn:Disconnect() end) end
     HDT.animConn = anim.AnimationPlayed:Connect(HDT_OnAnim)
 end
+
 local function HDT_Enable()
     if HDT.running then return end
-    HDT.running = true; HDT_Attach()
-    HDT.charConn = LP.CharacterAdded:Connect(function()
-        task.wait(0.5); if HDT.running then HDT_Attach() end
+    HDT.running = true
+    HDT_Attach()
+    HDT.charAddedConn = LP.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        if HDT.running then HDT_Attach() end
     end)
 end
+
 local function HDT_Disable()
-    HDT.running = false; HDT.debounce = false
+    HDT.running = false
+    HDT.debounce = false
     if HDT.animConn then pcall(function() HDT.animConn:Disconnect() end); HDT.animConn = nil end
-    if HDT.charConn then pcall(function() HDT.charConn:Disconnect() end); HDT.charConn = nil end
-    for i = 1, HDT.dashId do pcall(function() RunService:UnbindFromRenderStep(HDT.bind..tostring(i)) end) end
+    if HDT.charAddedConn then pcall(function() HDT.charAddedConn:Disconnect() end); HDT.charAddedConn = nil end
     local char = LP.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if hum then pcall(function() hum:Move(Vector3.zero, false) end) end
 end
+
 local function HDT_ForceNow() local k = HDT_Nearest(); if k then HDT_Dash(k) end end
 
 --═══════════════════════════════════════════════════════════════════
--- TWO TIME BACKSTAB (network/anim detection, 1 render connection)
+-- TWO TIME (clean anim-ID table)
 --═══════════════════════════════════════════════════════════════════
+local NORMAL_STAB_ID = "100725497418533"   -- normal stab (first anim)
+local CROUCH_STAB_ID = "89448354637442"    -- crouch stab (first anim)
+
+local DAGGER_ANIM_IDS = {
+    [NORMAL_STAB_ID] = true,
+    [CROUCH_STAB_ID]  = true,
+}
+
 local TwoTime = {
-    running = false, conn = nil,
-    hooked = false, origNamecall = nil,
-    animWatchers = {},
+    running = false,
+    conn = nil,
+    animConn = nil,
+    charAddedConn = nil,
 }
 
 local TwoTimeKillerNames = {
@@ -789,112 +805,90 @@ local function TwoTimeRunSequence()
     if not Settings.TT_Enabled then return end
     if TwoTime.running then return end
     if IsPlayerKiller() then return end
-    if NA.active and Settings.AIM_Enabled then return end
     TwoTime.running = true
 
     local character = LP.Character
     if not character then TwoTimeCleanup(); return end
     local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then TwoTimeCleanup(); return end
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then TwoTimeCleanup(); return end
 
     task.wait(Settings.TT_Delay or 0.007)
-    if not character.Parent then TwoTimeCleanup(); return end
+    if not character.Parent or not hrp.Parent or not hum.Parent then TwoTimeCleanup(); return end
 
     local killer = TwoTimeNearestKiller()
     if not killer then TwoTimeCleanup(); return end
-
-    local place = Instance.new("Part")
-    place.Name = "Cupcake_TT_Place"
-    place.Size = Vector3.new(5.5, 5.5, 5.5)
-    place.Transparency = 1
-    place.CanCollide = false
-    place.Anchored = true
-    place.Massless = true
-    place.Parent = character
-
-    local originalPrimary = character.PrimaryPart
-    character.PrimaryPart = place
 
     local startTime = os.clock()
     local dur = Settings.TT_Duration or 1.35
     local behind = Settings.TT_Behind or 3.45
 
+    local oldWS = hum.WalkSpeed
+    local oldAR = hum.AutoRotate
+    hum.WalkSpeed = 0
+    hum.AutoRotate = false
+
     TwoTime.conn = RunService.RenderStepped:Connect(function()
-        if not character.Parent or not place.Parent or os.clock() - startTime > dur then
+        if not character.Parent or not hrp.Parent or not hum.Parent then
+            TwoTimeCleanup(); return
+        end
+        if os.clock() - startTime > dur then
             TwoTimeCleanup()
-            if place and place.Parent then place:Destroy() end
-            if character and character.Parent then
-                local root = character:FindFirstChild("HumanoidRootPart")
-                if root then
-                    character.PrimaryPart = root
-                    root.AssemblyLinearVelocity = Vector3.zero
-                    root.AssemblyAngularVelocity = Vector3.zero
-                elseif originalPrimary and originalPrimary.Parent then
-                    character.PrimaryPart = originalPrimary
-                end
+            if hum and hum.Parent then
+                pcall(function()
+                    hum.WalkSpeed = oldWS
+                    hum.AutoRotate = oldAR
+                end)
+            end
+            if hrp and hrp.Parent then
+                pcall(function()
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
+                end)
             end
             return
         end
         local killerHrp = killer and killer.Parent and killer:FindFirstChild("HumanoidRootPart")
         local kHum = killer and killer.Parent and killer:FindFirstChildOfClass("Humanoid")
         if killerHrp and kHum and kHum.Health > 0 then
-            place.CFrame = killerHrp.CFrame * CFrame.new(0, 0, behind)
-            place.AssemblyLinearVelocity = Vector3.zero
-            place.AssemblyAngularVelocity = Vector3.zero
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
+            local targetCF = killerHrp.CFrame * CFrame.new(0, 0, behind)
+            pcall(function()
+                hrp.CFrame = targetCF
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
         else
             killer = TwoTimeNearestKiller()
-        end
-    end)
-end
-
-local function TwoTimeIsDaggerAbility(name)
-    if type(name) ~= "string" then return false end
-    local l = name:lower()
-    return l:find("dagger", 1, true) ~= nil or l:find("stab", 1, true) ~= nil or l:find("backstab", 1, true) ~= nil
-end
-
-local function TwoTimeInstallNamecallHook()
-    if TwoTime.hooked then return end
-    if not hookmetamethod or not getnamecallmethod then return end
-    TwoTime.hooked = true
-    local oldNamecall
-    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        if not _ShuttingDown and getnamecallmethod() == "FireServer" and self == NetworkEvent then
-            local args = {...}
-            if args[1] == "UseActorAbility" then
-                local ability = args[2]
-                if type(ability) == "table" then ability = ability[1] end
-                if TwoTimeIsDaggerAbility(ability) then
-                    pcall(TwoTimeRunSequence)
+            if not killer then
+                TwoTimeCleanup()
+                if hum and hum.Parent then
+                    pcall(function()
+                        hum.WalkSpeed = oldWS
+                        hum.AutoRotate = oldAR
+                    end)
                 end
             end
         end
-        return oldNamecall(self, ...)
     end)
-    TwoTime.origNamecall = oldNamecall
 end
 
 local function TwoTimeAttachAnimWatcher(char)
     local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
     local animator = hum:WaitForChild("Animator", 5); if not animator then return end
-    local conn = animator.AnimationPlayed:Connect(function(track)
+    if TwoTime.animConn then pcall(function() TwoTime.animConn:Disconnect() end); TwoTime.animConn = nil end
+    TwoTime.animConn = animator.AnimationPlayed:Connect(function(track)
         if not Settings.TT_Enabled then return end
         local aid = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
         if not aid then return end
-        local name = STUN_ANIM_IDS[aid]
-        if name == "Stab" or name == "Lunge" or name == "Sacrificial Dagger" or name == "Dagger" then
+        if DAGGER_ANIM_IDS[aid] then
             pcall(TwoTimeRunSequence)
         end
     end)
-    table.insert(TwoTime.animWatchers, conn)
 end
 
 local function TwoTimeStart()
-    if not TwoTime.hooked then pcall(TwoTimeInstallNamecallHook) end
     if LP.Character then pcall(TwoTimeAttachAnimWatcher, LP.Character) end
-    LP.CharacterAdded:Connect(function(c)
+    TwoTime.charAddedConn = LP.CharacterAdded:Connect(function(c)
         task.wait(0.5)
         if Settings.TT_Enabled then pcall(TwoTimeAttachAnimWatcher, c) end
     end)
@@ -902,8 +896,8 @@ end
 
 local function TwoTimeStop()
     TwoTimeCleanup()
-    for _, c in ipairs(TwoTime.animWatchers) do pcall(function() c:Disconnect() end) end
-    TwoTime.animWatchers = {}
+    if TwoTime.animConn then pcall(function() TwoTime.animConn:Disconnect() end); TwoTime.animConn = nil end
+    if TwoTime.charAddedConn then pcall(function() TwoTime.charAddedConn:Disconnect() end); TwoTime.charAddedConn = nil end
 end
 
 --═══════════════════════════════════════════════════════════════════
@@ -1299,7 +1293,7 @@ local function Stam_SetField(field, v)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- VEE (Auto Trick FIXED — scans all Highlights, polls Adornee)
+-- VEE
 --═══════════════════════════════════════════════════════════════════
 local VeeAutoTrickState = {
     running = false,
@@ -1707,7 +1701,7 @@ HDTLeft:AddSlider("HDT_Duration", { Text="Duration (s)", Default=0.6, Min=0.05, 
 HDTLeft:AddButton({ Text="Force HDT Now", Func=function() HDT_ForceNow() end })
 
 --═══════════════════════════════════════════════════════════════════
--- UI — AIM (survivor aim with lock time)
+-- UI — AIM
 --═══════════════════════════════════════════════════════════════════
 local AimLeft = Tabs.Aim:AddLeftGroupbox("Auto Parry & Punch Aim", "swords")
 AimLeft:AddToggle("AP_Enable", { Text="Auto Parry", Default=false, Callback=function(v) if v then AP_Enable() else AP_Disable() end end })
@@ -1735,18 +1729,14 @@ AimRight:AddButton({ Text="Reload Ability IDs", Func=function()
 end })
 
 --═══════════════════════════════════════════════════════════════════
--- UI — TWO TIME (backstab)
+-- UI — TWO TIME
 --═══════════════════════════════════════════════════════════════════
 local TTLeft = Tabs.TwoTime:AddLeftGroupbox("Two Time Backstab", "user")
 TTLeft:AddToggle("TT_Enable_T", { Text="Enable Backstab", Default=false, Callback=function(v)
     Settings.TT_Enabled = v
-    if v then
-        TwoTimeStart()
-    else
-        TwoTimeStop()
-    end
+    if v then TwoTimeStart() else TwoTimeStop() end
 end })
-TTLeft:AddLabel({ Text="Teleports you behind the killer when you fire Dagger/Stab. Detects via network + animator (no button scanning → no lag).", DoesWrap=true })
+TTLeft:AddLabel({ Text="Teleports you behind the killer when you play a stab animation. Fires only on the normal stab and crouch stab anim IDs.", DoesWrap=true })
 
 local TTRight = Tabs.TwoTime:AddRightGroupbox("Tuning", "sliders")
 TTRight:AddSlider("TT_Delay_S", { Text="Start Delay (s)", Default=0.007, Min=0, Max=0.5, Rounding=3, Callback=function(v) Settings.TT_Delay=v end })
@@ -1890,7 +1880,7 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function() _ShuttingDown = true; print("[Cupcake] Unloaded") end)
 Library:Notify({
     Title = "Cupcake",
-    Description = "Loaded v7 — Two Time + Predict Fix + Vee Fix",
+    Description = "Loaded v8 — Two Time clean anim-ID table",
     Time = 5,
 })
-print("[Cupcake] Loaded v7")
+print("[Cupcake] Loaded v8")
