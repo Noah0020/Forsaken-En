@@ -1,5 +1,5 @@
 --═══════════════════════════════════════════════════════════════════
--- Cupcake — Obsidian UI (stacked IDs + survivor unstick fix + box facing)
+-- Cupcake — Obsidian UI (stacked IDs + survivor unstick + box facing + block fix)
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -88,6 +88,7 @@ local Settings = {
     AB_Mode = "Guest1337", AB_PendingWindow = 0.25,
     AB_SpamEnabled = false, AB_SpamCount = 4, AB_SpamDuration = 0.05,
     AB_AnimDetect = true, AB_SoundDetect = true, AB_AttrDetect = true,
+    AB_Debug = false,
     BoxRange = 18, BoxBlockDistance = 3, BoxDisplayDuration = 0.3,
     BoxFollowDelay = 0.1, BoxFacingDot = 0.5,
     BoxFastThreshold = 15, BoxFastDot = 0.3,
@@ -475,8 +476,7 @@ local function AB_IsFacingPlayer(killer)
     return fl.Unit:Dot(ft.Unit) >= Settings.BoxFacingDot
 end
 
--- NEW: precise rectangular facing-zone test (from Detector module)
--- Player must be in front of the killer AND laterally within BoxKillerW/2
+-- Precise rectangular facing-zone test
 local function AB_PlayerInFacingZone(killer)
     if not BoxState.player then return false end
     local khrp = killer:FindFirstChild("HumanoidRootPart")
@@ -498,7 +498,6 @@ local function AB_ShouldBlock(killer)
     local dist = toPlayer.Magnitude
     if dist > Settings.BoxRange or dist < 0.5 then return false end
 
-    -- Facing gate: precise box test or legacy dot-product
     if Settings.UseBoxFacing then
         if not AB_PlayerInFacingZone(killer) then return false end
     else
@@ -508,7 +507,6 @@ local function AB_ShouldBlock(killer)
         if fl.Unit:Dot(ft.Unit) < Settings.BoxFacingDot then return false end
     end
 
-    -- Velocity gate: ignore fast movers going away
     local khrp = killer:FindFirstChild("HumanoidRootPart")
     if khrp then
         local kv = khrp.AssemblyLinearVelocity
@@ -520,7 +518,6 @@ local function AB_ShouldBlock(killer)
         end
     end
 
-    -- Anti-bait: only relevant on the legacy path (box test is already precise)
     if Settings.BoxAntiBait and st.turnRate and st.turnRate > Settings.BoxTurnRate then
         if not Settings.UseBoxFacing then
             local fl = Vector3.new(st.look.X, 0, st.look.Z)
@@ -630,7 +627,6 @@ local function Box_RenderAll()
                 local size = Vector3.new(Settings.BoxKillerW, Settings.BoxKillerH, blockLen)
                 local center = st.pos + st.look * (blockLen / 2)
                 local cf = CFrame.lookAt(center, center + st.look)
-                -- Match the active facing test so the color reflects the same logic used for blocking
                 local isFacing
                 if Settings.UseBoxFacing then
                     isFacing = AB_PlayerInFacingZone(killer)
@@ -650,7 +646,6 @@ local function Box_RenderAll()
             Box_HideWireframe(pb.parts)
         else
             local s = Settings.BoxBlockDistance * 2
-            -- Player box turns RED if any killer's M1 window is live AND we're in their facing zone
             local inDanger = false
             for killer, kbox in pairs(BoxState.killerBoxes) do
                 if killer.Parent and now <= kbox.showUntil
@@ -682,6 +677,7 @@ end)
 --═══════════════════════════════════════════════════════════════════
 -- AUTO BLOCK CORE
 --═══════════════════════════════════════════════════════════════════
+-- Patch 1: numeric cooldown parse — treats "0"/"0.0"/"-0" as ready
 local function AB_IsBlockReady()
     local m = PlayerGui:FindFirstChild("MainUI")
     local ac = m and m:FindFirstChild("AbilityContainer")
@@ -691,6 +687,8 @@ local function AB_IsBlockReady()
         if cd then
             local t = cd.Text
             if t == nil or t == "" or t == " " then return true end
+            local n = tonumber(t:match("^-?%d+%.?%d*"))
+            if n and n <= 0 then return true end
             return false
         end
     end
@@ -729,6 +727,14 @@ local function AB_HookKiller(killer)
     AB.perKiller[killer] = { lastFireAt = 0 }
 end
 local function AB_UnhookKiller(killer) AB.perKiller[killer] = nil end
+
+-- Patch 3: debug logger
+local function AB_Log(stage, reason, extra)
+    if not Settings.AB_Debug then return end
+    print(string.format("[Cupcake AB] %s | %s%s",
+        tostring(stage), tostring(reason),
+        extra and (" | " .. tostring(extra)) or ""))
+end
 
 --═══════════════════════════════════════════════════════════════════
 -- FAST M1 DETECTION — STACKED ID TABLES
@@ -784,19 +790,47 @@ for _, id in ipairs(autoBlockTriggerAnims) do AutoBlockTriggerAnims[id] = true e
 
 local Watchers = { animator = {}, sounds = {}, hookedKillers = {} }
 
+-- Patch 2: OnKillerM1 retries within AB_PendingWindow, logs each rejection
 local function OnKillerM1(killer)
     if not AB.running then return end
     if not killer or not killer.Parent then return end
+
     Box_ShowOnM1(killer)
-    if not AB_IsBlockReady() then return end
-    if not AB_ShouldBlock(killer) then return end
-    if not AB.perKiller[killer] then AB_HookKiller(killer) end
-    local st = AB.perKiller[killer]
-    if not st then return end
-    if tick() - (st.lastFireAt or 0) < 0.05 then return end
-    st.lastFireAt = tick()
-    AB.lastBlock = tick()
-    AB_Fire()
+
+    local deadline = tick() + (Settings.AB_PendingWindow or 0.25)
+
+    local function attempt()
+        if not AB.running or not killer or not killer.Parent then return end
+
+        if not AB_IsBlockReady() then
+            AB_Log("retry", "cooldown")
+            if tick() < deadline then task.delay(0.02, attempt) end
+            return
+        end
+
+        if not AB_ShouldBlock(killer) then
+            AB_Log("retry", "facing/range/velocity")
+            if tick() < deadline then task.delay(0.02, attempt) end
+            return
+        end
+
+        if not AB.perKiller[killer] then AB_HookKiller(killer) end
+        local st = AB.perKiller[killer]
+        if not st then return end
+
+        if tick() - (st.lastFireAt or 0) < 0.05 then
+            AB_Log("retry", "fire-debounce")
+            if tick() < deadline then task.delay(0.02, attempt) end
+            return
+        end
+
+        st.lastFireAt = tick()
+        AB.lastBlock = tick()
+        AB_Log("fire", "ok")
+        AB_Fire()
+    end
+
+    attempt()
 end
 
 local function HookAnimator(killer, animator)
@@ -1400,6 +1434,7 @@ local ABLeft = Tabs.AutoBlock:AddLeftGroupbox("Auto Block", "shield")
 ABLeft:AddToggle("AB_Enable", { Text = "Enable Auto Block", Default = false, Callback = function(v) if v then AB_Enable() else AB_Disable() end end })
 ABLeft:AddDropdown("AB_Mode", { Text = "Block Ability", Values = {"Guest1337", "007n7"}, Default = "Guest1337", Multi = false, Callback = function(v) Settings.AB_Mode = v end })
 ABLeft:AddSlider("AB_Pending", { Text = "Pending Window (s)", Default = 0.25, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.AB_PendingWindow = v end })
+ABLeft:AddToggle("AB_Debug_T", { Text = "Debug Block Failures", Default = false, Callback = function(v) Settings.AB_Debug = v end })
 
 local ABTrig = Tabs.AutoBlock:AddRightGroupbox("M1 Trigger Sources", "zap")
 ABTrig:AddToggle("AB_Anim_T",  { Text = "Animation Detection (fastest)", Default = true, Callback = function(v) Settings.AB_AnimDetect = v end })
@@ -1519,8 +1554,8 @@ Library:OnUnload(function() print("[Cupcake] Unloaded!") end)
 
 Library:Notify({
     Title = "Cupcake",
-    Description = "Loaded — box-facing fix active",
+    Description = "Loaded — box facing + block retry active",
     Time = 5,
 })
 
-print("[Cupcake] Loaded — box facing integrated")
+print("[Cupcake] Loaded — box facing integrated, block retry + debug enabled")
