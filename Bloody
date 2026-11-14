@@ -1,5 +1,5 @@
 --═══════════════════════════════════════════════════════════════════
--- Cupcake — Obsidian UI (stacked IDs + survivor unstick fix)
+-- Cupcake — Obsidian UI (stacked IDs + survivor unstick fix + box facing)
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -94,6 +94,7 @@ local Settings = {
     BoxAntiBait = true, BoxTurnRate = 1.5,
     BoxKillerW = 6, BoxKillerH = 6,
     BoxVisualEnabled = true,
+    UseBoxFacing = true,
     HDT_Speed = 40, HDT_Delay = 0.05, HDT_Duration = 0.6, HDT_Debug = false,
     ABT_Duration = 0.5, AP_Delay = 0.5, PA_Prediction = 4, PA_Enabled = false,
     AIM_Enabled = false, AIM_Mode = "Character",
@@ -320,8 +321,6 @@ local function HardLockFacing(duration, prediction, wantCamera)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then return end
 
-    -- ONLY zero WalkSpeed. Leave JumpPower/JumpHeight ALONE — keeps the
-    -- humanoid state graph valid so it can never get stuck.
     local savedWS = hum.WalkSpeed
     hum.WalkSpeed = 0
     hum.AutoRotate = false
@@ -339,15 +338,12 @@ local function HardLockFacing(duration, prediction, wantCamera)
         DebugMarker = nil
         if not (hum and hum.Parent) then return end
 
-        -- ALWAYS force AutoRotate = true — even if it was OFF before
-        -- (shift-lock users were the ones getting stuck)
         pcall(function()
             hum.WalkSpeed = savedWS
             hum.AutoRotate = true
             hum:Move(Vector3.zero, false)
         end)
 
-        -- Delayed state refresh + watchdog (automates the "sit+stand" fix)
         task.spawn(function()
             task.wait(0.05)
             if not (hum and hum.Parent) then return end
@@ -358,7 +354,6 @@ local function HardLockFacing(duration, prediction, wantCamera)
             task.wait(0.15)
             if not (hum and hum.Parent) then return end
 
-            -- Watchdog: re-force if still stuck
             if hum.WalkSpeed <= 0.1 then
                 pcall(function()
                     hum.WalkSpeed = savedWS
@@ -413,6 +408,7 @@ end
 local AB = { running=false, frameConn=nil, perKiller={}, lastBlock=0, BLOCK_COOLDOWN=27 }
 local GREEN = Color3.fromRGB(70,255,120)
 local BLUE  = Color3.fromRGB(80,150,255)
+local RED   = Color3.fromRGB(255,35,35)
 local BoxState = { killers = {}, player = nil, killerBoxes = {}, playerBox = nil, rootFolder = nil, renderConn = nil }
 
 local function Box_GetRootFolder()
@@ -478,32 +474,63 @@ local function AB_IsFacingPlayer(killer)
     if fl.Magnitude < 0.01 or ft.Magnitude < 0.01 then return false end
     return fl.Unit:Dot(ft.Unit) >= Settings.BoxFacingDot
 end
+
+-- NEW: precise rectangular facing-zone test (from Detector module)
+-- Player must be in front of the killer AND laterally within BoxKillerW/2
+local function AB_PlayerInFacingZone(killer)
+    if not BoxState.player then return false end
+    local khrp = killer:FindFirstChild("HumanoidRootPart")
+    if not khrp or not khrp.Parent then return false end
+    local offset   = BoxState.player - khrp.Position
+    local forward  = khrp.CFrame.LookVector
+    local right    = khrp.CFrame.RightVector
+    local fwdDist  = offset:Dot(forward)
+    local sideDist = math.abs(offset:Dot(right))
+    return fwdDist > 0
+        and fwdDist <= Settings.BoxRange
+        and sideDist <= Settings.BoxKillerW / 2
+end
+
 local function AB_ShouldBlock(killer)
     local st = BoxState.killers[killer]
     if not st or not BoxState.player then return false end
     local toPlayer = BoxState.player - st.pos
     local dist = toPlayer.Magnitude
     if dist > Settings.BoxRange or dist < 0.5 then return false end
-    local fl = Vector3.new(st.look.X, 0, st.look.Z)
-    local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
-    if fl.Magnitude < 0.01 or ft.Magnitude < 0.01 then return false end
-    local facingDot = fl.Unit:Dot(ft.Unit)
+
+    -- Facing gate: precise box test or legacy dot-product
+    if Settings.UseBoxFacing then
+        if not AB_PlayerInFacingZone(killer) then return false end
+    else
+        local fl = Vector3.new(st.look.X, 0, st.look.Z)
+        local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
+        if fl.Magnitude < 0.01 or ft.Magnitude < 0.01 then return false end
+        if fl.Unit:Dot(ft.Unit) < Settings.BoxFacingDot then return false end
+    end
+
+    -- Velocity gate: ignore fast movers going away
     local khrp = killer:FindFirstChild("HumanoidRootPart")
     if khrp then
         local kv = khrp.AssemblyLinearVelocity
         if kv.Magnitude > Settings.BoxFastThreshold then
             local fv = Vector3.new(kv.X, 0, kv.Z)
-            if fv.Magnitude > 0.5 and fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then return false end
+            local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
+            if fv.Magnitude > 0.5 and ft.Magnitude > 0.5
+               and fv.Unit:Dot(ft.Unit) < Settings.BoxFastDot then return false end
         end
     end
-    local blockLen = math.max(Settings.BoxRange - Settings.BoxBlockDistance, 0.5)
-    local alongLook = ft:Dot(fl.Unit)
-    if alongLook > (blockLen + Settings.BoxBlockDistance) then return false end
-    if facingDot >= Settings.BoxFacingDot then return true end
+
+    -- Anti-bait: only relevant on the legacy path (box test is already precise)
     if Settings.BoxAntiBait and st.turnRate and st.turnRate > Settings.BoxTurnRate then
-        if facingDot >= 0.15 then return true end
+        if not Settings.UseBoxFacing then
+            local fl = Vector3.new(st.look.X, 0, st.look.Z)
+            local ft = Vector3.new(toPlayer.X, 0, toPlayer.Z)
+            if fl.Magnitude > 0.01 and ft.Magnitude > 0.01
+               and fl.Unit:Dot(ft.Unit) < 0.15 then return false end
+        end
     end
-    return false
+
+    return true
 end
 
 local _WIRE = nil
@@ -603,18 +630,37 @@ local function Box_RenderAll()
                 local size = Vector3.new(Settings.BoxKillerW, Settings.BoxKillerH, blockLen)
                 local center = st.pos + st.look * (blockLen / 2)
                 local cf = CFrame.lookAt(center, center + st.look)
-                local color = AB_IsFacingPlayer(killer) and GREEN or BLUE
+                -- Match the active facing test so the color reflects the same logic used for blocking
+                local isFacing
+                if Settings.UseBoxFacing then
+                    isFacing = AB_PlayerInFacingZone(killer)
+                else
+                    isFacing = AB_IsFacingPlayer(killer)
+                end
+                local color = isFacing and GREEN or BLUE
                 Box_UpdateWireframe(box.parts, cf, size, color)
             else Box_HideWireframe(box.parts) end
         end
     end
     local pb = BoxState.playerBox
     if pb then
-        if not Box_IsWireframeValid(pb.parts) then Box_DestroyWireframe(pb.parts); pb.parts = {}
-        elseif now > pb.showUntil or not BoxState.player then Box_HideWireframe(pb.parts)
+        if not Box_IsWireframeValid(pb.parts) then
+            Box_DestroyWireframe(pb.parts); pb.parts = {}
+        elseif now > pb.showUntil or not BoxState.player then
+            Box_HideWireframe(pb.parts)
         else
             local s = Settings.BoxBlockDistance * 2
-            Box_UpdateWireframe(pb.parts, CFrame.new(BoxState.player), Vector3.new(s,s,s), BLUE)
+            -- Player box turns RED if any killer's M1 window is live AND we're in their facing zone
+            local inDanger = false
+            for killer, kbox in pairs(BoxState.killerBoxes) do
+                if killer.Parent and now <= kbox.showUntil
+                   and AB_PlayerInFacingZone(killer) then
+                    inDanger = true; break
+                end
+            end
+            local col = inDanger and RED or BLUE
+            Box_UpdateWireframe(pb.parts, CFrame.new(BoxState.player),
+                                Vector3.new(s, s, s), col)
         end
     end
 end
@@ -1370,10 +1416,11 @@ ABSpam:AddSlider("AB_SpamDur", { Text = "Spam Duration (s)", Default = 0.05, Min
 -- UI — BOX TAB
 --═══════════════════════════════════════════════════════════════════
 local BoxDetG = Tabs.Box:AddLeftGroupbox("Box Detection", "square")
+BoxDetG:AddToggle("Box_UseBoxFacing_T", { Text = "Precise Box Facing Check", Default = true, Tooltip = "Uses forward+lateral rectangle test instead of dot-product. Blocks only when you're actually inside the killer's M1 box.", Callback = function(v) Settings.UseBoxFacing = v end })
 BoxDetG:AddSlider("Box_Range_S",       { Text = "Total Range (studs)",        Default = 18,  Min = 5,  Max = 50, Rounding = 1, Callback = function(v) Settings.BoxRange = v end })
 BoxDetG:AddSlider("Box_BlockDist_S",   { Text = "Block Distance (studs)",     Default = 3,   Min = 1,  Max = 15, Rounding = 1, Callback = function(v) Settings.BoxBlockDistance = v end })
 BoxDetG:AddSlider("Box_Delay_S",       { Text = "Follow Delay (s)",           Default = 0.1, Min = 0.01, Max = 0.5, Rounding = 2, Callback = function(v) Settings.BoxFollowDelay = v end })
-BoxDetG:AddSlider("Box_Dot_S",         { Text = "Facing Threshold",           Default = 0.5, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.BoxFacingDot = v end })
+BoxDetG:AddSlider("Box_Dot_S",         { Text = "Facing Threshold (legacy)",  Default = 0.5, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.BoxFacingDot = v end })
 BoxDetG:AddSlider("Box_FastThresh_S",  { Text = "Fast Velocity Threshold",    Default = 15,  Min = 5,  Max = 40, Rounding = 0, Callback = function(v) Settings.BoxFastThreshold = v end })
 BoxDetG:AddSlider("Box_FastDot_S",     { Text = "Fast Move Toward Dot",       Default = 0.3, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Settings.BoxFastDot = v end })
 BoxDetG:AddSlider("Box_ShowDur_S",     { Text = "M1 Show Duration (s)",       Default = 0.3, Min = 0.1, Max = 0.7, Rounding = 2, Callback = function(v) Settings.BoxDisplayDuration = v end })
@@ -1472,8 +1519,8 @@ Library:OnUnload(function() print("[Cupcake] Unloaded!") end)
 
 Library:Notify({
     Title = "Cupcake",
-    Description = "Loaded — stacked IDs + survivor unstick",
+    Description = "Loaded — box-facing fix active",
     Time = 5,
 })
 
-print("[Cupcake] Loaded")
+print("[Cupcake] Loaded — box facing integrated")
