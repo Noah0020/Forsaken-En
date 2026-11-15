@@ -1,14 +1,8 @@
 --═══════════════════════════════════════════════════════════════════
--- Vortex Hub — Final Build
---   • Block: Name-filtered auto-block, W/L/H editable, 8 abilities
---   • Aim: Survivor Aim + Elliot + Chance (Parry/Punch removed)
---   • Silent Aim: Jane Doe + Dusekkar (separate tab)
---   • Generator: Full 4-minigame solver
---   • Stab: Hard-capped smooth lerp
---   • HDT: Auto-dash on hit anim
---   • Vee: Auto Trick
---   • Sk8: Control + Fast Spray
---   • ESP: Backup-style Highlight w/ wall check
+-- Vortex Hub — Killer-Safe Build
+--   • All survivor features (Auto Block, HDT, Survivor Aim, Stab,
+--     Elliot, Chance, Vee, Sk8) skip when player is a Killer.
+--   • Watchdog auto-disables survivor toggles on killer spawn.
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -70,6 +64,31 @@ local Tabs = {
 }
 
 --═══════════════════════════════════════════════════════════════════
+-- KILLER DETECTION (critical — used by every survivor system)
+--═══════════════════════════════════════════════════════════════════
+local KILLER_NAMES = {
+    ["Slasher"] = true, ["Jason"] = true,
+    ["c00lkidd"] = true, ["CoolKid"] = true, ["Coolkidd"] = true,
+    ["John Doe"] = true, ["JohnDoe"] = true,
+    ["Noli"] = true,
+    ["1x1x1x1"] = true, ["Onex"] = true, ["OneX"] = true,
+    ["Guest 666"] = true, ["Sixer"] = true,
+    ["Guest666"] = true, ["Guest_666"] = true,
+    ["Nosferatu"] = true,
+    ["Azure"] = true,
+}
+
+local function IsPlayerKiller()
+    local c = LP.Character
+    if not c then return false end
+    local pf = Workspace:FindFirstChild("Players")
+    local kf = pf and pf:FindFirstChild("Killers")
+    if kf and c:IsDescendantOf(kf) then return true end
+    local name = c:GetAttribute("CharacterName") or c.Name
+    return KILLER_NAMES[name] == true
+end
+
+--═══════════════════════════════════════════════════════════════════
 -- PLAYER INFO
 --═══════════════════════════════════════════════════════════════════
 local information = Tabs["Player Info"]:AddLeftGroupbox("Player", "user")
@@ -101,27 +120,22 @@ local DevGroup = Tabs["Player Info"]:AddRightGroupbox("Developer", "user")
 DevGroup:AddLabel("[Vortex Team] - Owner And Developer")
 
 --═══════════════════════════════════════════════════════════════════
--- ESP (Backup style — Highlight-based, wall check, distance-limited)
+-- ESP
 --═══════════════════════════════════════════════════════════════════
 local ESPSettings = {
     ESP_Killer = false, ESP_Survivor = false,
     ESP_Generator = false, ESP_Medkit = false, ESP_Bloxy = false,
     ESP_WallCheck = false, ESP_MaxDist = 150,
 }
-
 local ESP_HL, ESP_Folder = {}, nil
 local function ES_Ensure()
     if ESP_Folder and ESP_Folder.Parent then return ESP_Folder end
-    ESP_Folder = Instance.new("Folder")
-    ESP_Folder.Name = "Vortex_ESP"
-    ESP_Folder.Parent = CoreGui
+    ESP_Folder = Instance.new("Folder"); ESP_Folder.Name = "Vortex_ESP"; ESP_Folder.Parent = CoreGui
     return ESP_Folder
 end
-
 local function ES_Visible(part)
     if not ESPSettings.ESP_WallCheck then return true end
-    local cam = Workspace.CurrentCamera
-    if not cam or not part then return true end
+    local cam = Workspace.CurrentCamera; if not cam or not part then return true end
     local p = RaycastParams.new()
     p.FilterType = Enum.RaycastFilterType.Exclude
     p.FilterDescendantsInstances = { LP.Character }
@@ -129,7 +143,6 @@ local function ES_Visible(part)
     if not res then return true end
     return res.Instance:IsDescendantOf(part.Parent)
 end
-
 local function ES_Apply(model, color)
     local hl = ESP_HL[model]
     if hl and hl.Parent and hl.Adornee == model then
@@ -137,15 +150,12 @@ local function ES_Apply(model, color)
         return
     end
     if hl then pcall(function() hl:Destroy() end); ESP_HL[model] = nil end
-    hl = Instance.new("Highlight")
-    hl.Adornee = model
+    hl = Instance.new("Highlight"); hl.Adornee = model
     hl.FillColor = color; hl.OutlineColor = color
     hl.FillTransparency = 0.5; hl.OutlineTransparency = 0
     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Parent = ES_Ensure()
-    ESP_HL[model] = hl
+    hl.Parent = ES_Ensure(); ESP_HL[model] = hl
 end
-
 local function ES_Clear(model)
     local h = ESP_HL[model]
     if h then pcall(function() h:Destroy() end); ESP_HL[model] = nil end
@@ -196,8 +206,7 @@ task.spawn(function()
             lastScan = now
             for _, obj in ipairs(Workspace:GetDescendants()) do
                 if obj:IsA("BasePart") or obj:IsA("Model") then
-                    local n = obj.Name
-                    local color
+                    local n = obj.Name; local color
                     if ESPSettings.ESP_Generator and n == "Generator" then color = Color3.fromRGB(255, 255, 0)
                     elseif ESPSettings.ESP_Medkit and n == "Medkit" then color = Color3.fromRGB(255, 105, 180)
                     elseif ESPSettings.ESP_Bloxy and n == "BloxyCola" then color = Color3.fromRGB(0, 150, 255) end
@@ -474,13 +483,11 @@ local flightEnabled = false
 local flightSpeed = 50
 local flightLoop = nil
 local function startFlight()
-    local char = LP.Character
-    if not char then return end
+    local char = LP.Character; if not char then return end
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     local head = char:FindFirstChild("Head")
     if not humanoid or not head then return end
-    humanoid.PlatformStand = true
-    head.Anchored = true
+    humanoid.PlatformStand = true; head.Anchored = true
     if flightLoop then flightLoop:Disconnect() end
     flightLoop = RunService.Heartbeat:Connect(function(dt)
         if not char or not char.Parent then
@@ -489,12 +496,10 @@ local function startFlight()
         end
         local md = humanoid.MoveDirection * (flightSpeed * dt)
         local cam = Workspace.CurrentCamera
-        local headCF = head.CFrame
-        local camCF = cam.CFrame
+        local headCF = head.CFrame; local camCF = cam.CFrame
         local off = headCF:ToObjectSpace(camCF).Position
         camCF = camCF * CFrame.new(-off.X, -off.Y, -off.Z + 1)
-        local cp = camCF.Position
-        local hp = headCF.Position
+        local cp = camCF.Position; local hp = headCF.Position
         local ov = CFrame.new(cp, Vector3.new(hp.X, cp.Y, hp.Z)):VectorToObjectSpace(md)
         head.CFrame = CFrame.new(hp) * (camCF - cp) * CFrame.new(ov)
     end)
@@ -526,17 +531,14 @@ MVP:AddToggle("InfiniteStamina", { Text = "Infinite Stamina", Default = false, C
     end)
     if not ok then return end
     if state then
-        Sprinting.StaminaLoss = 0
-        Sprinting.StaminaGain = 9999
+        Sprinting.StaminaLoss = 0; Sprinting.StaminaGain = 9999
         if staminaConn then staminaConn:Disconnect() end
         staminaConn = RunService.Heartbeat:Connect(function()
             if not bai.Spr then return end
-            Sprinting.StaminaLoss = 0
-            Sprinting.StaminaGain = 9999
+            Sprinting.StaminaLoss = 0; Sprinting.StaminaGain = 9999
         end)
     else
-        Sprinting.StaminaLoss = 10
-        Sprinting.StaminaGain = 25
+        Sprinting.StaminaLoss = 10; Sprinting.StaminaGain = 25
         if staminaConn then staminaConn:Disconnect(); staminaConn = nil end
     end
 end })
@@ -594,7 +596,6 @@ local function extractAnimIds(v)
     end
     return o
 end
-
 local function isStunName(n)
     if type(n) ~= "string" then return false end
     if STUN_ABILITY_NAMES[n] then return true end
@@ -602,7 +603,6 @@ local function isStunName(n)
     for s in pairs(STUN_ABILITY_NAMES) do if l == s:lower():gsub("[%s_%-]", "") then return true end end
     return false
 end
-
 local function readConfig(mod)
     local ok, cfg = pcall(require, mod)
     if not ok or type(cfg) ~= "table" then return end
@@ -619,7 +619,6 @@ local function readConfig(mod)
         end
     end
 end
-
 local function LoadAbilityIds(char)
     STUN_ANIM_IDS, STUN_SOUND_IDS = {}, {}
     for id, n in pairs(STATIC_STUN_ANIM_IDS) do STUN_ANIM_IDS[id] = n end
@@ -665,6 +664,7 @@ pcall(function()
 end)
 
 local function FireBlockBuffer()
+    if IsPlayerKiller() then return end
     local remote = getNetworkEvent()
     if not remote then return end
     pcall(function() remote:FireServer("UseActorAbility", { buffer.fromstring("\003\005\000\000\000Block") }) end)
@@ -703,7 +703,7 @@ local function GetNearestKillerHrp()
     if not myHrp then return nil end
     local best, bd = nil, math.huge
     for _, m in ipairs(kf:GetChildren()) do
-        if m:IsA("Model") then
+        if m:IsA("Model") and m ~= char then
             local mHrp = m:FindFirstChild("HumanoidRootPart")
             local mHum = m:FindFirstChildOfClass("Humanoid")
             if mHrp and mHum and mHum.Health > 0 then
@@ -716,8 +716,8 @@ local function GetNearestKillerHrp()
 end
 
 local function HardLockFacing(dur, wantCam, predLead)
-    local char = LP.Character
-    if not char then return end
+    if IsPlayerKiller() then return end   -- ⚡ killer-safe
+    local char = LP.Character; if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then return end
@@ -737,6 +737,7 @@ local function HardLockFacing(dur, wantCam, predLead)
         end)
     end
     conn = RunService.RenderStepped:Connect(function()
+        if IsPlayerKiller() then release(); return end   -- ⚡ killer-safe mid-flight
         if not char.Parent or not hrp.Parent or not hum.Parent then release(); return end
         if tick() - startT > (dur or 0.5) then release(); return end
         local t = GetNearestKillerHrp()
@@ -767,7 +768,7 @@ end
 local NA = { active = false, animConn = nil, soundConns = {}, lockTime = 0.7, prediction = 4, mode = "Character" }
 
 local function fireStunAim(track)
-    if not NA.active then return end
+    if not NA.active or IsPlayerKiller() then return end   -- ⚡ killer-safe
     local dur = NA.lockTime or math.max(0.5, (track and track.Length or 0.8) + 0.15)
     task.spawn(function()
         HardLockFacing(dur, NA.mode == "Camera" or NA.mode == "Both", (NA.prediction or 4) * 0.05)
@@ -779,6 +780,7 @@ local function AttachAnimWatcher(char)
     local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
     local an = hum:WaitForChild("Animator", 5); if not an then return end
     NA.animConn = an.AnimationPlayed:Connect(function(track)
+        if IsPlayerKiller() then return end   -- ⚡ killer-safe
         local anim = track.Animation; if not anim then return end
         local aid = tostring(anim.AnimationId):match("%d+"); if not aid then return end
         if STUN_ANIM_IDS[aid] then fireStunAim(track) end
@@ -791,7 +793,7 @@ local function AttachSoundWatcher(char)
     local function hook(s)
         if not s:IsA("Sound") then return end
         local c = s.Played:Connect(function()
-            if not NA.active then return end
+            if not NA.active or IsPlayerKiller() then return end   -- ⚡ killer-safe
             local sid = tostring(s.SoundId):match("%d+"); if not sid then return end
             if STUN_SOUND_IDS[sid] then
                 task.spawn(function()
@@ -833,7 +835,7 @@ local function elliot_setupChar(char)
         local an = elliot.hum:FindFirstChildOfClass("Animator")
         if an then
             an.AnimationPlayed:Connect(function(track)
-                if not track or not track.Animation then return end
+                if not track or not track.Animation or IsPlayerKiller() then return end
                 local aid = ""; pcall(function() aid = tostring(track.Animation.AnimationId) end)
                 if aid:find(elliot.throwAnimId) then elliot.isThrowing = true; elliot.throwTS = tick() end
             end)
@@ -859,6 +861,7 @@ local function elliot_findTarget()
     return best
 end
 local function elliot_aimAt(tgt)
+    if IsPlayerKiller() then return end   -- ⚡ killer-safe
     if not tgt or not tgt.Parent then return end
     local now = tick(); if now - elliot.lastAimTime < 0.016 then return end; elliot.lastAimTime = now
     local vel = getHRPVelocity(tgt); local pred = tgt.Position
@@ -883,7 +886,7 @@ end
 local function elliot_start()
     if elliot.conn then elliot.conn:Disconnect() end
     elliot.conn = RunService.RenderStepped:Connect(function()
-        if not elliot.enabled or not elliot.hum or not elliot.hrp then
+        if not elliot.enabled or not elliot.hum or not elliot.hrp or IsPlayerKiller() then
             if elliot.autoRotBak ~= nil and elliot.hum then elliot.hum.AutoRotate = elliot.autoRotBak; elliot.autoRotBak = nil end
             return
         end
@@ -915,10 +918,12 @@ local function chance_getNearest()
     local my = char:FindFirstChild("HumanoidRootPart"); if not my then return nil end
     local best, bd = nil, math.huge
     for _, m in ipairs(kf:GetChildren()) do
-        local r = m:FindFirstChild("HumanoidRootPart"); local h = m:FindFirstChildOfClass("Humanoid")
-        if r and h and h.Health > 0 then
-            local d = (r.Position - my.Position).Magnitude
-            if d < bd then bd = d; best = r end
+        if m ~= char then   -- ⚡ never target self
+            local r = m:FindFirstChild("HumanoidRootPart"); local h = m:FindFirstChildOfClass("Humanoid")
+            if r and h and h.Health > 0 then
+                local d = (r.Position - my.Position).Magnitude
+                if d < bd then bd = d; best = r end
+            end
         end
     end
     return best
@@ -941,7 +946,7 @@ UserInputService.InputEnded:Connect(function(i)
     if chance.holdToAim and i.KeyCode == chance.aimKey then chance.holdingKey = false; chance.aiming = false end
 end)
 RunService.RenderStepped:Connect(function(dt)
-    if not chance.enabled then return end
+    if not chance.enabled or IsPlayerKiller() then return end   -- ⚡ killer-safe
     local char = LP.Character; local my = char and char:FindFirstChild("HumanoidRootPart"); if not my then return end
     if chance.holdToAim then
         if not chance.holdingKey then return end
@@ -966,6 +971,10 @@ end)
 
 local AimSA = Tabs.Aimbot:AddLeftGroupbox("Survivor Aim (Stun)", "crosshair")
 AimSA:AddToggle("SA_En_T", { Text = "Enable Survivor Aim", Default = false, Callback = function(v)
+    if v and IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "Survivor Aim disabled (you are Killer)", Time = 3})
+        pcall(function() Options.SA_En_T:Set(false) end); return
+    end
     NA.active = v
     if v and LP.Character then LoadAbilityIds(LP.Character); AttachAnimWatcher(LP.Character); AttachSoundWatcher(LP.Character) end
 end })
@@ -974,7 +983,13 @@ AimSA:AddSlider("SA_Pred_S", { Text = "Prediction (0-10)", Default = 4, Min = 0,
 AimSA:AddSlider("SA_Lock_S", { Text = "Lock Time (s)", Default = 0.7, Min = 0.2, Max = 2, Rounding = 2, Callback = function(v) NA.lockTime = v end })
 
 local AimEll = Tabs.Aimbot:AddRightGroupbox("Elliot (Throw)", "target")
-AimEll:AddToggle("Ell_En_T", { Text = "Enable Elliot Aimbot", Default = false, Callback = function(v) elliot.enabled = v; if v then elliot_start() else elliot_stop() end end })
+AimEll:AddToggle("Ell_En_T", { Text = "Enable Elliot Aimbot", Default = false, Callback = function(v)
+    if v and IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "Elliot disabled (you are Killer)", Time = 3})
+        pcall(function() Options.Ell_En_T:Set(false) end); return
+    end
+    elliot.enabled = v; if v then elliot_start() else elliot_stop() end
+end })
 AimEll:AddDropdown("Ell_Type_DD", { Text = "Aim Type", Values = {"HRP Aimbot", "Camera Aimbot", "Camera + Character"}, Default = "Camera + Character", Multi = false, Callback = function(v) elliot.aimType = v end })
 AimEll:AddDropdown("Ell_Target_DD", { Text = "Target Mode", Values = {"Low HP", "Closest"}, Default = "Low HP", Multi = false, Callback = function(v) elliot.targetMode = v end })
 AimEll:AddSlider("Ell_Dur_S", { Text = "Throw Window (s)", Default = 0.6, Min = 0.1, Max = 2, Rounding = 1, Callback = function(v) elliot.throwDur = v end })
@@ -983,6 +998,10 @@ AimEll:AddSlider("Ell_Pred_S", { Text = "Prediction", Default = 5, Min = 0, Max 
 
 local AimCh = Tabs.Aimbot:AddLeftGroupbox("Chance", "target")
 AimCh:AddToggle("Ch_En_T", { Text = "Enable Chance Aimbot", Default = false, Callback = function(v)
+    if v and IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "Chance disabled (you are Killer)", Time = 3})
+        pcall(function() Options.Ch_En_T:Set(false) end); return
+    end
     chance.enabled = v
     if not v and chance.bodyGyro and chance.bodyGyro.Parent then chance.bodyGyro:Destroy(); chance.bodyGyro = nil end
 end })
@@ -992,12 +1011,13 @@ AimCh:AddDropdown("Ch_Behav_DD", { Text = "Behavior", Values = {"Normal", "360"}
 AimCh:AddToggle("Ch_Hold_T", { Text = "Hold-to-Aim (Q)", Default = true, Callback = function(v) chance.holdToAim = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- SILENT AIM (Jane Doe + Dusekkar)
+-- SILENT AIM (Jane + Dusekkar)
 --═══════════════════════════════════════════════════════════════════
 local jd = { enabled = false, aimbotOn = false, patched = false, aimOffset = -0.3, prediction = 0.6 }
 local function jd_applyPatch()
     if jd.patched or not NetworkRF then return end
     rfDispatch:register("jd", function(reqName, ...)
+        if IsPlayerKiller() then return nil end   -- ⚡ killer-safe
         if not (jd.enabled and jd.aimbotOn) then return nil end
         local char = LP.Character; local myHRP = char and char:FindFirstChild("HumanoidRootPart")
         if not myHRP then return nil end
@@ -1005,10 +1025,12 @@ local function jd_applyPatch()
         if not kf then return nil end
         local best, bd = nil, math.huge
         for _, k in ipairs(kf:GetChildren()) do
-            local hrp = k:FindFirstChild("HumanoidRootPart"); local h = k:FindFirstChildOfClass("Humanoid")
-            if hrp and h and h.Health > 0 then
-                local d = (hrp.Position - myHRP.Position).Magnitude
-                if d < bd then bd = d; best = hrp end
+            if k ~= char then
+                local hrp = k:FindFirstChild("HumanoidRootPart"); local h = k:FindFirstChildOfClass("Humanoid")
+                if hrp and h and h.Health > 0 then
+                    local d = (hrp.Position - myHRP.Position).Magnitude
+                    if d < bd then bd = d; best = hrp end
+                end
             end
         end
         if not best then return nil end
@@ -1028,6 +1050,7 @@ end
 local dusekkar = { enabled = false, prediction = 0.12, aimOffset = 0.0 }
 if NetworkRF then
     rfDispatch:register("plasma", function(reqName, ...)
+        if IsPlayerKiller() then return nil end   -- ⚡ killer-safe
         if reqName ~= "GetMousePosition" or not dusekkar.enabled then return nil end
         local t = GetNearestKillerHrp(); if not t then return nil end
         local vel = getHRPVelocity(t)
@@ -1036,7 +1059,13 @@ if NetworkRF then
 end
 
 local JaneL = Tabs["Silent Aim"]:AddLeftGroupbox("Jane Doe", "crosshair")
-JaneL:AddToggle("Jane_En_T", { Text = "Enable Jane Aimbot", Default = false, Callback = function(v) jd.enabled = v; if v then jd_applyPatch() else jd_removePatch() end end })
+JaneL:AddToggle("Jane_En_T", { Text = "Enable Jane Aimbot", Default = false, Callback = function(v)
+    if v and IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "Jane disabled (you are Killer)", Time = 3})
+        pcall(function() Options.Jane_En_T:Set(false) end); return
+    end
+    jd.enabled = v; if v then jd_applyPatch() else jd_removePatch() end
+end })
 JaneL:AddToggle("Jane_Aim_T", { Text = "Silent Aim (Crystal)", Default = false, Callback = function(v) jd.aimbotOn = v; if v then jd_applyPatch() end end })
 JaneL:AddSlider("Jane_Pred_S", { Text = "Prediction (s)", Default = 0.6, Min = 0, Max = 2, Rounding = 2, Callback = function(v) jd.prediction = v end })
 JaneL:AddSlider("Jane_Off_S", { Text = "Aim Offset (Y)", Default = -0.3, Min = -5, Max = 5, Rounding = 1, Callback = function(v) jd.aimOffset = v end })
@@ -1046,7 +1075,7 @@ DuskL:AddToggle("Dusk_En_T", { Text = "Enable PlasmaBeam Silent Aim", Default = 
 DuskL:AddSlider("Dusk_Pred_S", { Text = "Prediction (s)", Default = 0.12, Min = 0, Max = 0.5, Rounding = 2, Callback = function(v) dusekkar.prediction = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- BLOCK (Name-filtered, W/L/H independent)
+-- BLOCK (name-filtered, W/L/H independent, killer-safe)
 --═══════════════════════════════════════════════════════════════════
 _G.HitboxWidth = 4.5
 _G.HitboxHeight = 6
@@ -1074,7 +1103,6 @@ local function shouldBlockAbility(name)
     end
     return false
 end
-
 local function getAbilityName(killer)
     if not killer then return nil end
     for _, attr in ipairs({"AbilityName", "LastAbility", "CurrentAbility", "LastAbilityName", "AbilityUsed", "Ability", "CurrentAttack"}) do
@@ -1085,7 +1113,8 @@ local function getAbilityName(killer)
 end
 
 local function createSpatialOverlapBox(killerChar, size, onHit)
-    if not killerChar then return end
+    if IsPlayerKiller() then return end   -- ⚡ killer-safe (main fling fix)
+    if not killerChar or killerChar == LP.Character then return end   -- ⚡ never self
     local root = killerChar:FindFirstChild("HumanoidRootPart") or killerChar:FindFirstChild("RootPart")
     if not root then return end
     local op = OverlapParams.new()
@@ -1094,6 +1123,7 @@ local function createSpatialOverlapBox(killerChar, size, onHit)
     task.spawn(function()
         local elapsed = 0
         while killerChar.Parent and root.Parent and elapsed < _G.HitboxDuration do
+            if IsPlayerKiller() then return end   -- ⚡ killer-safe mid-flight
             local Part = Instance.new("Part")
             Part.Name = "Vortex_BlockBox"
             Part.Transparency = _G.HitboxTransparency
@@ -1126,7 +1156,8 @@ end
 
 local lastTrigger = 0
 local function triggerBoxCheck(killer)
-    if not killer or not killer.Parent then return end
+    if IsPlayerKiller() then return end   -- ⚡ killer-safe
+    if not killer or killer == LP.Character or not killer.Parent then return end
     local now = tick()
     if now - lastTrigger < 0.05 then return end
     lastTrigger = now
@@ -1136,11 +1167,12 @@ end
 local monitoredKillers = {}
 local function monitorKiller(killer)
     if not killer or monitoredKillers[killer] or not killer:IsA("Model") then return end
+    if killer == LP.Character then return end   -- ⚡ never monitor self
     monitoredKillers[killer] = true
     local lastAbility = killer:GetAttribute("AbilityLastUsed") or 0
     local lastUsed = killer:GetAttribute("AbilitiesUsed") or 0
     local function onNewAbility()
-        if not _G.AutoBlockEnabled then return end
+        if not _G.AutoBlockEnabled or IsPlayerKiller() then return end   -- ⚡ killer-safe
         local name = getAbilityName(killer)
         if name == nil or shouldBlockAbility(name) then triggerBoxCheck(killer) end
     end
@@ -1172,13 +1204,13 @@ local function hookAbilityRemote()
         return false
     end
     remote.OnClientEvent:Connect(function(...)
-        if not _G.AutoBlockEnabled then return end
+        if not _G.AutoBlockEnabled or IsPlayerKiller() then return end   -- ⚡ killer-safe
         for _, arg in ipairs({...}) do
             if argMatches(arg) then
                 local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
                 if kf then
                     for _, k in ipairs(kf:GetChildren()) do
-                        if k:IsA("Model") then triggerBoxCheck(k); break end
+                        if k:IsA("Model") and k ~= LP.Character then triggerBoxCheck(k); break end
                     end
                 end
                 break
@@ -1190,22 +1222,37 @@ end
 task.spawn(function()
     while true do
         task.wait(1)
-        if _G.AutoBlockEnabled then
+        if _G.AutoBlockEnabled and not IsPlayerKiller() then
             local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
-            if kf then for _, k in ipairs(kf:GetChildren()) do if k:IsA("Model") then monitorKiller(k) end end end
+            if kf then
+                for _, k in ipairs(kf:GetChildren()) do
+                    if k:IsA("Model") and k ~= LP.Character then monitorKiller(k) end
+                end
+            end
         end
     end
 end)
 
 local function EnableAutoBlock()
+    if IsPlayerKiller() then return end
     hookAbilityRemote()
     local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
-    if kf then for _, k in ipairs(kf:GetChildren()) do if k:IsA("Model") then monitorKiller(k) end end end
+    if kf then
+        for _, k in ipairs(kf:GetChildren()) do
+            if k:IsA("Model") and k ~= LP.Character then monitorKiller(k) end
+        end
+    end
 end
 
 local BlockLeft = Tabs.Block:AddLeftGroupbox("Auto Block", "shield")
 local BlockRight = Tabs.Block:AddRightGroupbox("Hitbox Settings", "sliders")
-BlockLeft:AddToggle("AutoBlockToggle", { Text = "Enable AutoBlock", Default = false, Callback = function(v) _G.AutoBlockEnabled = v; if v then EnableAutoBlock() end end })
+BlockLeft:AddToggle("AutoBlockToggle", { Text = "Enable AutoBlock", Default = false, Callback = function(v)
+    if v and IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "Auto-Block disabled (you are Killer)", Time = 3})
+        pcall(function() Options.AutoBlockToggle:Set(false) end); return
+    end
+    _G.AutoBlockEnabled = v; if v then EnableAutoBlock() end
+end })
 BlockLeft:AddSlider("HitboxTransparency", { Text = "Transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 2, Callback = function(v) _G.HitboxTransparency = v end })
 BlockLeft:AddLabel("Hitbox Color"):AddColorPicker("HitboxColor", { Default = _G.HitboxColor, Title = "Hitbox Color", Callback = function(c) _G.HitboxColor = c end })
 BlockRight:AddSlider("HitboxWidth", { Text = "Width (X)", Default = 4.5, Min = 1, Max = 30, Rounding = 1, Callback = function(v) _G.HitboxWidth = v end })
@@ -1216,7 +1263,7 @@ BlockRight:AddSlider("HitboxDuration", { Text = "Duration", Default = 1.5, Min =
 BlockRight:AddSlider("BlockDelay", { Text = "Block Delay", Default = 0, Min = 0, Max = 1, Rounding = 2, Callback = function(v) _G.BlockDelay = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- STAB (Hard-capped smooth lerp)
+-- STAB (killer-safe, self-excluded)
 --═══════════════════════════════════════════════════════════════════
 local STAB_ANIM_IDS = { ["100725497418533"] = true, ["89448354637442"] = true }
 local STAB_SPEED_MAX = 6
@@ -1229,7 +1276,7 @@ local function getClosestKillerForStab()
     local my = char:FindFirstChild("HumanoidRootPart"); if not my then return nil end
     local closest, cd = nil, math.huge
     for _, inst in ipairs(kf:GetChildren()) do
-        if inst:IsA("Model") then
+        if inst:IsA("Model") and inst ~= char then   -- ⚡ never self
             local hum = inst:FindFirstChildOfClass("Humanoid")
             local hrp = inst:FindFirstChild("HumanoidRootPart")
             if hum and hrp and hum.Health > 0 then
@@ -1242,7 +1289,7 @@ local function getClosestKillerForStab()
 end
 
 local function runStabLerp()
-    if not stabState.enabled then return end
+    if not stabState.enabled or IsPlayerKiller() then return end   -- ⚡ killer-safe (main fling fix)
     local now = tick()
     if now - stabState.lastStab < stabState.cooldown then return end
     stabState.lastStab = now
@@ -1255,6 +1302,7 @@ local function runStabLerp()
     local dur = math.max(0.1, stabState.lerpDuration)
     local speedFactor = math.clamp(stabState.lerpSpeed / STAB_SPEED_MAX, 0, 1)
     while tick() - startT < dur do
+        if IsPlayerKiller() then break end   -- ⚡ killer-safe mid-lerp
         if not char.Parent or not killer.Parent or not kr.Parent then break end
         local alpha = math.clamp((tick() - startT) / dur, 0, 1)
         local smooth = alpha * alpha * (3 - 2 * alpha)
@@ -1271,6 +1319,7 @@ local function hookStabCharacter(character)
     local hum = character:WaitForChild("Humanoid", 10); if not hum then return end
     local an = hum:WaitForChild("Animator", 5); if not an then return end
     an.AnimationPlayed:Connect(function(track)
+        if IsPlayerKiller() then return end   -- ⚡ killer-safe (blocks fling)
         if not track or not track.Animation then return end
         local id = tostring(track.Animation.AnimationId or ""):gsub("%D", "")
         if STAB_ANIM_IDS[id] then task.spawn(runStabLerp) end
@@ -1281,14 +1330,20 @@ LP.CharacterAdded:Connect(hookStabCharacter)
 
 local StabLeft = Tabs.Stab:AddLeftGroupbox("Stab Teleport", "sword")
 local StabRight = Tabs.Stab:AddRightGroupbox("Settings", "sliders")
-StabLeft:AddToggle("EnableStabLerp", { Text = "Enable Stab to Back", Default = false, Callback = function(v) stabState.enabled = v end })
+StabLeft:AddToggle("EnableStabLerp", { Text = "Enable Stab to Back", Default = false, Callback = function(v)
+    if v and IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "Stab disabled (you are Killer)", Time = 3})
+        pcall(function() Options.EnableStabLerp:Set(false) end); return
+    end
+    stabState.enabled = v
+end })
 StabRight:AddSlider("StabBehindStuds", { Text = "Behind Studs", Default = 4, Min = 1, Max = 10, Rounding = 1, Callback = function(v) stabState.behindStuds = v end })
 StabRight:AddSlider("StabLerpDuration", { Text = "Lerp Duration (s)", Default = 0.4, Min = 0.1, Max = 1.5, Rounding = 2, Callback = function(v) stabState.lerpDuration = v end })
 StabRight:AddSlider("StabLerpSpeed", { Text = "Lerp Speed (MAX " .. STAB_SPEED_MAX .. ")", Default = STAB_SPEED_MAX, Min = 1, Max = STAB_SPEED_MAX, Rounding = 0, Callback = function(v) stabState.lerpSpeed = math.min(v, STAB_SPEED_MAX) end })
 StabRight:AddSlider("StabCooldown", { Text = "Cooldown (s)", Default = 0.6, Min = 0.1, Max = 2, Rounding = 2, Callback = function(v) stabState.cooldown = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- HDT
+-- HDT (killer-safe)
 --═══════════════════════════════════════════════════════════════════
 local HDT = { enabled = false, speed = 40, delay = 0.05, duration = 0.6, debounce = false }
 local HDT_BIND = "Vortex_HDT_Bind"
@@ -1307,7 +1362,7 @@ local function HDT_NearestKiller()
     if not mr then return nil end
     local best, bd = nil, math.huge
     for _, k in ipairs(kf:GetChildren()) do
-        if k:IsA("Model") then
+        if k:IsA("Model") and k ~= c then   -- ⚡ never self
             local kr = k:FindFirstChild("HumanoidRootPart")
             if kr then
                 local d = (kr.Position - mr.Position).Magnitude
@@ -1319,7 +1374,8 @@ local function HDT_NearestKiller()
 end
 
 local function HDT_Dash(km)
-    if HDT.debounce or not km or not km.Parent then return end
+    if IsPlayerKiller() then return end   -- ⚡ killer-safe
+    if HDT.debounce or not km or km == LP.Character or not km.Parent then return end
     local c = LP.Character; if not c then return end
     local hrp = c:FindFirstChild("HumanoidRootPart")
     local h = c:FindFirstChildOfClass("Humanoid")
@@ -1333,6 +1389,11 @@ local function HDT_Dash(km)
     local st = tick()
     pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
     RunService:BindToRenderStep(HDT_BIND, Enum.RenderPriority.Last.Value + 1, function()
+        if IsPlayerKiller() then
+            HDT.debounce = false
+            pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
+            return
+        end
         if not HDT.debounce then
             pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
             return
@@ -1357,20 +1418,21 @@ local function HDT_Dash(km)
 end
 
 local function HDT_OnAnim(track)
-    if not HDT.enabled or HDT.debounce then return end
+    if not HDT.enabled or HDT.debounce or IsPlayerKiller() then return end   -- ⚡ killer-safe
     local id
     pcall(function() id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+") end)
     if not id or not HDT_ANIMS[id] then return end
     local k = HDT_NearestKiller()
     if not k then return end
     if HDT.delay > 0 then
-        task.delay(HDT.delay, function() if HDT.enabled and not HDT.debounce then HDT_Dash(k) end end)
+        task.delay(HDT.delay, function() if HDT.enabled and not HDT.debounce and not IsPlayerKiller() then HDT_Dash(k) end end)
     else
         HDT_Dash(k)
     end
 end
 
 local function HDT_TryAttach()
+    if IsPlayerKiller() then return end   -- ⚡ killer-safe
     local c = LP.Character; if not c then return end
     local h = c:FindFirstChildOfClass("Humanoid"); if not h then return end
     local an = h:FindFirstChildOfClass("Animator"); if not an then return end
@@ -1399,7 +1461,6 @@ local function HDT_StartWatcher()
         end)
     end
 end
-
 local function HDT_StopWatcher()
     HDT.enabled = false
     if HDT_WC then pcall(function() HDT_WC:Disconnect() end); HDT_WC = nil end
@@ -1411,15 +1472,22 @@ end
 
 local HDTL = Tabs.HDT:AddLeftGroupbox("HDT", "activity")
 HDTL:AddToggle("HDT_En_T", { Text = "Enable HDT", Default = false, Callback = function(v)
+    if v and IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "HDT disabled (you are Killer)", Time = 3})
+        pcall(function() Options.HDT_En_T:Set(false) end); return
+    end
     HDT.enabled = v
     if v then HDT_StartWatcher() else HDT_StopWatcher() end
 end })
 HDTL:AddSlider("HDT_Speed_S", { Text = "Speed", Default = 40, Min = 5, Max = 200, Rounding = 0, Callback = function(v) HDT.speed = v end })
 HDTL:AddSlider("HDT_Dur_S", { Text = "Duration (s)", Default = 0.6, Min = 0.05, Max = 3, Rounding = 3, Callback = function(v) HDT.duration = v end })
-HDTL:AddButton({ Text = "Force HDT Now", Func = function() local k = HDT_NearestKiller(); if k then HDT_Dash(k) end end })
+HDTL:AddButton({ Text = "Force HDT Now", Func = function()
+    if IsPlayerKiller() then return end
+    local k = HDT_NearestKiller(); if k then HDT_Dash(k) end
+end })
 
 --═══════════════════════════════════════════════════════════════════
--- VEE AUTO TRICK
+-- VEE AUTO TRICK (killer-safe)
 --═══════════════════════════════════════════════════════════════════
 local VeerState = { atRunning = false, atMonitors = {}, atConn = nil, atRetry = nil }
 
@@ -1428,8 +1496,8 @@ local function VeerGetSprintBtn()
     local m = ui:FindFirstChild("MainUI"); if not m then return nil end
     return m:FindFirstChild("SprintingButton", true)
 end
-
 local function VeerTriggerSprint()
+    if IsPlayerKiller() then return false end   -- ⚡ killer-safe
     local fired = false
     pcall(function()
         local btn = VeerGetSprintBtn(); if not btn then return end
@@ -1458,14 +1526,12 @@ local function VeerTriggerSprint()
     end)
     return fired
 end
-
 local function VeerATGetFolder()
     local a = ReplicatedStorage:FindFirstChild("Assets"); if not a then return nil end
     local s = a:FindFirstChild("Survivors"); if not s then return nil end
     local v = s:FindFirstChild("Veeronica"); if not v then return nil end
     return v:FindFirstChild("Behavior")
 end
-
 local function VeerATMonitor(h)
     if not h or VeerState.atMonitors[h] then return end
     local conns, prev = {}, false
@@ -1479,7 +1545,7 @@ local function VeerATMonitor(h)
         local ad = h.Adornee
         local ch = LP.Character
         local cur = (ad and ch and (ad == ch or ad:IsDescendantOf(ch))) and true or false
-        if cur and not prev then pcall(VeerTriggerSprint) end
+        if cur and not prev and not IsPlayerKiller() then pcall(VeerTriggerSprint) end   -- ⚡ killer-safe
         prev = cur
     end
     pcall(function() table.insert(conns, h:GetPropertyChangedSignal("Adornee"):Connect(check)) end)
@@ -1487,7 +1553,6 @@ local function VeerATMonitor(h)
     VeerState.atMonitors[h] = conns
     task.spawn(check)
 end
-
 local function VeerATAttach(f)
     if not f then return false end
     for _, o in ipairs(f:GetDescendants()) do
@@ -1503,9 +1568,8 @@ local function VeerATAttach(f)
     end
     return true
 end
-
 local function VeerATStart()
-    if VeerState.atRunning then return end
+    if VeerState.atRunning or IsPlayerKiller() then return end   -- ⚡ killer-safe
     VeerState.atRunning = true
     VeerATAttach(VeerATGetFolder())
     VeerState.atRetry = task.spawn(function()
@@ -1516,7 +1580,6 @@ local function VeerATStart()
         end
     end)
 end
-
 local function VeerATStop()
     if not VeerState.atRunning then return end
     VeerState.atRunning = false
@@ -1535,12 +1598,16 @@ VeeL:AddToggle("Vee_AT_T", {
     Text = "Auto Trick",
     Default = false,
     Callback = function(v)
+        if v and IsPlayerKiller() then
+            Library:Notify({Title = "Vortex", Description = "Vee disabled (you are Killer)", Time = 3})
+            pcall(function() Options.Vee_AT_T:Set(false) end); return
+        end
         if v then VeerATStart() else VeerATStop() end
     end,
 })
 
 --═══════════════════════════════════════════════════════════════════
--- SK8 (Control + Fast Spray)
+-- SK8 (killer-safe)
 --═══════════════════════════════════════════════════════════════════
 do
     local Sk8Player = LP
@@ -1580,7 +1647,6 @@ do
         if not Sk8Player or not Sk8Player.Character then return nil end
         return Sk8Player.Character:FindFirstChildOfClass("Humanoid")
     end
-
     local function sk8SaveHumState(hum)
         if not hum or sk8SavedHumState[hum] then return end
         local s = {}
@@ -1591,26 +1657,24 @@ do
         end)
         sk8SavedHumState[hum] = s
     end
-
     local function sk8RestoreHumState(hum)
         if not hum then return end
-        local s = sk8SavedHumState[hum]
-        if not s then return end
+        local s = sk8SavedHumState[hum]; if not s then return end
         pcall(function()
             if s.WalkSpeed ~= nil then hum.WalkSpeed = s.WalkSpeed end
             if s.AutoRotate ~= nil then pcall(function() hum.AutoRotate = s.AutoRotate end) end
         end)
         sk8SavedHumState[hum] = nil
     end
-
     local function sk8StartOverride()
-        if sk8ControlActive then return end
+        if sk8ControlActive or IsPlayerKiller() then return end   -- ⚡ killer-safe
         local hum = sk8GetHumanoid(); if not hum then return end
         sk8ControlActive = true
         sk8SaveHumState(hum)
         pcall(function() hum.WalkSpeed = SK8_DASH_SPEED; hum.AutoRotate = false end)
         sk8SetShiftlock(true)
         sk8OverrideConn = Sk8RunService.RenderStepped:Connect(function()
+            if IsPlayerKiller() then sk8StopOverride(); return end
             local humanoid = sk8GetHumanoid()
             local rootPart = humanoid and humanoid.Parent and humanoid.Parent:FindFirstChild("HumanoidRootPart")
             if not humanoid or not rootPart then return end
@@ -1620,7 +1684,6 @@ do
             if horizontal.Magnitude > 0 then humanoid:Move(horizontal.Unit) end
         end)
     end
-
     local function sk8StopOverride()
         if not sk8ControlActive then return end
         sk8ControlActive = false
@@ -1635,7 +1698,6 @@ do
             end)
         end
     end
-
     local function sk8DetectChargeAnim()
         local hum = sk8GetHumanoid(); if not hum then return false end
         for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
@@ -1650,7 +1712,7 @@ do
     end
 
     Sk8RunService.RenderStepped:Connect(function()
-        if not sk8ControlEnabled then
+        if not sk8ControlEnabled or IsPlayerKiller() then
             if sk8ControlActive then sk8StopOverride() end
             return
         end
@@ -1676,7 +1738,6 @@ do
     local sprayPhase = 0
     local sprayBaseCF = nil
     local spraySpeed = 4.5
-
     local function isSprayPainting()
         local char = Sk8Player.Character; if not char then return false end
         local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return false end
@@ -1690,7 +1751,7 @@ do
     end
 
     Sk8RunService.RenderStepped:Connect(function(dt)
-        if not veeFastSpray then sprayPhase = 0; sprayBaseCF = nil; return end
+        if not veeFastSpray or IsPlayerKiller() then sprayPhase = 0; sprayBaseCF = nil; return end
         if not isSprayPainting() then sprayPhase = 0; sprayBaseCF = nil; return end
         local char = Sk8Player.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -1701,18 +1762,24 @@ do
         hrp.CFrame = sprayBaseCF + (sprayBaseCF.LookVector * (-offset))
     end)
 
-    Sk8Player.CharacterAdded:Connect(function()
-        sprayPhase = 0; sprayBaseCF = nil
-    end)
+    Sk8Player.CharacterAdded:Connect(function() sprayPhase = 0; sprayBaseCF = nil end)
 
     local Sk8Tab = Tabs["Sk8"]
     local Sk8Left = Sk8Tab:AddLeftGroupbox("Main", "zap")
     local Sk8Right = Sk8Tab:AddRightGroupbox("Fast Spray", "brush")
     Sk8Left:AddToggle("Sk8Control", { Text = "Enable SK8 Control", Default = false, Callback = function(state)
+        if state and IsPlayerKiller() then
+            Library:Notify({Title = "Vortex", Description = "SK8 disabled (you are Killer)", Time = 3})
+            pcall(function() Options.Sk8Control:Set(false) end); return
+        end
         sk8ControlEnabled = state
         if not state and sk8ControlActive then sk8StopOverride() end
     end })
     Sk8Right:AddToggle("FastSpray", { Text = "Enable Fast Spray", Default = false, Callback = function(state)
+        if state and IsPlayerKiller() then
+            Library:Notify({Title = "Vortex", Description = "Fast Spray disabled (you are Killer)", Time = 3})
+            pcall(function() Options.FastSpray:Set(false) end); return
+        end
         veeFastSpray = state
         if not state then sprayPhase = 0; sprayBaseCF = nil end
     end })
@@ -1720,11 +1787,10 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- ACTION (Emotes + Player Animation)
+-- ACTION (Emotes + Player Animation — safe for both sides)
 --═══════════════════════════════════════════════════════════════════
 local EmotesGroup = Tabs.Action:AddLeftGroupbox("Emotes", "smile")
 local emState = { emoting = false, track = nil, spd = 16, jump = 50, rotConn = nil }
-
 local function emStop()
     if not emState.emoting then return end
     emState.emoting = false
@@ -1738,7 +1804,6 @@ local function emStop()
     end
     if emState.track then pcall(function() emState.track:Stop() end); emState.track = nil end
 end
-
 local function emPlay(mod)
     if emState.emoting then emStop(); task.wait(0.1) end
     local ch = LP.Character; if not ch then return end
@@ -1758,7 +1823,6 @@ local function emPlay(mod)
         snd.Parent = root; snd:Play()
     end
 end
-
 local emoteModules = {}
 local EmFolderPath = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("Emotes")
 if EmFolderPath then
@@ -1786,8 +1850,7 @@ local animationEntries = {}
 local function getAnimId(v) return v and tostring(v) or nil end
 local function collectBaseAnimations()
     baseAnimations = {}
-    local assets = ReplicatedStorage:FindFirstChild("Assets")
-    if not assets then return end
+    local assets = ReplicatedStorage:FindFirstChild("Assets"); if not assets then return end
     for _, roleType in ipairs({"Killers", "Survivors"}) do
         local folder = assets:FindFirstChild(roleType)
         if folder then
@@ -1829,22 +1892,17 @@ local animEntryNames = {}
 for _, entry in ipairs(animationEntries) do table.insert(animEntryNames, entry.Name) end
 local selectedEntry = animEntryNames[1] or ""
 PlayerAnimGroup:AddDropdown("SelectedEntry", { Text = "Select Animation", Values = animEntryNames, Default = selectedEntry, Callback = function(val) selectedEntry = val end })
-
 local currentTracks = {}
 local moveConn = nil
 local function stopAnimations()
     if moveConn then moveConn:Disconnect(); moveConn = nil end
-    for _, track in pairs(currentTracks) do
-        if track then track:Stop(); track:Destroy() end
-    end
+    for _, track in pairs(currentTracks) do if track then track:Stop(); track:Destroy() end end
     currentTracks = {}
 end
 local function applyAnimation()
     stopAnimations()
     local entry = nil
-    for _, e in ipairs(animationEntries) do
-        if e.Name == selectedEntry then entry = e; break end
-    end
+    for _, e in ipairs(animationEntries) do if e.Name == selectedEntry then entry = e; break end end
     if not entry then return end
     local char = LP.Character; if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return end
@@ -1855,8 +1913,7 @@ local function applyAnimation()
         local id = entry[animType]
         if id and id ~= "" then
             local anim = Instance.new("Animation"); anim.AnimationId = id
-            local track = animator:LoadAnimation(anim)
-            track.Priority = Enum.AnimationPriority.Movement
+            local track = animator:LoadAnimation(anim); track.Priority = Enum.AnimationPriority.Movement
             loaded[animType] = track
         end
     end
@@ -1881,7 +1938,7 @@ PlayerAnimGroup:AddButton("Refresh List", function() collectBaseAnimations(); bu
 LP.CharacterAdded:Connect(function() task.wait(0.5); if next(currentTracks) then stopAnimations() end end)
 
 --═══════════════════════════════════════════════════════════════════
--- MISC (Impersonate, Front Flip, Noclip, Fullbright)
+-- MISC
 --═══════════════════════════════════════════════════════════════════
 local ImpersonateGroup = Tabs.Misc:AddLeftGroupbox("Impersonate", "user")
 local victimName = "Roblox"
@@ -2008,6 +2065,61 @@ UtilityGroupMisc:AddButton({ Text = "Reset Character", Func = function()
 end })
 
 --═══════════════════════════════════════════════════════════════════
+-- KILLER WATCHDOG — auto-disables survivor features on killer spawn
+--═══════════════════════════════════════════════════════════════════
+task.spawn(function()
+    local wasKiller = false
+    while not _ShuttingDown do
+        task.wait(0.5)
+        local nowKiller = IsPlayerKiller()
+        if nowKiller and not wasKiller then
+            -- Force-disable all survivor-only features
+            if _G.AutoBlockEnabled then
+                _G.AutoBlockEnabled = false
+                pcall(function() Options.AutoBlockToggle:Set(false) end)
+            end
+            if HDT.enabled then
+                HDT_StopWatcher()
+                pcall(function() Options.HDT_En_T:Set(false) end)
+            end
+            if stabState.enabled then
+                stabState.enabled = false
+                pcall(function() Options.EnableStabLerp:Set(false) end)
+            end
+            if NA.active then
+                NA.active = false
+                pcall(function() Options.SA_En_T:Set(false) end)
+            end
+            if elliot.enabled then
+                elliot_stop()
+                pcall(function() Options.Ell_En_T:Set(false) end)
+            end
+            if chance.enabled then
+                chance.enabled = false
+                if chance.bodyGyro and chance.bodyGyro.Parent then chance.bodyGyro:Destroy() end
+                chance.bodyGyro = nil
+                pcall(function() Options.Ch_En_T:Set(false) end)
+            end
+            if jd.enabled or jd.aimbotOn then
+                jd.enabled = false; jd.aimbotOn = false
+                jd_removePatch()
+                pcall(function() Options.Jane_En_T:Set(false) end)
+            end
+            if dusekkar.enabled then
+                dusekkar.enabled = false
+                pcall(function() Options.Dusk_En_T:Set(false) end)
+            end
+            if VeerState.atRunning then
+                VeerATStop()
+                pcall(function() Options.Vee_AT_T:Set(false) end)
+            end
+            Library:Notify({Title = "Vortex", Description = "Survivor features disabled (Killer detected)", Time = 4})
+        end
+        wasKiller = nowKiller
+    end
+end)
+
+--═══════════════════════════════════════════════════════════════════
 -- UI SETTINGS
 --═══════════════════════════════════════════════════════════════════
 local MenuG = Tabs["UI Settings"]:AddLeftGroupbox("Menu", "wrench")
@@ -2049,7 +2161,7 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function() _ShuttingDown = true; print("[Vortex] Unloaded") end)
 Library:Notify({
     Title = "Vortex Hub",
-    Description = "Name-filtered AB + Generator + Aim + Silent Aim + HDT + Vee",
+    Description = "Killer-safe build — fling bug fixed",
     Time = 5,
 })
-print("[Vortex Hub] Loaded")
+print("[Vortex Hub] Loaded (killer-safe)")
