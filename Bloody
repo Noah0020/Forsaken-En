@@ -1,9 +1,10 @@
 --═══════════════════════════════════════════════════════════════════
--- Vortex Hub — Final
---   • Block: Sound+Anim ID filtered (loaded from killer Config/Behavior)
---            → box verified → fires Block
---   • Killer-safe: all survivor features skip when playing Killer
---   • Generator / Stab / HDT / Aim / Silent Aim / Vee / Sk8 / Action / Misc
+-- Vortex Hub — Final Build
+--   • Auto Block: 4-layer fastest detection (PreRender + getconnections
+--     + sound/anim + attribute), killer-safe, W/L/H independent
+--   • Killer-safe: every survivor feature guarded + watchdog
+--   • Generator: Full 4-minigame solver
+--   • Aim / Silent Aim / HDT / Vee / Sk8 / Stab / ESP / Action / Misc
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -239,7 +240,309 @@ ESPR:AddToggle("ESP_Wall_T", { Text = "Wall Check", Default = false, Callback = 
 ESPR:AddSlider("ESP_MaxDist_S", { Text = "Max Distance", Default = 150, Min = 50, Max = 500, Rounding = 0, Callback = function(v) ESPSettings.ESP_MaxDist = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- SHARED AIM UTILITIES (extractAnimIds used by Block too)
+-- GENERATOR SOLVER
+--═══════════════════════════════════════════════════════════════════
+local GenConfig = { StartDelay = 1.5, ActionDelay = 0.05, ConnectDelay = 1.0, GearDelay = 0.03 }
+local MinigameSolver = { Enabled = false, Generation = 0, LockBoard = nil, Installed = false }
+local function genSolverDelay() return math.max(0, GenConfig.ActionDelay or 0.05) end
+local function genConnectDelay() return math.max(0, GenConfig.ConnectDelay or 1.0) end
+local function genIsEnabled() return MinigameSolver.Enabled == true end
+local function genStillSolving(token, object)
+    return genIsEnabled() and token == MinigameSolver.Generation and object and not object.Ended
+end
+local function genWaitForSolver(object)
+    while object and not object.Ended and not genIsEnabled() do task.wait(0.05) end
+    if not (object and not object.Ended and genIsEnabled()) then return false end
+    local started = os.clock()
+    while object and not object.Ended and genIsEnabled() and os.clock() - started < GenConfig.StartDelay do
+        task.wait(0.05)
+    end
+    return object and not object.Ended and genIsEnabled()
+end
+
+local function solveFlowBoard(board, FlowBoardModule)
+    if not board or not FlowBoardModule then return nil end
+    local size, pairMap = board.Size, board.Pairs
+    if type(size) ~= "number" or type(pairMap) ~= "table" then return nil end
+    local occupied, answer = {}, {}
+    local directions = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} }
+    local endpointOwner = {}
+    for color, pair in pairs(pairMap) do
+        endpointOwner[pair[1]] = color; endpointOwner[pair[2]] = color
+    end
+    local remaining = {}
+    for color in pairs(pairMap) do table.insert(remaining, color) end
+    local function candidates(color, limit)
+        local pair = pairMap[color]
+        local from, target = pair[1], pair[2]
+        local results, path, seen = {}, {from}, {[from] = true}
+        local function distance(cell)
+            local r, c = FlowBoardModule.ToRowCol(size, cell)
+            local tr, tc = FlowBoardModule.ToRowCol(size, target)
+            return math.abs(r - tr) + math.abs(c - tc)
+        end
+        local function walk(cell)
+            if #results >= limit then return end
+            if cell == target then table.insert(results, table.clone(path)); return end
+            local row, col = FlowBoardModule.ToRowCol(size, cell)
+            local nextCells = {}
+            for _, d in ipairs(directions) do
+                local nr, nc = row + d[1], col + d[2]
+                if nr >= 1 and nr <= size and nc >= 1 and nc <= size then
+                    local n = FlowBoardModule.ToIndex(size, nr, nc)
+                    local owner = endpointOwner[n]
+                    if not seen[n] and not occupied[n] and (not owner or (owner == color and n == target)) then
+                        table.insert(nextCells, n)
+                    end
+                end
+            end
+            table.sort(nextCells, function(a, b) return distance(a) < distance(b) end)
+            for _, n in ipairs(nextCells) do
+                seen[n] = true; table.insert(path, n); walk(n)
+                path[#path] = nil; seen[n] = nil
+                if #results >= limit then break end
+            end
+        end
+        walk(from)
+        table.sort(results, function(a, b) return #a < #b end)
+        return results
+    end
+    local function search(colors)
+        if #colors == 0 then return true end
+        local bestIndex, bestPaths
+        for i, color in ipairs(colors) do
+            local list = candidates(color, 300)
+            if #list == 0 then return false end
+            if not bestPaths or #list < #bestPaths then bestIndex, bestPaths = i, list end
+        end
+        local color = colors[bestIndex]
+        local nextColors = table.clone(colors)
+        table.remove(nextColors, bestIndex)
+        for _, path in ipairs(bestPaths) do
+            for _, cell in ipairs(path) do occupied[cell] = true end
+            answer[color] = path
+            if search(nextColors) then return true end
+            answer[color] = nil
+            for _, cell in ipairs(path) do occupied[cell] = nil end
+        end
+        return false
+    end
+    return search(remaining) and answer or nil
+end
+
+local function installMinigameHooks()
+    if MinigameSolver.Installed then return end
+    MinigameSolver.Installed = true
+    local ok, err = pcall(function()
+        local MinigameFolder = ReplicatedStorage.Systems.Player.Game.Minigames
+        local FlowBoardModule = require(ReplicatedStorage.Modules.Minigames.FlowBoard)
+        local LockBoardModule = require(ReplicatedStorage.Modules.Minigames.LockBoard)
+        local FlowInputModule = require(MinigameFolder.FlowClientMinigame.FlowInput)
+        local GearInputModule = require(MinigameFolder.GearClientMinigame.GearInput)
+        local LockInputModule = require(MinigameFolder.LockClientMinigame.LockInput)
+        local ConnectInputModule = require(MinigameFolder.ConnectClientMinigame.ConnectInput)
+
+        local oldLockBoardNew = LockBoardModule.new
+        LockBoardModule.new = function(...)
+            local board = oldLockBoardNew(...)
+            MinigameSolver.LockBoard = board
+            return board
+        end
+        local oldFlowNew = FlowInputModule.new
+        FlowInputModule.new = function(board, renderer, callbacks)
+            local object = oldFlowNew(board, renderer, callbacks)
+            local token = MinigameSolver.Generation
+            task.spawn(function()
+                if not genWaitForSolver(object) then return end
+                task.wait(genSolverDelay())
+                local paths = solveFlowBoard(board, FlowBoardModule)
+                if not paths then warn("[Vortex] Flow not found"); return end
+                for _, path in pairs(paths) do
+                    if not genStillSolving(token, object) then return end
+                    local drawing = board:Begin(path[1])
+                    renderer:Render(); task.wait(genSolverDelay())
+                    for i = 2, #path do
+                        if not genStillSolving(token, object) then return end
+                        board:Step(drawing, path[i], 0)
+                        renderer:Render(); task.wait(genSolverDelay())
+                    end
+                    board:Release(drawing, true)
+                    renderer:Render(); task.wait(genSolverDelay())
+                end
+                if genStillSolving(token, object) and board:IsSolved() then
+                    object:__finish()
+                    if callbacks and callbacks.OnSolved then callbacks.OnSolved() end
+                end
+            end)
+            return object
+        end
+        local oldConnectNew = ConnectInputModule.new
+        ConnectInputModule.new = function(board, renderer, callbacks)
+            local object = oldConnectNew(board, renderer, callbacks)
+            local token = MinigameSolver.Generation
+            task.spawn(function()
+                if not genWaitForSolver(object) then return end
+                task.wait(genConnectDelay())
+                if not board.Blobs then return end
+                for blob in pairs(board.Blobs) do
+                    if not genStillSolving(token, object) then return end
+                    if not board:GetLink(blob) then
+                        local mate = board:GetMate(blob)
+                        if mate then
+                            board:Connect(blob, mate)
+                            renderer:Render(); task.wait(genConnectDelay())
+                        end
+                    end
+                end
+                if genStillSolving(token, object) and board:IsSolved() then
+                    object:__finish()
+                    if callbacks and callbacks.OnSolved then callbacks.OnSolved() end
+                end
+            end)
+            return object
+        end
+        local oldGearNew = GearInputModule.new
+        GearInputModule.new = function(getCenter, callbacks, enabled)
+            local object = oldGearNew(getCenter, callbacks, enabled)
+            local token = MinigameSolver.Generation
+            task.spawn(function()
+                if not genWaitForSolver(object) then return end
+                task.wait(math.max(0.55, genSolverDelay()))
+                for _ = 1, 100 do
+                    if not genStillSolving(token, object) then return end
+                    if callbacks and callbacks.OnTurn then callbacks.OnTurn(90) end
+                    task.wait(math.max(0, GenConfig.GearDelay or 0.03))
+                end
+            end)
+            return object
+        end
+        local oldLockNew = LockInputModule.new
+        LockInputModule.new = function(ui, callbacks)
+            local object = oldLockNew(ui, callbacks)
+            local board = MinigameSolver.LockBoard
+            local token = MinigameSolver.Generation
+            task.spawn(function()
+                if not genWaitForSolver(object) then return end
+                while genStillSolving(token, object) and board and not board:IsBroken() do
+                    local now = workspace:GetServerTimeNow()
+                    if board:IsOnTarget(board:AngleAt(now)) then
+                        if callbacks and callbacks.OnPress then callbacks.OnPress() end
+                        task.wait(math.max(0.08, genSolverDelay()))
+                    else RunService.Heartbeat:Wait() end
+                end
+            end)
+            return object
+        end
+    end)
+    if not ok then warn("[Vortex Gen] " .. tostring(err)) end
+end
+pcall(installMinigameHooks)
+
+local genLeft = Tabs.Generator:AddLeftGroupbox("Auto Solver", "zap")
+local genRight = Tabs.Generator:AddRightGroupbox("Timing Settings", "sliders")
+genLeft:AddToggle("AutoGenerator", {
+    Text = "Auto Generator (All Minigames)", Default = false,
+    Callback = function(v)
+        MinigameSolver.Enabled = v
+        MinigameSolver.Generation += 1
+        if v then pcall(installMinigameHooks) end
+    end
+})
+genRight:AddSlider("GenStartDelay", { Text = "Start Delay (s)", Default = 1.5, Min = 0, Max = 5, Rounding = 2, Callback = function(v) GenConfig.StartDelay = v end })
+genRight:AddSlider("GenFlowDelay", { Text = "Flow Cell Speed (ms)", Default = 50, Min = 0, Max = 250, Rounding = 0, Callback = function(v) GenConfig.ActionDelay = v / 1000 end })
+genRight:AddSlider("GenConnectDelay", { Text = "Connect Pair Delay (ms)", Default = 1000, Min = 100, Max = 3000, Rounding = 0, Callback = function(v) GenConfig.ConnectDelay = v / 1000 end })
+genRight:AddSlider("GenGearDelay", { Text = "Gear Turn Speed (ms)", Default = 30, Min = 0, Max = 150, Rounding = 0, Callback = function(v) GenConfig.GearDelay = v / 1000 end })
+
+--═══════════════════════════════════════════════════════════════════
+-- PLAYER (Speed / Flight / Stamina)
+--═══════════════════════════════════════════════════════════════════
+local SpeedGroup = Tabs.Player:AddLeftGroupbox("Speed", "bolt")
+local FlightGroup = Tabs.Player:AddLeftGroupbox("Flight", "plane")
+local speedEnabled = false
+local speedValue = 16
+SpeedGroup:AddToggle("SpeedToggle", { Text = "Enable Speed", Default = false, Callback = function(v)
+    speedEnabled = v
+    if v then
+        task.spawn(function()
+            while speedEnabled do
+                local char = LP.Character
+                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                if humanoid and humanoid.MoveDirection.Magnitude > 0 then
+                    char:TranslateBy(humanoid.MoveDirection * speedValue * RunService.RenderStepped:Wait())
+                end
+                task.wait()
+            end
+        end)
+    end
+end })
+SpeedGroup:AddSlider("SpeedValue", { Text = "Speed", Default = 16, Min = 1, Max = 500, Rounding = 0, Callback = function(v) speedValue = v end })
+
+local flightEnabled = false
+local flightSpeed = 50
+local flightLoop = nil
+local function startFlight()
+    local char = LP.Character; if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local head = char:FindFirstChild("Head")
+    if not humanoid or not head then return end
+    humanoid.PlatformStand = true; head.Anchored = true
+    if flightLoop then flightLoop:Disconnect() end
+    flightLoop = RunService.Heartbeat:Connect(function(dt)
+        if not char or not char.Parent then
+            if flightLoop then flightLoop:Disconnect(); flightLoop = nil end
+            return
+        end
+        local md = humanoid.MoveDirection * (flightSpeed * dt)
+        local cam = Workspace.CurrentCamera
+        local headCF = head.CFrame; local camCF = cam.CFrame
+        local off = headCF:ToObjectSpace(camCF).Position
+        camCF = camCF * CFrame.new(-off.X, -off.Y, -off.Z + 1)
+        local cp = camCF.Position; local hp = headCF.Position
+        local ov = CFrame.new(cp, Vector3.new(hp.X, cp.Y, hp.Z)):VectorToObjectSpace(md)
+        head.CFrame = CFrame.new(hp) * (camCF - cp) * CFrame.new(ov)
+    end)
+end
+local function stopFlight()
+    if flightLoop then flightLoop:Disconnect(); flightLoop = nil end
+    local char = LP.Character
+    if char then
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        local head = char:FindFirstChild("Head")
+        if humanoid then humanoid.PlatformStand = false end
+        if head then head.Anchored = false end
+    end
+end
+FlightGroup:AddToggle("FlightToggle", { Text = "Enable Flight", Default = false, Callback = function(v)
+    flightEnabled = v
+    if v then startFlight() else stopFlight() end
+end })
+FlightGroup:AddSlider("FlightSpeed", { Text = "Flight Speed", Default = 50, Min = 1, Max = 200, Rounding = 0, Callback = function(v) flightSpeed = v end })
+
+local StaminaTabbox = Tabs.Player:AddRightTabbox()
+local MVP = StaminaTabbox:AddTab("Stamina")
+local bai = {Spr = false}
+local staminaConn
+MVP:AddToggle("InfiniteStamina", { Text = "Infinite Stamina", Default = false, Callback = function(state)
+    bai.Spr = state
+    local ok, Sprinting = pcall(function()
+        return require(ReplicatedStorage:WaitForChild("Systems"):WaitForChild("Character"):WaitForChild("Game"):WaitForChild("Sprinting"))
+    end)
+    if not ok then return end
+    if state then
+        Sprinting.StaminaLoss = 0; Sprinting.StaminaGain = 9999
+        if staminaConn then staminaConn:Disconnect() end
+        staminaConn = RunService.Heartbeat:Connect(function()
+            if not bai.Spr then return end
+            Sprinting.StaminaLoss = 0; Sprinting.StaminaGain = 9999
+        end)
+    else
+        Sprinting.StaminaLoss = 10; Sprinting.StaminaGain = 25
+        if staminaConn then staminaConn:Disconnect(); staminaConn = nil end
+    end
+end })
+
+--═══════════════════════════════════════════════════════════════════
+-- SHARED AIM UTILITIES
 --═══════════════════════════════════════════════════════════════════
 local _velHistory = setmetatable({}, {__mode = "k"})
 local function getHRPVelocity(hrp)
@@ -268,18 +571,6 @@ local function predictHRP(hrp, lead)
     return hrp.Position + vel * (lead or 0.2)
 end
 
-local function extractAnimIds(v)
-    local o = {}
-    if type(v) == "string" or type(v) == "number" then
-        local id = tostring(v):match("%d+"); if id then table.insert(o, id) end
-    elseif type(v) == "table" then
-        for _, x in pairs(v) do
-            for _, id in ipairs(extractAnimIds(x)) do table.insert(o, id) end
-        end
-    end
-    return o
-end
-
 local STUN_ABILITY_NAMES = {
     Slash=true, OneShot=true, ["One Shot"]=true, Shoot=true, AimGun=true,
     GunFire=true, GunExplode=true, GunFail=true, ["Sacrificial Dagger"]=true,
@@ -294,6 +585,15 @@ local STATIC_STUN_ANIM_IDS = {
 }
 local STUN_ANIM_IDS, STUN_SOUND_IDS = {}, {}
 
+local function extractAnimIds(v)
+    local o = {}
+    if type(v) == "string" or type(v) == "number" then
+        local id = tostring(v):match("%d+"); if id then table.insert(o, id) end
+    elseif type(v) == "table" then
+        for _, x in pairs(v) do for _, id in ipairs(extractAnimIds(x)) do table.insert(o, id) end end
+    end
+    return o
+end
 local function isStunName(n)
     if type(n) ~= "string" then return false end
     if STUN_ABILITY_NAMES[n] then return true end
@@ -420,24 +720,31 @@ local function HardLockFacing(dur, wantCam, predLead)
     local savedWS = hum.WalkSpeed
     hum.WalkSpeed = 0; hum.AutoRotate = false
     pcall(function() hum:Move(Vector3.zero, false) end)
-    local startT = tick(); local conn; local released = false
+    local startT = tick()
+    local conn; local released = false
     local function release()
         if released then return end
         released = true
         if conn then pcall(function() conn:Disconnect() end); conn = nil end
         if not (hum and hum.Parent) then return end
-        pcall(function() hum.WalkSpeed = savedWS; hum.AutoRotate = true; hum:Move(Vector3.zero, false) end)
+        pcall(function()
+            hum.WalkSpeed = savedWS; hum.AutoRotate = true
+            hum:Move(Vector3.zero, false)
+        end)
     end
     conn = RunService.RenderStepped:Connect(function()
         if IsPlayerKiller() then release(); return end
         if not char.Parent or not hrp.Parent or not hum.Parent then release(); return end
         if tick() - startT > (dur or 0.5) then release(); return end
-        local t = GetNearestKillerHrp(); if not t or not t.Parent then return end
+        local t = GetNearestKillerHrp()
+        if not t or not t.Parent then return end
         local aim = predictHRP(t, predLead or 0.2) or t.Position
         hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(aim.X, hrp.Position.Y, aim.Z))
     end)
     if wantCam then
-        local cam = Workspace.CurrentCamera; local camStart = tick(); local camConn
+        local cam = Workspace.CurrentCamera
+        local camStart = tick()
+        local camConn
         camConn = RunService.RenderStepped:Connect(function()
             if not cam or tick() - camStart > (dur or 0.5) then
                 pcall(function() camConn:Disconnect() end); return
@@ -452,9 +759,10 @@ local function HardLockFacing(dur, wantCam, predLead)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- AIM TAB (Survivor Aim + Elliot + Chance)
+-- AIM TAB
 --═══════════════════════════════════════════════════════════════════
 local NA = { active = false, animConn = nil, soundConns = {}, lockTime = 0.7, prediction = 4, mode = "Character" }
+
 local function fireStunAim(track)
     if not NA.active or IsPlayerKiller() then return end
     local dur = NA.lockTime or math.max(0.5, (track and track.Length or 0.8) + 0.15)
@@ -462,6 +770,7 @@ local function fireStunAim(track)
         HardLockFacing(dur, NA.mode == "Camera" or NA.mode == "Both", (NA.prediction or 4) * 0.05)
     end)
 end
+
 local function AttachAnimWatcher(char)
     if NA.animConn then pcall(function() NA.animConn:Disconnect() end); NA.animConn = nil end
     local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
@@ -473,6 +782,7 @@ local function AttachAnimWatcher(char)
         if STUN_ANIM_IDS[aid] then fireStunAim(track) end
     end)
 end
+
 local function AttachSoundWatcher(char)
     for _, c in ipairs(NA.soundConns) do pcall(function() c:Disconnect() end) end
     NA.soundConns = {}
@@ -493,6 +803,7 @@ local function AttachSoundWatcher(char)
     for _, d in ipairs(char:GetDescendants()) do hook(d) end
     table.insert(NA.soundConns, char.DescendantAdded:Connect(function(d) hook(d) end))
 end
+
 local function OnCharSpawn(char)
     if not char or char ~= LP.Character then return end
     task.spawn(function()
@@ -696,7 +1007,7 @@ AimCh:AddDropdown("Ch_Behav_DD", { Text = "Behavior", Values = {"Normal", "360"}
 AimCh:AddToggle("Ch_Hold_T", { Text = "Hold-to-Aim (Q)", Default = true, Callback = function(v) chance.holdToAim = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- SILENT AIM (Jane + Dusekkar)
+-- SILENT AIM
 --═══════════════════════════════════════════════════════════════════
 local jd = { enabled = false, aimbotOn = false, patched = false, aimOffset = -0.3, prediction = 0.6 }
 local function jd_applyPatch()
@@ -731,6 +1042,7 @@ local function jd_removePatch()
     if not jd.patched then return end
     rfDispatch:unregister("jd"); jd.patched = false
 end
+
 local dusekkar = { enabled = false, prediction = 0.12, aimOffset = 0.0 }
 if NetworkRF then
     rfDispatch:register("plasma", function(reqName, ...)
@@ -741,6 +1053,7 @@ if NetworkRF then
         return t.Position + vel * dusekkar.prediction + Vector3.new(0, dusekkar.aimOffset, 0)
     end)
 end
+
 local JaneL = Tabs["Silent Aim"]:AddLeftGroupbox("Jane Doe", "crosshair")
 JaneL:AddToggle("Jane_En_T", { Text = "Enable Jane Aimbot", Default = false, Callback = function(v)
     if v and IsPlayerKiller() then
@@ -752,12 +1065,13 @@ end })
 JaneL:AddToggle("Jane_Aim_T", { Text = "Silent Aim (Crystal)", Default = false, Callback = function(v) jd.aimbotOn = v; if v then jd_applyPatch() end end })
 JaneL:AddSlider("Jane_Pred_S", { Text = "Prediction (s)", Default = 0.6, Min = 0, Max = 2, Rounding = 2, Callback = function(v) jd.prediction = v end })
 JaneL:AddSlider("Jane_Off_S", { Text = "Aim Offset (Y)", Default = -0.3, Min = -5, Max = 5, Rounding = 1, Callback = function(v) jd.aimOffset = v end })
+
 local DuskL = Tabs["Silent Aim"]:AddRightGroupbox("Dusekkar", "zap")
 DuskL:AddToggle("Dusk_En_T", { Text = "Enable PlasmaBeam Silent Aim", Default = false, Callback = function(v) dusekkar.enabled = v end })
 DuskL:AddSlider("Dusk_Pred_S", { Text = "Prediction (s)", Default = 0.12, Min = 0, Max = 0.5, Rounding = 2, Callback = function(v) dusekkar.prediction = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- BLOCK — Sound+Anim ID filtered (loads from killer Config/Behavior)
+-- BLOCK — 4-layer fastest detection, killer-safe
 --═══════════════════════════════════════════════════════════════════
 _G.HitboxWidth = 5
 _G.HitboxHeight = 6
@@ -776,6 +1090,7 @@ _G.BlockAbilityNames = {
     "PERFORATING", "LACERATE", "EVISCERATE", "CARVING SLASH",
     "STAB", "TAG", "SLASH", "ENRAGED SLASH",
 }
+
 local BLOCK_NAMES_LOWER = {}
 for _, n in ipairs(_G.BlockAbilityNames) do BLOCK_NAMES_LOWER[n:lower()] = true end
 
@@ -845,8 +1160,13 @@ scanAllKillerAssets()
 
 local function shouldBlockAbility(name)
     if type(name) ~= "string" or name == "" then return false end
-    return nameMatchesBlock(name)
+    local upper = string.upper(name)
+    for _, bn in ipairs(_G.BlockAbilityNames) do
+        if string.find(upper, string.upper(bn), 1, true) then return true end
+    end
+    return false
 end
+
 local function getAbilityName(killer)
     if not killer then return nil end
     for _, attr in ipairs({"AbilityName", "LastAbility", "CurrentAbility", "LastAbilityName", "AbilityUsed", "Ability", "CurrentAttack"}) do
@@ -903,11 +1223,84 @@ local function triggerBoxCheck(killer)
     if IsPlayerKiller() then return end
     if not killer or killer == LP.Character or not killer.Parent then return end
     local now = tick()
-    if now - lastTrigger < 0.05 then return end
+    if now - lastTrigger < 0.03 then return end
     lastTrigger = now
     createSpatialOverlapBox(killer, Vector3.new(_G.HitboxWidth, _G.HitboxHeight, _G.HitboxLength), FireBlockBuffer)
 end
 
+-- LAYER 1: PreRender per-frame attribute poll
+local AB_poll = {
+    lastAbility = setmetatable({}, {__mode = "k"}),
+    lastUsed = setmetatable({}, {__mode = "k"}),
+}
+RunService.PreRender:Connect(function()
+    if not _G.AutoBlockEnabled or IsPlayerKiller() then return end
+    local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+    if not kf then return end
+    for _, k in ipairs(kf:GetChildren()) do
+        if k:IsA("Model") and k ~= LP.Character then
+            local cur = k:GetAttribute("AbilityLastUsed") or 0
+            local prev = AB_poll.lastAbility[k] or 0
+            if cur > prev then
+                AB_poll.lastAbility[k] = cur
+                local curU = k:GetAttribute("AbilitiesUsed") or 0
+                local prevU = AB_poll.lastUsed[k] or 0
+                AB_poll.lastUsed[k] = curU
+                if curU == prevU then triggerBoxCheck(k) end
+            end
+        end
+    end
+end)
+
+-- LAYER 2: RemoteEvent OnClientEvent getconnections wrap
+local remoteHooked = false
+local function hookAbilityRemote()
+    if remoteHooked then return end
+    remoteHooked = true
+    local remote = getNetworkEvent()
+    if not remote then return end
+    local function argMatches(arg)
+        if type(arg) == "string" then return shouldBlockAbility(arg) end
+        if typeof(arg) == "buffer" then
+            local ok, str = pcall(buffer.tostring, arg)
+            if ok and str then return shouldBlockAbility(str) end
+        end
+        return false
+    end
+    local function fireOnMatch(...)
+        for _, arg in ipairs({...}) do
+            if argMatches(arg) then
+                local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+                if kf then
+                    for _, k in ipairs(kf:GetChildren()) do
+                        if k:IsA("Model") and k ~= LP.Character then triggerBoxCheck(k); return end
+                    end
+                end
+                return
+            end
+        end
+    end
+    if getconnections then
+        local ok, conns = pcall(getconnections, remote.OnClientEvent)
+        if ok and conns then
+            for _, conn in pairs(conns) do
+                pcall(function()
+                    local orig = conn.Function
+                    if not orig then return end
+                    conn.Function = function(...)
+                        if _G.AutoBlockEnabled and not IsPlayerKiller() then fireOnMatch(...) end
+                        return orig(...)
+                    end
+                end)
+            end
+        end
+    end
+    remote.OnClientEvent:Connect(function(...)
+        if _G.AutoBlockEnabled and not IsPlayerKiller() then fireOnMatch(...) end
+    end)
+end
+
+-- LAYER 3: Per-killer sound/anim hooks
 local hookedKillers = {}
 local function hookKillerM1(killer)
     if not killer or hookedKillers[killer] or not killer:IsA("Model") then return end
@@ -934,6 +1327,7 @@ local function hookKillerM1(killer)
     killer.DescendantAdded:Connect(function(d) hookSound(d) end)
 end
 
+-- LAYER 4: Attribute changed signals
 local monitoredKillers = {}
 local function monitorKiller(killer)
     if not killer or monitoredKillers[killer] or not killer:IsA("Model") then return end
@@ -960,38 +1354,9 @@ local function monitorKiller(killer)
     end
 end
 
-local remoteHooked = false
-local function hookAbilityRemote()
-    if remoteHooked then return end
-    remoteHooked = true
-    local remote = getNetworkEvent(); if not remote then return end
-    local function argMatches(arg)
-        if type(arg) == "string" then return shouldBlockAbility(arg) end
-        if typeof(arg) == "buffer" then
-            local ok, str = pcall(buffer.tostring, arg)
-            if ok and str then return shouldBlockAbility(str) end
-        end
-        return false
-    end
-    remote.OnClientEvent:Connect(function(...)
-        if not _G.AutoBlockEnabled or IsPlayerKiller() then return end
-        for _, arg in ipairs({...}) do
-            if argMatches(arg) then
-                local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
-                if kf then
-                    for _, k in ipairs(kf:GetChildren()) do
-                        if k:IsA("Model") and k ~= LP.Character then triggerBoxCheck(k); break end
-                    end
-                end
-                break
-            end
-        end
-    end)
-end
-
 task.spawn(function()
     while true do
-        task.wait(1)
+        task.wait(0.25)
         if _G.AutoBlockEnabled and not IsPlayerKiller() then
             local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
             if kf then
@@ -1017,6 +1382,7 @@ end
 
 local BlockLeft = Tabs.Block:AddLeftGroupbox("Auto Block", "shield")
 local BlockRight = Tabs.Block:AddRightGroupbox("Hitbox Settings", "sliders")
+
 BlockLeft:AddToggle("AutoBlockToggle", { Text = "Enable AutoBlock", Default = false, Callback = function(v)
     if v and IsPlayerKiller() then
         Library:Notify({Title = "Vortex", Description = "Auto-Block disabled (you are Killer)", Time = 3})
@@ -1027,9 +1393,9 @@ end })
 BlockLeft:AddSlider("HitboxTransparency", { Text = "Transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 2, Callback = function(v) _G.HitboxTransparency = v end })
 BlockLeft:AddLabel("Hitbox Color"):AddColorPicker("HitboxColor", { Default = _G.HitboxColor, Title = "Hitbox Color", Callback = function(c) _G.HitboxColor = c end })
 
-BlockRight:AddSlider("HitboxWidth",  { Text = "Width (X)",  Default = 5,  Min = 1,  Max = 30, Rounding = 0, Callback = function(v) _G.HitboxWidth = v end })
-BlockRight:AddSlider("HitboxHeight", { Text = "Height (Y)", Default = 6,  Min = 1,  Max = 30, Rounding = 0, Callback = function(v) _G.HitboxHeight = v end })
-BlockRight:AddSlider("HitboxLength", { Text = "Length (Z)", Default = 8,  Min = 1,  Max = 30, Rounding = 0, Callback = function(v) _G.HitboxLength = v end })
+BlockRight:AddSlider("HitboxWidth",  { Text = "Width (X)",  Default = 5, Min = 1, Max = 30, Rounding = 0, Callback = function(v) _G.HitboxWidth = v end })
+BlockRight:AddSlider("HitboxHeight", { Text = "Height (Y)", Default = 6, Min = 1, Max = 30, Rounding = 0, Callback = function(v) _G.HitboxHeight = v end })
+BlockRight:AddSlider("HitboxLength", { Text = "Length (Z)", Default = 8, Min = 1, Max = 30, Rounding = 0, Callback = function(v) _G.HitboxLength = v end })
 BlockRight:AddSlider("HitboxOffset", { Text = "Offset (Z)", Default = -1, Min = -10, Max = 0, Rounding = 0, Callback = function(v) _G.HitboxOffset = v end })
 BlockRight:AddSlider("HitboxDuration", { Text = "Duration", Default = 2, Min = 0, Max = 5, Rounding = 0, Callback = function(v) _G.HitboxDuration = v end })
 BlockRight:AddSlider("BlockDelay", { Text = "Block Delay", Default = 0, Min = 0, Max = 1, Rounding = 2, Callback = function(v) _G.BlockDelay = v end })
@@ -1040,6 +1406,7 @@ BlockRight:AddSlider("BlockDelay", { Text = "Block Delay", Default = 0, Min = 0,
 local STAB_ANIM_IDS = { ["100725497418533"] = true, ["89448354637442"] = true }
 local STAB_SPEED_MAX = 6
 local stabState = { enabled = false, behindStuds = 4, lerpDuration = 0.4, lerpSpeed = STAB_SPEED_MAX, cooldown = 0.6, lastStab = 0 }
+
 local function getClosestKillerForStab()
     local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
     if not kf then return nil end
@@ -1058,9 +1425,11 @@ local function getClosestKillerForStab()
     end
     return closest
 end
+
 local function runStabLerp()
     if not stabState.enabled or IsPlayerKiller() then return end
-    local now = tick(); if now - stabState.lastStab < stabState.cooldown then return end
+    local now = tick()
+    if now - stabState.lastStab < stabState.cooldown then return end
     stabState.lastStab = now
     local char = LP.Character; if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart"); if not hrp then return end
@@ -1083,6 +1452,7 @@ local function runStabLerp()
         hrp.CFrame = kr.CFrame * CFrame.new(0, 0, stabState.behindStuds)
     end
 end
+
 local function hookStabCharacter(character)
     local hum = character:WaitForChild("Humanoid", 10); if not hum then return end
     local an = hum:WaitForChild("Animator", 5); if not an then return end
@@ -1121,10 +1491,12 @@ local HDT_ANIMS = {
     ["100926346851492"] = true,
 }
 local HDT_WC, HDT_CH, HDT_RT, HDT_CA = nil, nil, nil, nil
+
 local function HDT_NearestKiller()
     local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
     if not kf then return nil end
-    local c = LP.Character; local mr = c and c:FindFirstChild("HumanoidRootPart")
+    local c = LP.Character
+    local mr = c and c:FindFirstChild("HumanoidRootPart")
     if not mr then return nil end
     local best, bd = nil, math.huge
     for _, k in ipairs(kf:GetChildren()) do
@@ -1138,11 +1510,13 @@ local function HDT_NearestKiller()
     end
     return best
 end
+
 local function HDT_Dash(km)
     if IsPlayerKiller() then return end
     if HDT.debounce or not km or km == LP.Character or not km.Parent then return end
     local c = LP.Character; if not c then return end
-    local hrp = c:FindFirstChild("HumanoidRootPart"); local h = c:FindFirstChildOfClass("Humanoid")
+    local hrp = c:FindFirstChild("HumanoidRootPart")
+    local h = c:FindFirstChildOfClass("Humanoid")
     if not hrp or not h then return end
     local kr = km:FindFirstChild("HumanoidRootPart") or km.PrimaryPart
     if not kr then return end
@@ -1153,14 +1527,22 @@ local function HDT_Dash(km)
     local st = tick()
     pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
     RunService:BindToRenderStep(HDT_BIND, Enum.RenderPriority.Last.Value + 1, function()
-        if IsPlayerKiller() then HDT.debounce = false; pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end); return end
-        if not HDT.debounce then pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end); return end
+        if IsPlayerKiller() then
+            HDT.debounce = false
+            pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
+            return
+        end
+        if not HDT.debounce then
+            pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
+            return
+        end
         if not c.Parent or not km.Parent or not h.Parent then HDT.debounce = false; return end
         local t = km:FindFirstChild("HumanoidRootPart")
         if not t then HDT.debounce = false; return end
         local flat = Vector3.new(t.Position.X - hrp.Position.X, 0, t.Position.Z - hrp.Position.Z)
         if flat.Magnitude <= 2 then HDT.debounce = false; return end
-        h.WalkSpeed = HDT.speed; h:Move(flat.Unit, false)
+        h.WalkSpeed = HDT.speed
+        h:Move(flat.Unit, false)
         if tick() - st > HDT.duration then HDT.debounce = false end
     end)
     task.delay(HDT.duration + 0.2, function() if HDT.debounce then HDT.debounce = false end end)
@@ -1172,16 +1554,21 @@ local function HDT_Dash(km)
         end
     end)
 end
+
 local function HDT_OnAnim(track)
     if not HDT.enabled or HDT.debounce or IsPlayerKiller() then return end
     local id
     pcall(function() id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+") end)
     if not id or not HDT_ANIMS[id] then return end
-    local k = HDT_NearestKiller(); if not k then return end
+    local k = HDT_NearestKiller()
+    if not k then return end
     if HDT.delay > 0 then
         task.delay(HDT.delay, function() if HDT.enabled and not HDT.debounce and not IsPlayerKiller() then HDT_Dash(k) end end)
-    else HDT_Dash(k) end
+    else
+        HDT_Dash(k)
+    end
 end
+
 local function HDT_TryAttach()
     if IsPlayerKiller() then return end
     local c = LP.Character; if not c then return end
@@ -1192,6 +1579,7 @@ local function HDT_TryAttach()
     HDT_CA = an
     HDT_WC = an.AnimationPlayed:Connect(function(track) pcall(HDT_OnAnim, track) end)
 end
+
 local function HDT_StartWatcher()
     if not HDT.enabled then return end
     HDT_TryAttach()
@@ -1219,6 +1607,7 @@ local function HDT_StopWatcher()
     HDT_CA = nil; HDT.debounce = false
     pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
 end
+
 local HDTL = Tabs.HDT:AddLeftGroupbox("HDT", "activity")
 HDTL:AddToggle("HDT_En_T", { Text = "Enable HDT", Default = false, Callback = function(v)
     if v and IsPlayerKiller() then
@@ -1239,6 +1628,7 @@ end })
 -- VEE AUTO TRICK
 --═══════════════════════════════════════════════════════════════════
 local VeerState = { atRunning = false, atMonitors = {}, atConn = nil, atRetry = nil }
+
 local function VeerGetSprintBtn()
     local ui = LP:FindFirstChild("PlayerGui"); if not ui then return nil end
     local m = ui:FindFirstChild("MainUI"); if not m then return nil end
@@ -1290,7 +1680,8 @@ local function VeerATMonitor(h)
             VeerState.atMonitors[h] = nil
             return
         end
-        local ad = h.Adornee; local ch = LP.Character
+        local ad = h.Adornee
+        local ch = LP.Character
         local cur = (ad and ch and (ad == ch or ad:IsDescendantOf(ch))) and true or false
         if cur and not prev and not IsPlayerKiller() then pcall(VeerTriggerSprint) end
         prev = cur
@@ -1339,301 +1730,32 @@ local function VeerATStop()
     end
     VeerState.atMonitors = {}
 end
+
 local VeeL = Tabs.Vee:AddLeftGroupbox("Vee (Veeronica)", "gamepad-2")
-VeeL:AddToggle("Vee_AT_T", { Text = "Auto Trick", Default = false, Callback = function(v)
-    if v and IsPlayerKiller() then
-        Library:Notify({Title = "Vortex", Description = "Vee disabled (you are Killer)", Time = 3})
-        pcall(function() Options.Vee_AT_T:Set(false) end); return
-    end
-    if v then VeerATStart() else VeerATStop() end
-end })
-
---═══════════════════════════════════════════════════════════════════
--- GENERATOR SOLVER
---═══════════════════════════════════════════════════════════════════
-local GenConfig = { StartDelay = 1.5, ActionDelay = 0.05, ConnectDelay = 1.0, GearDelay = 0.03 }
-local MinigameSolver = { Enabled = false, Generation = 0, LockBoard = nil, Installed = false }
-local function genSolverDelay() return math.max(0, GenConfig.ActionDelay or 0.05) end
-local function genConnectDelay() return math.max(0, GenConfig.ConnectDelay or 1.0) end
-local function genIsEnabled() return MinigameSolver.Enabled == true end
-local function genStillSolving(token, object)
-    return genIsEnabled() and token == MinigameSolver.Generation and object and not object.Ended
-end
-local function genWaitForSolver(object)
-    while object and not object.Ended and not genIsEnabled() do task.wait(0.05) end
-    if not (object and not object.Ended and genIsEnabled()) then return false end
-    local started = os.clock()
-    while object and not object.Ended and genIsEnabled() and os.clock() - started < GenConfig.StartDelay do
-        task.wait(0.05)
-    end
-    return object and not object.Ended and genIsEnabled()
-end
-local function solveFlowBoard(board, FlowBoardModule)
-    if not board or not FlowBoardModule then return nil end
-    local size, pairMap = board.Size, board.Pairs
-    if type(size) ~= "number" or type(pairMap) ~= "table" then return nil end
-    local occupied, answer = {}, {}
-    local directions = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} }
-    local endpointOwner = {}
-    for color, pair in pairs(pairMap) do
-        endpointOwner[pair[1]] = color; endpointOwner[pair[2]] = color
-    end
-    local remaining = {}
-    for color in pairs(pairMap) do table.insert(remaining, color) end
-    local function candidates(color, limit)
-        local pair = pairMap[color]; local from, target = pair[1], pair[2]
-        local results, path, seen = {}, {from}, {[from] = true}
-        local function distance(cell)
-            local r, c = FlowBoardModule.ToRowCol(size, cell)
-            local tr, tc = FlowBoardModule.ToRowCol(size, target)
-            return math.abs(r - tr) + math.abs(c - tc)
+VeeL:AddToggle("Vee_AT_T", {
+    Text = "Auto Trick",
+    Default = false,
+    Callback = function(v)
+        if v and IsPlayerKiller() then
+            Library:Notify({Title = "Vortex", Description = "Vee disabled (you are Killer)", Time = 3})
+            pcall(function() Options.Vee_AT_T:Set(false) end); return
         end
-        local function walk(cell)
-            if #results >= limit then return end
-            if cell == target then table.insert(results, table.clone(path)); return end
-            local row, col = FlowBoardModule.ToRowCol(size, cell)
-            local nextCells = {}
-            for _, d in ipairs(directions) do
-                local nr, nc = row + d[1], col + d[2]
-                if nr >= 1 and nr <= size and nc >= 1 and nc <= size then
-                    local n = FlowBoardModule.ToIndex(size, nr, nc)
-                    local owner = endpointOwner[n]
-                    if not seen[n] and not occupied[n] and (not owner or (owner == color and n == target)) then
-                        table.insert(nextCells, n)
-                    end
-                end
-            end
-            table.sort(nextCells, function(a, b) return distance(a) < distance(b) end)
-            for _, n in ipairs(nextCells) do
-                seen[n] = true; table.insert(path, n); walk(n)
-                path[#path] = nil; seen[n] = nil
-                if #results >= limit then break end
-            end
-        end
-        walk(from)
-        table.sort(results, function(a, b) return #a < #b end)
-        return results
-    end
-    local function search(colors)
-        if #colors == 0 then return true end
-        local bestIndex, bestPaths
-        for i, color in ipairs(colors) do
-            local list = candidates(color, 300)
-            if #list == 0 then return false end
-            if not bestPaths or #list < #bestPaths then bestIndex, bestPaths = i, list end
-        end
-        local color = colors[bestIndex]
-        local nextColors = table.clone(colors)
-        table.remove(nextColors, bestIndex)
-        for _, path in ipairs(bestPaths) do
-            for _, cell in ipairs(path) do occupied[cell] = true end
-            answer[color] = path
-            if search(nextColors) then return true end
-            answer[color] = nil
-            for _, cell in ipairs(path) do occupied[cell] = nil end
-        end
-        return false
-    end
-    return search(remaining) and answer or nil
-end
-local function installMinigameHooks()
-    if MinigameSolver.Installed then return end
-    MinigameSolver.Installed = true
-    local ok, err = pcall(function()
-        local MinigameFolder = ReplicatedStorage.Systems.Player.Game.Minigames
-        local FlowBoardModule = require(ReplicatedStorage.Modules.Minigames.FlowBoard)
-        local LockBoardModule = require(ReplicatedStorage.Modules.Minigames.LockBoard)
-        local FlowInputModule = require(MinigameFolder.FlowClientMinigame.FlowInput)
-        local GearInputModule = require(MinigameFolder.GearClientMinigame.GearInput)
-        local LockInputModule = require(MinigameFolder.LockClientMinigame.LockInput)
-        local ConnectInputModule = require(MinigameFolder.ConnectClientMinigame.ConnectInput)
-        local oldLockBoardNew = LockBoardModule.new
-        LockBoardModule.new = function(...)
-            local board = oldLockBoardNew(...); MinigameSolver.LockBoard = board; return board
-        end
-        local oldFlowNew = FlowInputModule.new
-        FlowInputModule.new = function(board, renderer, callbacks)
-            local object = oldFlowNew(board, renderer, callbacks)
-            local token = MinigameSolver.Generation
-            task.spawn(function()
-                if not genWaitForSolver(object) then return end
-                task.wait(genSolverDelay())
-                local paths = solveFlowBoard(board, FlowBoardModule)
-                if not paths then warn("[Vortex] Flow not found"); return end
-                for _, path in pairs(paths) do
-                    if not genStillSolving(token, object) then return end
-                    local drawing = board:Begin(path[1]); renderer:Render(); task.wait(genSolverDelay())
-                    for i = 2, #path do
-                        if not genStillSolving(token, object) then return end
-                        board:Step(drawing, path[i], 0); renderer:Render(); task.wait(genSolverDelay())
-                    end
-                    board:Release(drawing, true); renderer:Render(); task.wait(genSolverDelay())
-                end
-                if genStillSolving(token, object) and board:IsSolved() then
-                    object:__finish(); if callbacks and callbacks.OnSolved then callbacks.OnSolved() end
-                end
-            end)
-            return object
-        end
-        local oldConnectNew = ConnectInputModule.new
-        ConnectInputModule.new = function(board, renderer, callbacks)
-            local object = oldConnectNew(board, renderer, callbacks)
-            local token = MinigameSolver.Generation
-            task.spawn(function()
-                if not genWaitForSolver(object) then return end
-                task.wait(genConnectDelay())
-                if not board.Blobs then return end
-                for blob in pairs(board.Blobs) do
-                    if not genStillSolving(token, object) then return end
-                    if not board:GetLink(blob) then
-                        local mate = board:GetMate(blob)
-                        if mate then board:Connect(blob, mate); renderer:Render(); task.wait(genConnectDelay()) end
-                    end
-                end
-                if genStillSolving(token, object) and board:IsSolved() then
-                    object:__finish(); if callbacks and callbacks.OnSolved then callbacks.OnSolved() end
-                end
-            end)
-            return object
-        end
-        local oldGearNew = GearInputModule.new
-        GearInputModule.new = function(getCenter, callbacks, enabled)
-            local object = oldGearNew(getCenter, callbacks, enabled)
-            local token = MinigameSolver.Generation
-            task.spawn(function()
-                if not genWaitForSolver(object) then return end
-                task.wait(math.max(0.55, genSolverDelay()))
-                for _ = 1, 100 do
-                    if not genStillSolving(token, object) then return end
-                    if callbacks and callbacks.OnTurn then callbacks.OnTurn(90) end
-                    task.wait(math.max(0, GenConfig.GearDelay or 0.03))
-                end
-            end)
-            return object
-        end
-        local oldLockNew = LockInputModule.new
-        LockInputModule.new = function(ui, callbacks)
-            local object = oldLockNew(ui, callbacks)
-            local board = MinigameSolver.LockBoard
-            local token = MinigameSolver.Generation
-            task.spawn(function()
-                if not genWaitForSolver(object) then return end
-                while genStillSolving(token, object) and board and not board:IsBroken() do
-                    local now = workspace:GetServerTimeNow()
-                    if board:IsOnTarget(board:AngleAt(now)) then
-                        if callbacks and callbacks.OnPress then callbacks.OnPress() end
-                        task.wait(math.max(0.08, genSolverDelay()))
-                    else RunService.Heartbeat:Wait() end
-                end
-            end)
-            return object
-        end
-    end)
-    if not ok then warn("[Vortex Gen] " .. tostring(err)) end
-end
-pcall(installMinigameHooks)
-local genLeft = Tabs.Generator:AddLeftGroupbox("Auto Solver", "zap")
-local genRight = Tabs.Generator:AddRightGroupbox("Timing Settings", "sliders")
-genLeft:AddToggle("AutoGenerator", { Text = "Auto Generator (All Minigames)", Default = false, Callback = function(v)
-    MinigameSolver.Enabled = v
-    MinigameSolver.Generation += 1
-    if v then pcall(installMinigameHooks) end
-end })
-genRight:AddSlider("GenStartDelay", { Text = "Start Delay (s)", Default = 1.5, Min = 0, Max = 5, Rounding = 2, Callback = function(v) GenConfig.StartDelay = v end })
-genRight:AddSlider("GenFlowDelay", { Text = "Flow Cell Speed (ms)", Default = 50, Min = 0, Max = 250, Rounding = 0, Callback = function(v) GenConfig.ActionDelay = v / 1000 end })
-genRight:AddSlider("GenConnectDelay", { Text = "Connect Pair Delay (ms)", Default = 1000, Min = 100, Max = 3000, Rounding = 0, Callback = function(v) GenConfig.ConnectDelay = v / 1000 end })
-genRight:AddSlider("GenGearDelay", { Text = "Gear Turn Speed (ms)", Default = 30, Min = 0, Max = 150, Rounding = 0, Callback = function(v) GenConfig.GearDelay = v / 1000 end })
-
---═══════════════════════════════════════════════════════════════════
--- PLAYER (Speed / Flight / Stamina)
---═══════════════════════════════════════════════════════════════════
-local SpeedGroup = Tabs.Player:AddLeftGroupbox("Speed", "bolt")
-local FlightGroup = Tabs.Player:AddLeftGroupbox("Flight", "plane")
-local speedEnabled = false
-local speedValue = 16
-SpeedGroup:AddToggle("SpeedToggle", { Text = "Enable Speed", Default = false, Callback = function(v)
-    speedEnabled = v
-    if v then
-        task.spawn(function()
-            while speedEnabled do
-                local char = LP.Character
-                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-                if humanoid and humanoid.MoveDirection.Magnitude > 0 then
-                    char:TranslateBy(humanoid.MoveDirection * speedValue * RunService.RenderStepped:Wait())
-                end
-                task.wait()
-            end
-        end)
-    end
-end })
-SpeedGroup:AddSlider("SpeedValue", { Text = "Speed", Default = 16, Min = 1, Max = 500, Rounding = 0, Callback = function(v) speedValue = v end })
-local flightEnabled = false
-local flightSpeed = 50
-local flightLoop = nil
-local function startFlight()
-    local char = LP.Character; if not char then return end
-    local humanoid = char:FindFirstChildOfClass("Humanoid"); local head = char:FindFirstChild("Head")
-    if not humanoid or not head then return end
-    humanoid.PlatformStand = true; head.Anchored = true
-    if flightLoop then flightLoop:Disconnect() end
-    flightLoop = RunService.Heartbeat:Connect(function(dt)
-        if not char or not char.Parent then
-            if flightLoop then flightLoop:Disconnect(); flightLoop = nil end
-            return
-        end
-        local md = humanoid.MoveDirection * (flightSpeed * dt)
-        local cam = Workspace.CurrentCamera; local headCF = head.CFrame; local camCF = cam.CFrame
-        local off = headCF:ToObjectSpace(camCF).Position
-        camCF = camCF * CFrame.new(-off.X, -off.Y, -off.Z + 1)
-        local cp = camCF.Position; local hp = headCF.Position
-        local ov = CFrame.new(cp, Vector3.new(hp.X, cp.Y, hp.Z)):VectorToObjectSpace(md)
-        head.CFrame = CFrame.new(hp) * (camCF - cp) * CFrame.new(ov)
-    end)
-end
-local function stopFlight()
-    if flightLoop then flightLoop:Disconnect(); flightLoop = nil end
-    local char = LP.Character
-    if char then
-        local humanoid = char:FindFirstChildOfClass("Humanoid"); local head = char:FindFirstChild("Head")
-        if humanoid then humanoid.PlatformStand = false end
-        if head then head.Anchored = false end
-    end
-end
-FlightGroup:AddToggle("FlightToggle", { Text = "Enable Flight", Default = false, Callback = function(v)
-    flightEnabled = v
-    if v then startFlight() else stopFlight() end
-end })
-FlightGroup:AddSlider("FlightSpeed", { Text = "Flight Speed", Default = 50, Min = 1, Max = 200, Rounding = 0, Callback = function(v) flightSpeed = v end })
-local StaminaTabbox = Tabs.Player:AddRightTabbox()
-local MVP = StaminaTabbox:AddTab("Stamina")
-local bai = {Spr = false}
-local staminaConn
-MVP:AddToggle("InfiniteStamina", { Text = "Infinite Stamina", Default = false, Callback = function(state)
-    bai.Spr = state
-    local ok, Sprinting = pcall(function()
-        return require(ReplicatedStorage:WaitForChild("Systems"):WaitForChild("Character"):WaitForChild("Game"):WaitForChild("Sprinting"))
-    end)
-    if not ok then return end
-    if state then
-        Sprinting.StaminaLoss = 0; Sprinting.StaminaGain = 9999
-        if staminaConn then staminaConn:Disconnect() end
-        staminaConn = RunService.Heartbeat:Connect(function()
-            if not bai.Spr then return end
-            Sprinting.StaminaLoss = 0; Sprinting.StaminaGain = 9999
-        end)
-    else
-        Sprinting.StaminaLoss = 10; Sprinting.StaminaGain = 25
-        if staminaConn then staminaConn:Disconnect(); staminaConn = nil end
-    end
-end })
+        if v then VeerATStart() else VeerATStop() end
+    end,
+})
 
 --═══════════════════════════════════════════════════════════════════
 -- SK8
 --═══════════════════════════════════════════════════════════════════
 do
-    local Sk8Player = LP; local Sk8Workspace = Workspace; local Sk8RunService = RunService
-    local Sk8UserInputService = UserInputService; local sk8Camera = Sk8Workspace.CurrentCamera
-    local sk8ShiftlockEnabled = false; local sk8ShiftConn = nil
+    local Sk8Player = LP
+    local Sk8Workspace = Workspace
+    local Sk8RunService = RunService
+    local Sk8UserInputService = UserInputService
+    local sk8Camera = Sk8Workspace.CurrentCamera
+    local sk8ShiftlockEnabled = false
+    local sk8ShiftConn = nil
+
     local function sk8SetShiftlock(state)
         sk8ShiftlockEnabled = state
         if sk8ShiftConn then sk8ShiftConn:Disconnect(); sk8ShiftConn = nil end
@@ -1647,12 +1769,18 @@ do
                     root.CFrame = CFrame.new(root.Position, Vector3.new(camCF.LookVector.X + root.Position.X, root.Position.Y, camCF.LookVector.Z + root.Position.Z))
                 end
             end)
-        else Sk8UserInputService.MouseBehavior = Enum.MouseBehavior.Default end
+        else
+            Sk8UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        end
     end
+
     local sk8ChargeAnimIds = { "117058860640843" }
     local SK8_DASH_SPEED = 60
-    local sk8ControlEnabled = false; local sk8ControlActive = false
-    local sk8OverrideConn = nil; local sk8SavedHumState = {}
+    local sk8ControlEnabled = false
+    local sk8ControlActive = false
+    local sk8OverrideConn = nil
+    local sk8SavedHumState = {}
+
     local function sk8GetHumanoid()
         if not Sk8Player or not Sk8Player.Character then return nil end
         return Sk8Player.Character:FindFirstChildOfClass("Humanoid")
@@ -1679,7 +1807,8 @@ do
     local function sk8StartOverride()
         if sk8ControlActive or IsPlayerKiller() then return end
         local hum = sk8GetHumanoid(); if not hum then return end
-        sk8ControlActive = true; sk8SaveHumState(hum)
+        sk8ControlActive = true
+        sk8SaveHumState(hum)
         pcall(function() hum.WalkSpeed = SK8_DASH_SPEED; hum.AutoRotate = false end)
         sk8SetShiftlock(true)
         sk8OverrideConn = Sk8RunService.RenderStepped:Connect(function()
@@ -1701,7 +1830,9 @@ do
         local hum = sk8GetHumanoid()
         if hum then
             pcall(function()
-                sk8RestoreHumState(hum); hum.AutoRotate = true; hum:Move(Vector3.new(0, 0, 0))
+                sk8RestoreHumState(hum)
+                hum.AutoRotate = true
+                hum:Move(Vector3.new(0, 0, 0))
             end)
         end
     end
@@ -1717,6 +1848,7 @@ do
         end
         return false
     end
+
     Sk8RunService.RenderStepped:Connect(function()
         if not sk8ControlEnabled or IsPlayerKiller() then
             if sk8ControlActive then sk8StopOverride() end
@@ -1733,12 +1865,17 @@ do
             if sk8ControlActive then sk8StopOverride() end
         end
     end)
+
     Sk8Player.CharacterAdded:Connect(function()
         if sk8ShiftConn then sk8ShiftConn:Disconnect(); sk8ShiftConn = nil end
         sk8SavedHumState = {}
     end)
+
     local SPRAY_ANIM_ID = "96618767275101"
-    local veeFastSpray = false; local sprayPhase = 0; local sprayBaseCF = nil; local spraySpeed = 4.5
+    local veeFastSpray = false
+    local sprayPhase = 0
+    local sprayBaseCF = nil
+    local spraySpeed = 4.5
     local function isSprayPainting()
         local char = Sk8Player.Character; if not char then return false end
         local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return false end
@@ -1750,6 +1887,7 @@ do
         end
         return false
     end
+
     Sk8RunService.RenderStepped:Connect(function(dt)
         if not veeFastSpray or IsPlayerKiller() then sprayPhase = 0; sprayBaseCF = nil; return end
         if not isSprayPainting() then sprayPhase = 0; sprayBaseCF = nil; return end
@@ -1761,7 +1899,9 @@ do
         local offset = math.sin(sprayPhase) * 2
         hrp.CFrame = sprayBaseCF + (sprayBaseCF.LookVector * (-offset))
     end)
+
     Sk8Player.CharacterAdded:Connect(function() sprayPhase = 0; sprayBaseCF = nil end)
+
     local Sk8Tab = Tabs["Sk8"]
     local Sk8Left = Sk8Tab:AddLeftGroupbox("Main", "zap")
     local Sk8Right = Sk8Tab:AddRightGroupbox("Fast Spray", "brush")
@@ -1785,7 +1925,7 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- ACTION (Emotes + Player Animation)
+-- ACTION
 --═══════════════════════════════════════════════════════════════════
 local EmotesGroup = Tabs.Action:AddLeftGroupbox("Emotes", "smile")
 local emState = { emoting = false, track = nil, spd = 16, jump = 50, rotConn = nil }
@@ -1843,7 +1983,8 @@ EmotesGroup:AddButton("Stop Emote", function() emStop() end)
 LP.CharacterAdded:Connect(function() task.wait(0.5); if emState.emoting then emStop() end end)
 
 local PlayerAnimGroup = Tabs.Action:AddRightGroupbox("Player Animation", "user")
-local baseAnimations = {}; local animationEntries = {}
+local baseAnimations = {}
+local animationEntries = {}
 local function getAnimId(v) return v and tostring(v) or nil end
 local function collectBaseAnimations()
     baseAnimations = {}
@@ -1870,7 +2011,8 @@ local function collectBaseAnimations()
     end
 end
 local function buildUniqueList()
-    animationEntries = {}; local seen = {}
+    animationEntries = {}
+    local seen = {}
     local function addEntry(name, idle, walk, run)
         local key = idle .. "|" .. walk .. "|" .. run
         if not seen[key] then
@@ -1882,12 +2024,14 @@ local function buildUniqueList()
         addEntry(data.DisplayName or charName, data.Idle or "", data.Walk or "", data.Run or "")
     end
 end
-collectBaseAnimations(); buildUniqueList()
+collectBaseAnimations()
+buildUniqueList()
 local animEntryNames = {}
 for _, entry in ipairs(animationEntries) do table.insert(animEntryNames, entry.Name) end
 local selectedEntry = animEntryNames[1] or ""
 PlayerAnimGroup:AddDropdown("SelectedEntry", { Text = "Select Animation", Values = animEntryNames, Default = selectedEntry, Callback = function(val) selectedEntry = val end })
-local currentTracks = {}; local moveConn = nil
+local currentTracks = {}
+local moveConn = nil
 local function stopAnimations()
     if moveConn then moveConn:Disconnect(); moveConn = nil end
     for _, track in pairs(currentTracks) do if track then track:Stop(); track:Destroy() end end
@@ -1973,13 +2117,17 @@ ImpersonateGroup:AddButton({ Text = "Impersonate Player", Func = function()
         Library:Notify({Title = "Success", Description = "Impersonated " .. (displayName or victimName), Time = 3})
     end)
 end })
+
 local FlipGroupMisc = Tabs.Misc:AddLeftGroupbox("Front Flip", "rotate-cw")
-local ffEnabled = false; local jumpHeight = 72; local jumpDistance = 35
+local ffEnabled = false
+local jumpHeight = 72
+local jumpDistance = 35
 local function flip()
     if ffEnabled then return end
     ffEnabled = true
     local char = LP.Character; if not char then ffEnabled = false; return end
-    local hrp = char:FindFirstChild("HumanoidRootPart"); local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then ffEnabled = false; return end
     hum:ChangeState(Enum.HumanoidStateType.Physics)
     for _, state in ipairs({Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Freefall, Enum.HumanoidStateType.Running, Enum.HumanoidStateType.Seated, Enum.HumanoidStateType.Climbing}) do
@@ -2006,6 +2154,7 @@ local function flip()
     end)
 end
 FlipGroupMisc:AddButton({ Text = "Front Flip", Func = flip })
+
 local UtilityGroupMisc = Tabs.Misc:AddRightGroupbox("Utility", "wrench")
 local _noclipConn = nil
 local function setNoclip(v)
@@ -2028,6 +2177,7 @@ local function setNoclip(v)
     _noclipConn = LP.CharacterAdded:Connect(apply)
 end
 UtilityGroupMisc:AddToggle("Noclip_T", { Text = "Noclip", Default = false, Callback = function(v) setNoclip(v) end })
+
 local _savedLight = nil
 local function setFullbright(v)
     if v then
@@ -2061,11 +2211,26 @@ task.spawn(function()
         task.wait(0.5)
         local nowKiller = IsPlayerKiller()
         if nowKiller and not wasKiller then
-            if _G.AutoBlockEnabled then _G.AutoBlockEnabled = false; pcall(function() Options.AutoBlockToggle:Set(false) end) end
-            if HDT.enabled then HDT_StopWatcher(); pcall(function() Options.HDT_En_T:Set(false) end) end
-            if stabState.enabled then stabState.enabled = false; pcall(function() Options.EnableStabLerp:Set(false) end) end
-            if NA.active then NA.active = false; pcall(function() Options.SA_En_T:Set(false) end) end
-            if elliot.enabled then elliot_stop(); pcall(function() Options.Ell_En_T:Set(false) end) end
+            if _G.AutoBlockEnabled then
+                _G.AutoBlockEnabled = false
+                pcall(function() Options.AutoBlockToggle:Set(false) end)
+            end
+            if HDT.enabled then
+                HDT_StopWatcher()
+                pcall(function() Options.HDT_En_T:Set(false) end)
+            end
+            if stabState.enabled then
+                stabState.enabled = false
+                pcall(function() Options.EnableStabLerp:Set(false) end)
+            end
+            if NA.active then
+                NA.active = false
+                pcall(function() Options.SA_En_T:Set(false) end)
+            end
+            if elliot.enabled then
+                elliot_stop()
+                pcall(function() Options.Ell_En_T:Set(false) end)
+            end
             if chance.enabled then
                 chance.enabled = false
                 if chance.bodyGyro and chance.bodyGyro.Parent then chance.bodyGyro:Destroy() end
@@ -2073,11 +2238,18 @@ task.spawn(function()
                 pcall(function() Options.Ch_En_T:Set(false) end)
             end
             if jd.enabled or jd.aimbotOn then
-                jd.enabled = false; jd.aimbotOn = false; jd_removePatch()
+                jd.enabled = false; jd.aimbotOn = false
+                jd_removePatch()
                 pcall(function() Options.Jane_En_T:Set(false) end)
             end
-            if dusekkar.enabled then dusekkar.enabled = false; pcall(function() Options.Dusk_En_T:Set(false) end) end
-            if VeerState.atRunning then VeerATStop(); pcall(function() Options.Vee_AT_T:Set(false) end) end
+            if dusekkar.enabled then
+                dusekkar.enabled = false
+                pcall(function() Options.Dusk_En_T:Set(false) end)
+            end
+            if VeerState.atRunning then
+                VeerATStop()
+                pcall(function() Options.Vee_AT_T:Set(false) end)
+            end
             Library:Notify({Title = "Vortex", Description = "Survivor features disabled (Killer detected)", Time = 4})
         end
         wasKiller = nowKiller
@@ -2126,7 +2298,7 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function() _ShuttingDown = true; print("[Vortex] Unloaded") end)
 Library:Notify({
     Title = "Vortex Hub",
-    Description = "Sound/Anim filtered auto-block · Killer-safe · All systems ready",
+    Description = "4-layer auto-block loaded — fastest detection",
     Time = 5,
 })
-print("[Vortex Hub] Loaded (final)")
+print("[Vortex Hub] Loaded (4-layer block)")
