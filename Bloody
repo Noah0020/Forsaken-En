@@ -120,7 +120,7 @@ LP.CharacterAdded:Connect(function(c)
 end)
 
 --═══════════════════════════════════════════════════════════════════
--- NETWORK (non-blocking RF install — FIX #4)
+-- NETWORK
 --═══════════════════════════════════════════════════════════════════
 local NetworkEvent
 do
@@ -168,28 +168,71 @@ function rfDispatch:uninstall(rf)
     self.installed = false; self.activeRemote = nil
 end
 
--- FIX: non-blocking RF install so script doesn't hang 10s
+--═══════════════════════════════════════════════════════════════════
+-- PATCH #1: NetworkRF — synchronous lookup + async fallback
+--═══════════════════════════════════════════════════════════════════
 local NetworkRF = nil
-task.spawn(function()
-    for _ = 1, 20 do
-        local ok, rf = pcall(function()
-            return ReplicatedStorage:FindFirstChild("Modules")
-                and ReplicatedStorage.Modules:FindFirstChild("Network")
-                and ReplicatedStorage.Modules.Network:FindFirstChild("Network")
-                and ReplicatedStorage.Modules.Network.Network:FindFirstChild("RemoteFunction")
-        end)
-        if ok and rf then
-            NetworkRF = rf
-            pcall(function() rfDispatch:install(rf) end)
-            print("[Cupcake] NetworkRF installed")
-            break
-        end
-        task.wait(0.5)
+local _pendingRFRegisters = {}
+
+local function registerRFWhenReady(id, hookFunc)
+    if NetworkRF then
+        rfDispatch:register(id, hookFunc)
+        return
     end
-end)
+    table.insert(_pendingRFRegisters, {id = id, func = hookFunc})
+    task.spawn(function()
+        for _ = 1, 40 do
+            task.wait(0.25)
+            if NetworkRF then break end
+        end
+        if NetworkRF then
+            for _, pending in ipairs(_pendingRFRegisters) do
+                rfDispatch:register(pending.id, pending.func)
+            end
+            _pendingRFRegisters = {}
+        end
+    end)
+end
+
+do
+    local ok, rf = pcall(function()
+        return ReplicatedStorage:FindFirstChild("Modules")
+            and ReplicatedStorage.Modules:FindFirstChild("Network")
+            and ReplicatedStorage.Modules.Network:FindFirstChild("Network")
+            and ReplicatedStorage.Modules.Network.Network:FindFirstChild("RemoteFunction")
+    end)
+    if ok and rf then
+        NetworkRF = rf
+        rfDispatch:install(rf)
+        print("[Cupcake] NetworkRF installed synchronously")
+    else
+        task.spawn(function()
+            for _ = 1, 40 do
+                task.wait(0.25)
+                local ok2, rf2 = pcall(function()
+                    return ReplicatedStorage:FindFirstChild("Modules")
+                        and ReplicatedStorage.Modules:FindFirstChild("Network")
+                        and ReplicatedStorage.Modules.Network:FindFirstChild("Network")
+                        and ReplicatedStorage.Modules.Network.Network:FindFirstChild("RemoteFunction")
+                end)
+                if ok2 and rf2 then
+                    NetworkRF = rf2
+                    rfDispatch:install(rf2)
+                    print("[Cupcake] NetworkRF installed async")
+                    for _, pending in ipairs(_pendingRFRegisters) do
+                        rfDispatch:register(pending.id, pending.func)
+                    end
+                    _pendingRFRegisters = {}
+                    return
+                end
+            end
+            print("[Cupcake] WARNING: NetworkRF never appeared — silent aim disabled")
+        end)
+    end
+end
 
 --═══════════════════════════════════════════════════════════════════
--- VELOCITY TRACKING (fixed prediction)
+-- VELOCITY TRACKING
 --═══════════════════════════════════════════════════════════════════
 local _velHistory = setmetatable({}, {__mode = "k"})
 local _VEL_SMOOTH = 6
@@ -308,7 +351,7 @@ local function LoadAbilityIds(char)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- AUTO PARRY (defined BEFORE UI)
+-- AUTO PARRY
 --═══════════════════════════════════════════════════════════════════
 local ParrySounds = {}
 for _, id in ipairs({102808968188291,114975236395509,116616310968045,117828699507982,
@@ -1021,33 +1064,39 @@ local function jd_buildCamCF(myHRP, kHRP, v0, g)
     end)
     return ok and result or nil
 end
+
+--═══════════════════════════════════════════════════════════════════
+-- PATCH #2: jd_applyPatch uses registerRFWhenReady
+--═══════════════════════════════════════════════════════════════════
+local function jd_handleRequest(reqName, ...)
+    if not (jd.enabled and jd.aimbotOn) then return nil end
+    local char = LP.Character
+    local myHRP = char and char:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return nil end
+    local kf = GetKillersFolder(); if not kf then return nil end
+    local best, bd = nil, math.huge
+    for _, k in ipairs(kf:GetChildren()) do
+        local hrp = k:FindFirstChild("HumanoidRootPart")
+        local h = k:FindFirstChildOfClass("Humanoid")
+        if hrp and h and h.Health > 0 then
+            local d = (hrp.Position - myHRP.Position).Magnitude
+            if d < bd then bd = d; best = hrp end
+        end
+    end
+    if not best then return nil end
+    if reqName == "GetMousePosition" then
+        return best.Position + getHRPVelocity(best)*jd.prediction + Vector3.new(0, jd.aimOffset, 0)
+    end
+    if reqName == "GetCameraCF" then
+        return jd_buildCamCF(myHRP, best, 250, 40)
+    end
+    return nil
+end
+
 local function jd_applyPatch()
-    if jd.patched or not NetworkRF then return end
-    rfDispatch:register("jd", function(reqName, ...)
-        if not (jd.enabled and jd.aimbotOn) then return nil end
-        local char = LP.Character
-        local myHRP = char and char:FindFirstChild("HumanoidRootPart")
-        if not myHRP then return nil end
-        local kf = GetKillersFolder(); if not kf then return nil end
-        local best, bd = nil, math.huge
-        for _, k in ipairs(kf:GetChildren()) do
-            local hrp = k:FindFirstChild("HumanoidRootPart")
-            local h = k:FindFirstChildOfClass("Humanoid")
-            if hrp and h and h.Health > 0 then
-                local d = (hrp.Position - myHRP.Position).Magnitude
-                if d < bd then bd = d; best = hrp end
-            end
-        end
-        if not best then return nil end
-        if reqName == "GetMousePosition" then
-            return best.Position + getHRPVelocity(best)*jd.prediction + Vector3.new(0, jd.aimOffset, 0)
-        end
-        if reqName == "GetCameraCF" then
-            return jd_buildCamCF(myHRP, best, 250, 40)
-        end
-        return nil
-    end)
+    if jd.patched then return end
     jd.patched = true
+    registerRFWhenReady("jd", jd_handleRequest)
 end
 local function jd_removePatch()
     if not jd.patched then return end
@@ -1141,26 +1190,28 @@ task.spawn(function()
     end)
 end)
 
+--═══════════════════════════════════════════════════════════════════
+-- PATCH #3: Dusekkar uses registerRFWhenReady
+--═══════════════════════════════════════════════════════════════════
 local dusekkar = { enabled=false, prediction=0.12, aimOffset=0.0 }
-if NetworkRF then
-    rfDispatch:register("plasma", function(reqName, ...)
-        if reqName ~= "GetMousePosition" or not dusekkar.enabled then return nil end
-        local char = LP.Character; if not char then return nil end
-        local myHRP = char:FindFirstChild("HumanoidRootPart"); if not myHRP then return nil end
-        local kf = GetKillersFolder(); if not kf then return nil end
-        local best, bd = nil, math.huge
-        for _, m in ipairs(kf:GetChildren()) do
-            local hrp = m:FindFirstChild("HumanoidRootPart")
-            local hum = m:FindFirstChildOfClass("Humanoid")
-            if hrp and hum and hum.Health > 0 then
-                local d = (hrp.Position - myHRP.Position).Magnitude
-                if d < bd then bd = d; best = hrp end
-            end
+local function dusekkar_handleRequest(reqName, ...)
+    if reqName ~= "GetMousePosition" or not dusekkar.enabled then return nil end
+    local char = LP.Character; if not char then return nil end
+    local myHRP = char:FindFirstChild("HumanoidRootPart"); if not myHRP then return nil end
+    local kf = GetKillersFolder(); if not kf then return nil end
+    local best, bd = nil, math.huge
+    for _, m in ipairs(kf:GetChildren()) do
+        local hrp = m:FindFirstChild("HumanoidRootPart")
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then
+            local d = (hrp.Position - myHRP.Position).Magnitude
+            if d < bd then bd = d; best = hrp end
         end
-        if not best then return nil end
-        return best.Position + getHRPVelocity(best)*dusekkar.prediction + Vector3.new(0, dusekkar.aimOffset, 0)
-    end)
+    end
+    if not best then return nil end
+    return best.Position + getHRPVelocity(best)*dusekkar.prediction + Vector3.new(0, dusekkar.aimOffset, 0)
 end
+registerRFWhenReady("plasma", dusekkar_handleRequest)
 
 local elliot = { enabled=false, conn=nil, autoRotBak=nil,
     aimType="Camera + Character", targetMode="Low HP",
@@ -1185,7 +1236,6 @@ local function elliot_setupChar(char)
         end
     end
 end
--- FIX: defer elliot setup so it doesn't block load (FIX #5)
 task.spawn(function()
     task.wait(0.5)
     if LP.Character then elliot_setupChar(LP.Character) end
@@ -1458,7 +1508,6 @@ local function univ_lock(tHRP)
         if hp then univ_doCam(hp) end
     end)
 end
--- FIX #1: wrap hookmetamethod in pcall so a blocked hook doesn't kill the whole script
 local univ_oldNamecall
 pcall(function()
     univ_oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
@@ -1491,7 +1540,7 @@ end)
 LP.CharacterAdded:Connect(function() univ_unlock() end)
 
 --═══════════════════════════════════════════════════════════════════
--- VEE AUTO TRICK (FIXED)
+-- VEE AUTO TRICK
 --═══════════════════════════════════════════════════════════════════
 local VeeAutoTrickState = { running=false, lastTrigger=0, activeHighlights={}, descConn=nil }
 local function veeGetSprintingButton()
@@ -2657,12 +2706,12 @@ local AntisRight = Tabs.Antis:AddRightGroupbox("Physics", "shield")
 AntisRight:AddToggle("Anti_Pull_T", { Text="Anti-Pull", Default=false, Callback=function(v) setAntiPull(v) end })
 
 --═══════════════════════════════════════════════════════════════════
--- UI — SETTINGS (KeyPicker FIX #3 — no :AddKeyPicker chain)
+-- UI — SETTINGS (PATCH #4: AddLabel chain restored)
 --═══════════════════════════════════════════════════════════════════
 local MenuGroup = Tabs.Settings:AddLeftGroupbox("Menu", "wrench")
 MenuGroup:AddToggle("KeybindMenuOpen", { Default=Library.KeybindFrame.Visible, Text="Open Keybind Menu", Callback=function(v) Library.KeybindFrame.Visible=v end })
 MenuGroup:AddDivider()
-MenuGroup:AddKeyPicker("MenuKeybind", { Default="RightShift", NoUI=true, Text="Menu keybind" })
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default="RightShift", NoUI=true, Text="Menu keybind" })
 MenuGroup:AddButton("Unload", function()
     _ShuttingDown = true
     pcall(abStop); pcall(StopRectLoop); pcall(DestroyAllBoxes)
@@ -2679,7 +2728,6 @@ MenuGroup:AddButton("Unload", function()
 end)
 Library.ToggleKeybind = Options.MenuKeybind
 
--- Original Cupcake red theme restored
 ThemeManager:SetLibrary(Library)
 ThemeManager:SetDefaultTheme({
     BackgroundColor = Color3.fromRGB(30, 15, 20),
