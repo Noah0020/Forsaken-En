@@ -138,7 +138,7 @@ LP.CharacterAdded:Connect(function(c)
 end)
 
 --═══════════════════════════════════════════════════════════════════
--- NETWORK REFERENCES (from BetrayalHub)
+-- NETWORK REFERENCES
 --═══════════════════════════════════════════════════════════════════
 local NetworkEvent
 do
@@ -150,7 +150,7 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- RF DISPATCHER (BetrayalHub's silent aim foundation)
+-- RF DISPATCHER
 --═══════════════════════════════════════════════════════════════════
 local rfDispatch = {
     hooks = {},
@@ -349,7 +349,7 @@ local function LoadAbilityIds(char)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- ENHANCED AUTO BLOCK
+-- ENHANCED AUTO BLOCK (merged — all systems run simultaneously)
 --═══════════════════════════════════════════════════════════════════
 local AB = { running=false, soundBlockOn=false, animBlockOn=false, hitboxBlockOn=false,
     soundHooks={}, soundBlockedUntil={}, animConn=nil, hitboxConn=nil, hitboxHeartbeat=nil,
@@ -1386,42 +1386,32 @@ local function veeATStop()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- AUTO BLOCK UI
+-- AUTO BLOCK UI (merged — single toggle for all 3 systems)
 --═══════════════════════════════════════════════════════════════════
-local ABLeft = Tabs.AutoBlock:AddLeftGroupbox("Auto Block", "shield")
-ABLeft:AddToggle("AB_Sound_T", { Text="Sound Block (attack sounds)", Default=false, Callback=function(v)
-    AB.soundBlockOn = v
+local ABLeft = Tabs.AutoBlock:AddLeftGroupbox("Auto Block (All Systems)", "shield")
+ABLeft:AddToggle("AB_Master", { Text="Enable Auto Block (All 3 Methods)", Default=false, Callback=function(v)
     if v then
-        if not AB.running then AB.running = true end
-        setupSoundHooks()
-        local kf = GetKillersFolder()
-        if kf then
-            for _, killer in pairs(kf:GetChildren()) do
-                for _, d in pairs(killer:GetDescendants()) do
-                    if d:IsA("Sound") then pcall(hookSound, d) end
-                end
-            end
-        end
+        StopAutoBlock() -- clean slate
+        AB.soundBlockOn = true
+        AB.animBlockOn = true
+        AB.hitboxBlockOn = true
+        StartAutoBlock()
+    else
+        StopAutoBlock()
     end
-end })
-ABLeft:AddToggle("AB_Anim_T", { Text="Animation Block", Default=false, Callback=function(v)
-    AB.animBlockOn = v
-    if v then if not AB.running then AB.running = true end; setupAnimBlock()
-    else if AB.animConn then AB.animConn:Disconnect(); AB.animConn = nil end end
-end })
-ABLeft:AddToggle("AB_Hitbox_T", { Text="Hitbox Block", Default=false, Callback=function(v)
-    AB.hitboxBlockOn = v
-    if v then if not AB.running then AB.running = true end; setupHitboxBlock()
-    else if AB.hitboxHeartbeat then AB.hitboxHeartbeat:Disconnect(); AB.hitboxHeartbeat = nil end end
 end })
 ABLeft:AddDropdown("AB_Mode", { Text="Block Ability", Values={"Guest1337","007n7"}, Default="Guest1337", Multi=false, Callback=function(v) Settings.AB_Mode=v end })
 ABLeft:AddSlider("AB_DetRange", { Text="Detection Range", Default=20, Min=3, Max=60, Rounding=0, Callback=function(v) AB.detectionRange=v end })
 ABLeft:AddSlider("AB_CD", { Text="Block Cooldown (s)", Default=0.1, Min=0.02, Max=2, Rounding=2, Callback=function(v) AB.BLOCK_CD=v end })
 ABLeft:AddButton({ Text="Test Fire Block", Func=function() FireByMode(); print("[Cupcake] Fired "..Settings.AB_Mode) end })
 
-local ABRight = Tabs.AutoBlock:AddRightGroupbox("Sound Block Info", "info")
-ABRight:AddLabel({ Text="Sound block hooks every killer sound. When one of ~90 known attack sounds plays near you, blocks automatically.", DoesWrap=true })
-ABRight:AddLabel({ Text="Animation block watches killer animations. Hitbox block scans Workspace.Hitboxes parts.", DoesWrap=true })
+local ABRight = Tabs.AutoBlock:AddRightGroupbox("Active Systems", "info")
+ABRight:AddLabel({ Text="All 3 detection systems run simultaneously:", DoesWrap=true })
+ABRight:AddLabel({ Text="• Sound — hooks ~90 known attack sound IDs on killers", DoesWrap=true })
+ABRight:AddLabel({ Text="• Animation — watches killer anim tracks for attack animations", DoesWrap=true })
+ABRight:AddLabel({ Text="• Hitbox — scans Workspace.Hitboxes parts each frame", DoesWrap=true })
+ABRight:AddDivider()
+ABRight:AddLabel({ Text="When any system detects an incoming attack within range, the block ability fires immediately.", DoesWrap=true })
 
 --═══════════════════════════════════════════════════════════════════
 -- SILENT AIM UI
@@ -1542,7 +1532,6 @@ end
 --═══════════════════════════════════════════════════════════════════
 -- VEE UI
 --═══════════════════════════════════════════════════════════════════
-local VeeAutoTrickOld = VeeAutoTrickState
 local VeeLeft = Tabs.Vee:AddLeftGroupbox("Vee (Veeronica)", "gamepad-2")
 VeeLeft:AddToggle("Vee_AutoTrick_T", { Text="Auto Trick (Fixed)", Default=false, Callback=function(v)
     Settings.VeeAutoTrick = v
@@ -1863,56 +1852,144 @@ HDTR:AddToggle("HDT_Auto_T", { Text = "Auto-Burst When Killer Near", Default = f
 end })
 
 --═══════════════════════════════════════════════════════════════════
--- TWO TIME TAB
+-- TWO TIME TAB (replaced with dagger-lunge implementation)
 --═══════════════════════════════════════════════════════════════════
-local TT = { running = false, thread = nil, lastTP = 0 }
+local NORMAL_STAB_ID = "100725497418533"
+local CROUCH_STAB_ID = "89448354637442"
+local DAGGER_ANIM_IDS = { [NORMAL_STAB_ID]=true, [CROUCH_STAB_ID]=true }
+local TwoTime = { stabbing=false, lastStab=0, conn=nil, originalAutoRotate=true, animConn=nil, charAddedConn=nil }
 
-local function tt_getTarget()
-    if IsPlayerKiller() then return GetNearestSurvivorHrp() else return GetNearestKillerHrp() end
+local function TTGetKillerFolder()
+    local p = Workspace:FindFirstChild("Players")
+    return p and p:FindFirstChild("Killers")
 end
-
-local function tt_start()
-    if TT.running then return end
-    TT.running = true
-    TT.thread = task.spawn(function()
-        while TT.running do
-            if tick() - TT.lastTP >= Settings.TT_Cooldown then
-                local char = LP.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    local tgt = tt_getTarget()
-                    if tgt and tgt.Parent then
-                        local dist = (tgt.Position - hrp.Position).Magnitude
-                        if dist <= Settings.TT_MaxRange then
-                            local behindCF = tgt.CFrame * CFrame.new(0, 0, -Settings.TT_BehindOffset)
-                            hrp.CFrame = behindCF
-                            TT.lastTP = tick()
-                        end
-                    end
-                end
+local function TTGetMyHRP()
+    local c = LP.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function TTGetMyHum()
+    local c = LP.Character
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+local function TTGetNearestKiller()
+    local f = TTGetKillerFolder()
+    local myHRP = TTGetMyHRP()
+    if not f or not myHRP then return nil end
+    local best, bestD = nil, math.huge
+    for _, k in ipairs(f:GetChildren()) do
+        if k:IsA("Model") then
+            local h = k:FindFirstChild("HumanoidRootPart") or k.PrimaryPart
+            local hum = k:FindFirstChildOfClass("Humanoid")
+            if h and hum and hum.Health > 0 then
+                local d = (h.Position - myHRP.Position).Magnitude
+                if d < bestD then bestD = d; best = k end
             end
-            task.wait(0.05)
+        end
+    end
+    return best
+end
+local function TTCleanupLunge()
+    if TwoTime.conn then pcall(function() TwoTime.conn:Disconnect() end); TwoTime.conn = nil end
+    local hum = TTGetMyHum()
+    if hum then
+        pcall(function() hum.AutoRotate = TwoTime.originalAutoRotate; hum:Move(Vector3.zero, false) end)
+    end
+    TwoTime.stabbing = false
+end
+local function TTRunLunge(killer)
+    if not Settings.TT_Enabled then return end
+    if TwoTime.stabbing then return end
+    if IsPlayerKiller() then return end
+    local char = LP.Character; if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+    local now = os.clock()
+    if now - TwoTime.lastStab < (Settings.TT_Cooldown or 0.5) then return end
+    TwoTime.lastStab = now
+    if not killer or not killer.Parent then return end
+    local khrp = killer:FindFirstChild("HumanoidRootPart"); if not khrp then return end
+    local dist = (khrp.Position - hrp.Position).Magnitude
+    if dist > (Settings.TT_MaxRange or 60) then return end
+    TwoTime.originalAutoRotate = hum.AutoRotate
+    hum.AutoRotate = false
+    TwoTime.stabbing = true
+    local duration = Settings.TT_FollowDuration or 0.5
+    local endTime = tick() + duration
+    local lerpSpeed = Settings.TT_LerpSpeed or 45
+    if TwoTime.conn then pcall(function() TwoTime.conn:Disconnect() end) end
+    TwoTime.conn = RunService.RenderStepped:Connect(function(dt)
+        if not TwoTime.stabbing then return end
+        if tick() >= endTime then TTCleanupLunge(); return end
+        local char2 = LP.Character; if not char2 then TTCleanupLunge(); return end
+        local hrp2 = char2:FindFirstChild("HumanoidRootPart")
+        local hum2 = char2:FindFirstChildOfClass("Humanoid")
+        if not hrp2 or not hum2 or hum2.Health <= 0 then TTCleanupLunge(); return end
+        local khrp2 = killer and killer.Parent and killer:FindFirstChild("HumanoidRootPart")
+        if not khrp2 or not khrp2.Parent then TTCleanupLunge(); return end
+        local kCF = khrp2.CFrame
+        local behindPos = kCF.Position - kCF.LookVector * (Settings.TT_BehindOffset or 1.7)
+        local targetPos = Vector3.new(behindPos.X, hrp2.Position.Y, behindPos.Z)
+        local dist = (targetPos - hrp2.Position).Magnitude
+        if dist > 0.15 then
+            local step = math.min(lerpSpeed * dt, dist)
+            local dir = (targetPos - hrp2.Position).Unit
+            local newPos = hrp2.Position + dir * step
+            pcall(function()
+                hrp2.CFrame = CFrame.lookAt(newPos, Vector3.new(kCF.Position.X, newPos.Y, kCF.Position.Z))
+                hrp2.AssemblyLinearVelocity = Vector3.zero
+                hrp2.AssemblyAngularVelocity = Vector3.zero
+            end)
+        else
+            pcall(function()
+                hrp2.CFrame = CFrame.lookAt(hrp2.Position, Vector3.new(kCF.Position.X, hrp2.Position.Y, kCF.Position.Z))
+                hrp2.AssemblyLinearVelocity = Vector3.zero
+                hrp2.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+    end)
+    task.delay(duration + 0.1, function() if TwoTime.stabbing then TTCleanupLunge() end end)
+end
+local function TTAttachAnimWatcher(char)
+    local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
+    local animator = hum:WaitForChild("Animator", 5); if not animator then return end
+    if TwoTime.animConn then pcall(function() TwoTime.animConn:Disconnect() end); TwoTime.animConn = nil end
+    TwoTime.animConn = animator.AnimationPlayed:Connect(function(track)
+        if not Settings.TT_Enabled then return end
+        local anim = track.Animation; if not anim then return end
+        local id = tostring(anim.AnimationId):match("%d+"); if not id then return end
+        if DAGGER_ANIM_IDS[id] then
+            local killer = TTGetNearestKiller()
+            if killer then TTRunLunge(killer) end
         end
     end)
 end
-local function tt_stop()
-    TT.running = false
-    if TT.thread then pcall(task.cancel, TT.thread); TT.thread = nil end
+local function TTStart()
+    if LP.Character then TTAttachAnimWatcher(LP.Character) end
+    TwoTime.charAddedConn = LP.CharacterAdded:Connect(function(c)
+        task.wait(0.5)
+        if Settings.TT_Enabled then TTAttachAnimWatcher(c) end
+    end)
+end
+local function TTStop()
+    TTCleanupLunge()
+    if TwoTime.animConn then pcall(function() TwoTime.animConn:Disconnect() end); TwoTime.animConn = nil end
+    if TwoTime.charAddedConn then pcall(function() TwoTime.charAddedConn:Disconnect() end); TwoTime.charAddedConn = nil end
 end
 
-local TTL = Tabs.TwoTime:AddLeftGroupbox("Two Time (Auto Behind)", "user")
+local TTL = Tabs.TwoTime:AddLeftGroupbox("Two Time (Dagger Lunge)", "user")
 TTL:AddToggle("TT_En_T", { Text = "Enable Auto Behind", Default = false, Callback = function(v)
     Settings.TT_Enabled = v
-    if v then tt_start() else tt_stop() end
+    if v then TTStart() else TTStop() end
 end })
 TTL:AddSlider("TT_Behind_S", { Text = "Behind Offset (studs)", Default = 1.7, Min = 0.5, Max = 6, Rounding = 1, Callback = function(v) Settings.TT_BehindOffset = v end })
 TTL:AddSlider("TT_Range_S",  { Text = "Max Range (studs)",    Default = 60,  Min = 5, Max = 200, Rounding = 0, Callback = function(v) Settings.TT_MaxRange = v end })
 TTL:AddSlider("TT_CD_S",     { Text = "Cooldown (s)",          Default = 0.5, Min = 0.05, Max = 3, Rounding = 2, Callback = function(v) Settings.TT_Cooldown = v end })
 
-local TTR = Tabs.TwoTime:AddRightGroupbox("Advanced", "activity")
-TTR:AddSlider("TT_Follow_S", { Text = "Follow Duration", Default = 0.5, Min = 0.1, Max = 3, Rounding = 2, Callback = function(v) Settings.TT_FollowDuration = v end })
-TTR:AddSlider("TT_Lerp_S",   { Text = "Lerp Speed",      Default = 45,  Min = 5, Max = 200, Rounding = 0, Callback = function(v) Settings.TT_LerpSpeed = v end })
-TTR:AddLabel({ Text = "Continuously teleports you behind the nearest enemy (survivor if you're killer, killer if you're survivor).", DoesWrap = true })
+local TTR = Tabs.TwoTime:AddRightGroupbox("Lunge Tuning", "activity")
+TTR:AddSlider("TT_Follow_S", { Text = "Lunge Duration", Default = 0.5, Min = 0.1, Max = 3, Rounding = 2, Callback = function(v) Settings.TT_FollowDuration = v end })
+TTR:AddSlider("TT_Lerp_S",   { Text = "Lunge Speed",    Default = 45,  Min = 5, Max = 200, Rounding = 0, Callback = function(v) Settings.TT_LerpSpeed = v end })
+TTR:AddLabel({ Text = "Triggers on stab animation (normal or crouch). Automatically lunges you behind the nearest killer.", DoesWrap = true })
 
 --═══════════════════════════════════════════════════════════════════
 -- NOLI TAB
@@ -2230,7 +2307,7 @@ MenuGroup:AddButton("Unload", function()
     pcall(jd_removePatch)
     pcall(esp_stop)
     pcall(hdt_stop)
-    pcall(tt_stop)
+    pcall(TTStop)
     pcall(noli_stop)
     pcall(gen_stop)
     pcall(anti_fling_stop)
@@ -2266,7 +2343,7 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function() _ShuttingDown = true; print("[Cupcake] Unloaded") end)
 Library:Notify({
     Title = "Cupcake v13",
-    Description = "BetrayalHub integration loaded — Silent Aim + Fixed AB + Fixed Prediction",
+    Description = "BetrayalHub integration loaded — Silent Aim + Merged AB + Dagger Lunge TT",
     Time = 5,
 })
 print("[Cupcake] Loaded v13 (BetrayalHub integrated)")
