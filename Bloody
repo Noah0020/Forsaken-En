@@ -1,10 +1,9 @@
 --═══════════════════════════════════════════════════════════════════
--- Vortex Hub — Final Build
---   • Auto Block: 4-layer fastest detection (PreRender + getconnections
---     + sound/anim + attribute), killer-safe, W/L/H independent
---   • Killer-safe: every survivor feature guarded + watchdog
---   • Generator: Full 4-minigame solver
---   • Aim / Silent Aim / HDT / Vee / Sk8 / Stab / ESP / Action / Misc
+-- Vortex Hub — Final Build (Role-Gated)
+--   • Block: 4-layer fastest detection, W/L/H independent, decimal duration
+--   • HDT: BLOCK-ability triggered, SURVIVOR-ONLY (guarded on every entry)
+--   • Survivor Aim: SURVIVOR-ONLY, SLASH/PUNCH/PARRY/SAC DAGGER/HATCHET
+--   • Killer-safe watchdog everywhere
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -571,20 +570,6 @@ local function predictHRP(hrp, lead)
     return hrp.Position + vel * (lead or 0.2)
 end
 
-local STUN_ABILITY_NAMES = {
-    Slash=true, OneShot=true, ["One Shot"]=true, Shoot=true, AimGun=true,
-    GunFire=true, GunExplode=true, GunFail=true, ["Sacrificial Dagger"]=true,
-    Dagger=true, Stab=true, Lunge=true, LungeStart=true, Parry=true, Block=true,
-}
-local STUN_SOUND_FIELDS = {"Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds"}
-local STATIC_STUN_ANIM_IDS = {
-    ["103601716322988"]="GunFire", ["133491532453922"]="AimGun",
-    ["86371356500204"]="GunExplode", ["76649505662612"]="GunFail",
-    ["81698196845041"]="GunFail", ["100725497418533"]="Stab",
-    ["89448354637442"]="Lunge",
-}
-local STUN_ANIM_IDS, STUN_SOUND_IDS = {}, {}
-
 local function extractAnimIds(v)
     local o = {}
     if type(v) == "string" or type(v) == "number" then
@@ -593,57 +578,6 @@ local function extractAnimIds(v)
         for _, x in pairs(v) do for _, id in ipairs(extractAnimIds(x)) do table.insert(o, id) end end
     end
     return o
-end
-local function isStunName(n)
-    if type(n) ~= "string" then return false end
-    if STUN_ABILITY_NAMES[n] then return true end
-    local l = n:lower():gsub("[%s_%-]", "")
-    for s in pairs(STUN_ABILITY_NAMES) do if l == s:lower():gsub("[%s_%-]", "") then return true end end
-    return false
-end
-local function readConfig(mod)
-    local ok, cfg = pcall(require, mod)
-    if not ok or type(cfg) ~= "table" then return end
-    if type(cfg.Animations) == "table" then
-        for n, v in pairs(cfg.Animations) do
-            if isStunName(n) then for _, id in ipairs(extractAnimIds(v)) do STUN_ANIM_IDS[id] = n end end
-        end
-    end
-    for _, f in ipairs(STUN_SOUND_FIELDS) do
-        if type(cfg[f]) == "table" then
-            for n, v in pairs(cfg[f]) do
-                if isStunName(n) then for _, id in ipairs(extractAnimIds(v)) do STUN_SOUND_IDS[id] = n end end
-            end
-        end
-    end
-end
-local function LoadAbilityIds(char)
-    STUN_ANIM_IDS, STUN_SOUND_IDS = {}, {}
-    for id, n in pairs(STATIC_STUN_ANIM_IDS) do STUN_ANIM_IDS[id] = n end
-    local assets = ReplicatedStorage:FindFirstChild("Assets")
-    if not assets then return end
-    local cn = char:GetAttribute("CharacterName") or char.Name
-    local sn = char:GetAttribute("SkinName") or "Default"
-    for _, role in ipairs({"Survivors", "Killers"}) do
-        local rf = assets:FindFirstChild(role)
-        local cf = rf and rf:FindFirstChild(cn)
-        if cf then
-            local c = cf:FindFirstChild("Config"); if c then readConfig(c) end
-            local b = cf:FindFirstChild("Behavior"); if b then readConfig(b) end
-        end
-    end
-    if sn ~= "Default" then
-        local sr = assets:FindFirstChild("Skins")
-        if sr then
-            for _, role in ipairs({"Survivors", "Killers"}) do
-                local r = sr:FindFirstChild(role); local c = r and r:FindFirstChild(cn); local s = c and c:FindFirstChild(sn)
-                if s then
-                    local cc = s:FindFirstChild("Config"); if cc then readConfig(cc) end
-                    local bb = s:FindFirstChild("Behavior"); if bb then readConfig(bb) end
-                end
-            end
-        end
-    end
 end
 
 local NetworkEvent = nil
@@ -711,110 +645,250 @@ local function GetNearestKillerHrp()
     return best
 end
 
-local function HardLockFacing(dur, wantCam, predLead)
+--═══════════════════════════════════════════════════════════════════
+-- AIM TAB (Survivor Aim + Elliot + Chance) — SURVIVOR-ONLY GATED
+--═══════════════════════════════════════════════════════════════════
+local SA = {
+    active = false,
+    mode = "Character",
+    prediction = 4,
+    lockTime = 0.7,
+    animConn = nil,
+    soundConns = {},
+}
+
+local SURVIVOR_ABILITY_NAMES = {
+    "SLASH", "PUNCH", "PARRY", "SACRIFICIAL DAGGER", "SAC DAGGER", "HATCHET",
+}
+
+local function normalizeAbilityName(s)
+    if type(s) ~= "string" then return "" end
+    return s:upper():gsub("[%s_%-]", "")
+end
+
+local SURVIVOR_ABILITY_NORMALIZED = {}
+for _, name in ipairs(SURVIVOR_ABILITY_NAMES) do
+    SURVIVOR_ABILITY_NORMALIZED[normalizeAbilityName(name)] = true
+end
+
+local function isSurvivorAbilityName(name)
+    return SURVIVOR_ABILITY_NORMALIZED[normalizeAbilityName(name)] == true
+end
+
+local SURVIVOR_ANIM_IDS = {}
+local SURVIVOR_SOUND_IDS = {}
+
+local function scanSurvivorAbilityAssets(char)
+    SURVIVOR_ANIM_IDS = {}
+    SURVIVOR_SOUND_IDS = {}
+    if not char or IsPlayerKiller() then return end
+    local assets = ReplicatedStorage:FindFirstChild("Assets")
+    if not assets then return end
+    local survivors = assets:FindFirstChild("Survivors")
+    if not survivors then return end
+
+    local charName = char:GetAttribute("CharacterName") or char.Name
+    local skinName = char:GetAttribute("SkinName") or "Default"
+
+    local function scanFolder(folder)
+        if not folder then return end
+        for _, cfgName in ipairs({"Config", "Behavior"}) do
+            local mod = folder:FindFirstChild(cfgName)
+            if mod and mod:IsA("ModuleScript") then
+                local ok, data = pcall(require, mod)
+                if ok and type(data) == "table" then
+                    if type(data.Animations) == "table" then
+                        for name, v in pairs(data.Animations) do
+                            if isSurvivorAbilityName(name) then
+                                for _, id in ipairs(extractAnimIds(v)) do
+                                    SURVIVOR_ANIM_IDS[id] = true
+                                end
+                            end
+                        end
+                    end
+                    for _, field in ipairs({"Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds"}) do
+                        if type(data[field]) == "table" then
+                            for name, v in pairs(data[field]) do
+                                if isSurvivorAbilityName(name) then
+                                    for _, id in ipairs(extractAnimIds(v)) do
+                                        SURVIVOR_SOUND_IDS[id] = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local baseFolder = survivors:FindFirstChild(charName)
+    if not baseFolder then
+        for _, child in ipairs(survivors:GetChildren()) do
+            if child:IsA("Folder") then
+                local cfg = child:FindFirstChild("Config")
+                if cfg and cfg:IsA("ModuleScript") then
+                    local ok, data = pcall(require, cfg)
+                    if ok and type(data) == "table" then
+                        if data.DisplayName == charName or data.CharacterName == charName then
+                            baseFolder = child; break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if baseFolder then scanFolder(baseFolder) end
+
+    if skinName ~= "Default" then
+        local skins = assets:FindFirstChild("Skins")
+        local survSkins = skins and skins:FindFirstChild("Survivors")
+        local charSkins = survSkins and survSkins:FindFirstChild(charName)
+        local skinFolder = charSkins and charSkins:FindFirstChild(skinName)
+        if skinFolder then scanFolder(skinFolder) end
+    end
+end
+
+local function findNearestKiller()
+    local char = LP.Character; if not char then return nil end
+    local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+    if not kf then return nil end
+    local myHRP = char:FindFirstChild("HumanoidRootPart"); if not myHRP then return nil end
+    local best, bd = nil, math.huge
+    for _, k in ipairs(kf:GetChildren()) do
+        if k:IsA("Model") and k ~= char then
+            local hrp = k:FindFirstChild("HumanoidRootPart")
+            local hum = k:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                local d = (hrp.Position - myHRP.Position).Magnitude
+                if d < bd then bd = d; best = k end
+            end
+        end
+    end
+    return best
+end
+
+local function aimAtKiller(killer, duration)
     if IsPlayerKiller() then return end
+    if not killer or not killer.Parent then return end
     local char = LP.Character; if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then return end
-    local savedWS = hum.WalkSpeed
-    hum.WalkSpeed = 0; hum.AutoRotate = false
-    pcall(function() hum:Move(Vector3.zero, false) end)
-    local startT = tick()
-    local conn; local released = false
+    local killerHRP = killer:FindFirstChild("HumanoidRootPart")
+    if not killerHRP then return end
+
+    local savedAR = hum.AutoRotate
+    hum.AutoRotate = false
+
+    local startTime = tick()
+    local dur = math.max(0.2, duration or SA.lockTime)
+    local conn
+    local released = false
+
     local function release()
         if released then return end
         released = true
         if conn then pcall(function() conn:Disconnect() end); conn = nil end
-        if not (hum and hum.Parent) then return end
-        pcall(function()
-            hum.WalkSpeed = savedWS; hum.AutoRotate = true
-            hum:Move(Vector3.zero, false)
-        end)
+        if hum and hum.Parent then
+            pcall(function() hum.AutoRotate = savedAR end)
+        end
     end
+
     conn = RunService.RenderStepped:Connect(function()
         if IsPlayerKiller() then release(); return end
         if not char.Parent or not hrp.Parent or not hum.Parent then release(); return end
-        if tick() - startT > (dur or 0.5) then release(); return end
-        local t = GetNearestKillerHrp()
-        if not t or not t.Parent then return end
-        local aim = predictHRP(t, predLead or 0.2) or t.Position
-        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(aim.X, hrp.Position.Y, aim.Z))
+        if tick() - startTime > dur then release(); return end
+
+        local curKillerHRP = killer and killer.Parent and killer:FindFirstChild("HumanoidRootPart")
+        if not curKillerHRP then release(); return end
+
+        local lead = (SA.prediction or 4) * 0.05
+        local vel = getHRPVelocity(curKillerHRP)
+        local targetPos = curKillerHRP.Position + vel * lead
+
+        if SA.mode == "Character" or SA.mode == "Both" then
+            hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(targetPos.X, hrp.Position.Y, targetPos.Z))
+        end
+        if SA.mode == "Camera" or SA.mode == "Both" then
+            local cam = Workspace.CurrentCamera
+            if cam then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, targetPos) end
+        end
     end)
-    if wantCam then
-        local cam = Workspace.CurrentCamera
-        local camStart = tick()
-        local camConn
-        camConn = RunService.RenderStepped:Connect(function()
-            if not cam or tick() - camStart > (dur or 0.5) then
-                pcall(function() camConn:Disconnect() end); return
-            end
-            local t = GetNearestKillerHrp()
-            if t and t.Parent then
-                local aim = predictHRP(t, predLead or 0.2) or t.Position
-                pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aim) end)
-            end
-        end)
-    end
 end
 
---═══════════════════════════════════════════════════════════════════
--- AIM TAB
---═══════════════════════════════════════════════════════════════════
-local NA = { active = false, animConn = nil, soundConns = {}, lockTime = 0.7, prediction = 4, mode = "Character" }
+local function fireSurvivorAim(animLength)
+    if not SA.active or IsPlayerKiller() then return end
+    local killer = findNearestKiller(); if not killer then return end
+    local dur = math.max(0.3, (animLength or 0.5) + 0.1)
+    task.spawn(function() aimAtKiller(killer, dur) end)
+end
 
-local function fireStunAim(track)
-    if not NA.active or IsPlayerKiller() then return end
-    local dur = NA.lockTime or math.max(0.5, (track and track.Length or 0.8) + 0.15)
+local function attachSurvivorWatcher(char)
+    if not char then return end
     task.spawn(function()
-        HardLockFacing(dur, NA.mode == "Camera" or NA.mode == "Both", (NA.prediction or 4) * 0.05)
-    end)
-end
+        local start = tick()
+        while tick() - start < 1.5 do
+            if IsPlayerKiller() then break end
+            local pf = Workspace:FindFirstChild("Players")
+            local kf = pf and pf:FindFirstChild("Killers")
+            local sf = pf and pf:FindFirstChild("Survivors")
+            if (kf and char:IsDescendantOf(kf)) or (sf and char:IsDescendantOf(sf)) then break end
+            task.wait(0.1)
+        end
 
-local function AttachAnimWatcher(char)
-    if NA.animConn then pcall(function() NA.animConn:Disconnect() end); NA.animConn = nil end
-    local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
-    local an = hum:WaitForChild("Animator", 5); if not an then return end
-    NA.animConn = an.AnimationPlayed:Connect(function(track)
-        if IsPlayerKiller() then return end
-        local anim = track.Animation; if not anim then return end
-        local aid = tostring(anim.AnimationId):match("%d+"); if not aid then return end
-        if STUN_ANIM_IDS[aid] then fireStunAim(track) end
-    end)
-end
+        if SA.animConn then pcall(function() SA.animConn:Disconnect() end); SA.animConn = nil end
+        for _, c in ipairs(SA.soundConns) do pcall(function() c:Disconnect() end) end
+        SA.soundConns = {}
 
-local function AttachSoundWatcher(char)
-    for _, c in ipairs(NA.soundConns) do pcall(function() c:Disconnect() end) end
-    NA.soundConns = {}
-    local function hook(s)
-        if not s:IsA("Sound") then return end
-        local c = s.Played:Connect(function()
-            if not NA.active or IsPlayerKiller() then return end
-            local sid = tostring(s.SoundId):match("%d+"); if not sid then return end
-            if STUN_SOUND_IDS[sid] then
-                task.spawn(function()
-                    HardLockFacing(NA.lockTime or math.max(0.5, (s.TimeLength or 0.5) + 0.15),
-                        NA.mode == "Camera" or NA.mode == "Both", (NA.prediction or 4) * 0.05)
-                end)
-            end
+        if IsPlayerKiller() then
+            SURVIVOR_ANIM_IDS = {}
+            SURVIVOR_SOUND_IDS = {}
+            return
+        end
+
+        scanSurvivorAbilityAssets(char)
+
+        local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
+        local animator = hum:WaitForChild("Animator", 5)
+
+        if animator then
+            SA.animConn = animator.AnimationPlayed:Connect(function(track)
+                if not SA.active or IsPlayerKiller() then return end
+                local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
+                if id and SURVIVOR_ANIM_IDS[id] then
+                    fireSurvivorAim(track.Length)
+                end
+            end)
+        end
+
+        local function hookSound(s)
+            if not s:IsA("Sound") then return end
+            local conn = s.Played:Connect(function()
+                if not SA.active or IsPlayerKiller() then return end
+                local sid = tostring(s.SoundId):match("%d+")
+                if sid and SURVIVOR_SOUND_IDS[sid] then
+                    fireSurvivorAim(s.TimeLength or 0.5)
+                end
+            end)
+            table.insert(SA.soundConns, conn)
+        end
+
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("Sound") then hookSound(d) end
+        end
+        local descConn = char.DescendantAdded:Connect(function(d)
+            if d:IsA("Sound") then hookSound(d) end
         end)
-        table.insert(NA.soundConns, c)
-    end
-    for _, d in ipairs(char:GetDescendants()) do hook(d) end
-    table.insert(NA.soundConns, char.DescendantAdded:Connect(function(d) hook(d) end))
-end
-
-local function OnCharSpawn(char)
-    if not char or char ~= LP.Character then return end
-    task.spawn(function()
-        task.wait(0.3)
-        pcall(LoadAbilityIds, char)
-        pcall(AttachAnimWatcher, char)
-        pcall(AttachSoundWatcher, char)
+        table.insert(SA.soundConns, descConn)
     end)
 end
-if LP.Character then OnCharSpawn(LP.Character) end
-LP.CharacterAdded:Connect(OnCharSpawn)
+
+if LP.Character then attachSurvivorWatcher(LP.Character) end
+LP.CharacterAdded:Connect(function(c)
+    task.wait(0.5)
+    attachSurvivorWatcher(c)
+end)
 
 -- Elliot
 local elliot = {
@@ -965,18 +1039,30 @@ RunService.RenderStepped:Connect(function(dt)
     chance.bodyGyro.CFrame = CFrame.lookAt(my.Position, pos)
 end)
 
-local AimSA = Tabs.Aimbot:AddLeftGroupbox("Survivor Aim (Stun)", "crosshair")
+local AimSA = Tabs.Aimbot:AddLeftGroupbox("Survivor Aim", "crosshair")
 AimSA:AddToggle("SA_En_T", { Text = "Enable Survivor Aim", Default = false, Callback = function(v)
     if v and IsPlayerKiller() then
         Library:Notify({Title = "Vortex", Description = "Survivor Aim disabled (you are Killer)", Time = 3})
         pcall(function() Options.SA_En_T:Set(false) end); return
     end
-    NA.active = v
-    if v and LP.Character then LoadAbilityIds(LP.Character); AttachAnimWatcher(LP.Character); AttachSoundWatcher(LP.Character) end
+    SA.active = v
+    if v and LP.Character then attachSurvivorWatcher(LP.Character) end
 end })
-AimSA:AddDropdown("SA_Mode_DD", { Text = "Aim Mode", Values = {"Character", "Camera", "Both"}, Default = "Character", Multi = false, Callback = function(v) NA.mode = v end })
-AimSA:AddSlider("SA_Pred_S", { Text = "Prediction (0-10)", Default = 4, Min = 0, Max = 10, Rounding = 0, Callback = function(v) NA.prediction = v end })
-AimSA:AddSlider("SA_Lock_S", { Text = "Lock Time (s)", Default = 0.7, Min = 0.2, Max = 2, Rounding = 2, Callback = function(v) NA.lockTime = v end })
+AimSA:AddDropdown("SA_Mode_DD", { Text = "Aim Mode", Values = {"Character", "Camera", "Both"}, Default = "Character", Multi = false, Callback = function(v) SA.mode = v end })
+AimSA:AddSlider("SA_Pred_S", { Text = "Prediction (0-10)", Default = 4, Min = 0, Max = 10, Rounding = 0, Callback = function(v) SA.prediction = v end })
+AimSA:AddSlider("SA_Lock_S", { Text = "Lock Time (s)", Default = 0.7, Min = 0.2, Max = 2, Rounding = 2, Callback = function(v) SA.lockTime = v end })
+AimSA:AddButton("Test Scan (SLASH/PUNCH/PARRY/DAGGER/HATCHET)", function()
+    if IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "Survivor Aim disabled (you are Killer)", Time = 3})
+        return
+    end
+    if not LP.Character then return end
+    scanSurvivorAbilityAssets(LP.Character)
+    local a, s = 0, 0
+    for _ in pairs(SURVIVOR_ANIM_IDS) do a = a + 1 end
+    for _ in pairs(SURVIVOR_SOUND_IDS) do s = s + 1 end
+    Library:Notify({Title = "Vortex Survivor Aim", Description = string.format("Found %d anims, %d sounds", a, s), Time = 5})
+end)
 
 local AimEll = Tabs.Aimbot:AddRightGroupbox("Elliot (Throw)", "target")
 AimEll:AddToggle("Ell_En_T", { Text = "Enable Elliot Aimbot", Default = false, Callback = function(v)
@@ -1082,7 +1168,7 @@ _G.ShowOutline = true
 _G.OutlineThickness = 0.01
 _G.ShowHitboxVisual = true
 _G.HitboxTransparency = 0.5
-_G.HitboxDuration = 2
+_G.HitboxDuration = 0.5
 _G.BlockDelay = 0
 _G.AutoBlockEnabled = false
 
@@ -1228,7 +1314,6 @@ local function triggerBoxCheck(killer)
     createSpatialOverlapBox(killer, Vector3.new(_G.HitboxWidth, _G.HitboxHeight, _G.HitboxLength), FireBlockBuffer)
 end
 
--- LAYER 1: PreRender per-frame attribute poll
 local AB_poll = {
     lastAbility = setmetatable({}, {__mode = "k"}),
     lastUsed = setmetatable({}, {__mode = "k"}),
@@ -1252,7 +1337,6 @@ RunService.PreRender:Connect(function()
     end
 end)
 
--- LAYER 2: RemoteEvent OnClientEvent getconnections wrap
 local remoteHooked = false
 local function hookAbilityRemote()
     if remoteHooked then return end
@@ -1300,7 +1384,6 @@ local function hookAbilityRemote()
     end)
 end
 
--- LAYER 3: Per-killer sound/anim hooks
 local hookedKillers = {}
 local function hookKillerM1(killer)
     if not killer or hookedKillers[killer] or not killer:IsA("Model") then return end
@@ -1327,7 +1410,6 @@ local function hookKillerM1(killer)
     killer.DescendantAdded:Connect(function(d) hookSound(d) end)
 end
 
--- LAYER 4: Attribute changed signals
 local monitoredKillers = {}
 local function monitorKiller(killer)
     if not killer or monitoredKillers[killer] or not killer:IsA("Model") then return end
@@ -1397,7 +1479,7 @@ BlockRight:AddSlider("HitboxWidth",  { Text = "Width (X)",  Default = 5, Min = 1
 BlockRight:AddSlider("HitboxHeight", { Text = "Height (Y)", Default = 6, Min = 1, Max = 30, Rounding = 0, Callback = function(v) _G.HitboxHeight = v end })
 BlockRight:AddSlider("HitboxLength", { Text = "Length (Z)", Default = 8, Min = 1, Max = 30, Rounding = 0, Callback = function(v) _G.HitboxLength = v end })
 BlockRight:AddSlider("HitboxOffset", { Text = "Offset (Z)", Default = -1, Min = -10, Max = 0, Rounding = 0, Callback = function(v) _G.HitboxOffset = v end })
-BlockRight:AddSlider("HitboxDuration", { Text = "Duration", Default = 2, Min = 0, Max = 5, Rounding = 0, Callback = function(v) _G.HitboxDuration = v end })
+BlockRight:AddSlider("HitboxDuration", { Text = "Duration", Default = 0.5, Min = 0.1, Max = 5, Rounding = 2, Callback = function(v) _G.HitboxDuration = v end })
 BlockRight:AddSlider("BlockDelay", { Text = "Block Delay", Default = 0, Min = 0, Max = 1, Rounding = 2, Callback = function(v) _G.BlockDelay = v end })
 
 --═══════════════════════════════════════════════════════════════════
@@ -1481,16 +1563,77 @@ StabRight:AddSlider("StabLerpSpeed", { Text = "Lerp Speed (MAX " .. STAB_SPEED_M
 StabRight:AddSlider("StabCooldown", { Text = "Cooldown (s)", Default = 0.6, Min = 0.1, Max = 2, Rounding = 2, Callback = function(v) stabState.cooldown = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- HDT
+-- HDT — BLOCK-triggered, SURVIVOR-ONLY GATED
 --═══════════════════════════════════════════════════════════════════
 local HDT = { enabled = false, speed = 40, delay = 0.05, duration = 0.6, debounce = false }
-local HDT_BIND = "Vortex_HDT_Bind"
-local HDT_ANIMS = {
-    ["72722244508749"] = true, ["96959123077498"] = true,
-    ["95802026624883"] = true, ["140671644163156"] = true,
-    ["100926346851492"] = true,
-}
-local HDT_WC, HDT_CH, HDT_RT, HDT_CA = nil, nil, nil, nil
+local HDT_BLOCK_ANIM_IDS = {}
+local HDT_BLOCK_SOUND_IDS = {}
+local HDT_animConn = nil
+local HDT_soundConns = {}
+local HDT_charConn = nil
+
+local function normalizeForBlock(s)
+    if type(s) ~= "string" then return "" end
+    return s:upper():gsub("[%s_%-]", "")
+end
+
+local function scanHDTBlockAssets()
+    HDT_BLOCK_ANIM_IDS = {}
+    HDT_BLOCK_SOUND_IDS = {}
+    if IsPlayerKiller() then return end
+    local assets = ReplicatedStorage:FindFirstChild("Assets")
+    if not assets then return end
+
+    local function scanFolder(folder)
+        if not folder then return end
+        for _, cfgName in ipairs({"Config", "Behavior"}) do
+            local mod = folder:FindFirstChild(cfgName)
+            if mod and mod:IsA("ModuleScript") then
+                local ok, data = pcall(require, mod)
+                if ok and type(data) == "table" then
+                    if type(data.Animations) == "table" then
+                        for name, v in pairs(data.Animations) do
+                            if normalizeForBlock(name):find("BLOCK", 1, true) then
+                                for _, id in ipairs(extractAnimIds(v)) do
+                                    HDT_BLOCK_ANIM_IDS[id] = true
+                                end
+                            end
+                        end
+                    end
+                    for _, field in ipairs({"Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds"}) do
+                        if type(data[field]) == "table" then
+                            for name, v in pairs(data[field]) do
+                                if normalizeForBlock(name):find("BLOCK", 1, true) then
+                                    for _, id in ipairs(extractAnimIds(v)) do
+                                        HDT_BLOCK_SOUND_IDS[id] = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local survivors = assets:FindFirstChild("Survivors")
+    if survivors then
+        for _, charFolder in ipairs(survivors:GetChildren()) do
+            if charFolder:IsA("Folder") then scanFolder(charFolder) end
+        end
+    end
+    local skins = assets:FindFirstChild("Skins")
+    local survSkins = skins and skins:FindFirstChild("Survivors")
+    if survSkins then
+        for _, base in ipairs(survSkins:GetChildren()) do
+            if base:IsA("Folder") then
+                for _, skin in ipairs(base:GetChildren()) do
+                    if skin:IsA("Folder") then scanFolder(skin) end
+                end
+            end
+        end
+    end
+end
 
 local function HDT_NearestKiller()
     local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
@@ -1511,117 +1654,183 @@ local function HDT_NearestKiller()
     return best
 end
 
-local function HDT_Dash(km)
+local function HDT_Dash(target)
     if IsPlayerKiller() then return end
-    if HDT.debounce or not km or km == LP.Character or not km.Parent then return end
-    local c = LP.Character; if not c then return end
-    local hrp = c:FindFirstChild("HumanoidRootPart")
-    local h = c:FindFirstChildOfClass("Humanoid")
-    if not hrp or not h then return end
-    local kr = km:FindFirstChild("HumanoidRootPart") or km.PrimaryPart
-    if not kr then return end
-    if (kr.Position - hrp.Position).Magnitude < 2.5 then return end
-    HDT.debounce = true
-    local oWS, oAR = h.WalkSpeed, h.AutoRotate
-    h.WalkSpeed = HDT.speed; h.AutoRotate = true
-    local st = tick()
-    pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
-    RunService:BindToRenderStep(HDT_BIND, Enum.RenderPriority.Last.Value + 1, function()
-        if IsPlayerKiller() then
-            HDT.debounce = false
-            pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
-            return
-        end
-        if not HDT.debounce then
-            pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
-            return
-        end
-        if not c.Parent or not km.Parent or not h.Parent then HDT.debounce = false; return end
-        local t = km:FindFirstChild("HumanoidRootPart")
-        if not t then HDT.debounce = false; return end
-        local flat = Vector3.new(t.Position.X - hrp.Position.X, 0, t.Position.Z - hrp.Position.Z)
-        if flat.Magnitude <= 2 then HDT.debounce = false; return end
-        h.WalkSpeed = HDT.speed
-        h:Move(flat.Unit, false)
-        if tick() - st > HDT.duration then HDT.debounce = false end
-    end)
-    task.delay(HDT.duration + 0.2, function() if HDT.debounce then HDT.debounce = false end end)
-    task.spawn(function()
-        while HDT.debounce do task.wait() end
-        pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
-        if h and h.Parent then
-            pcall(function() h:Move(Vector3.zero, false); h.WalkSpeed = oWS; h.AutoRotate = oAR end)
-        end
-    end)
-end
+    if not HDT.enabled or HDT.debounce then return end
+    if not target or target == LP.Character or not target.Parent then return end
 
-local function HDT_OnAnim(track)
-    if not HDT.enabled or HDT.debounce or IsPlayerKiller() then return end
-    local id
-    pcall(function() id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+") end)
-    if not id or not HDT_ANIMS[id] then return end
-    local k = HDT_NearestKiller()
-    if not k then return end
+    local char = LP.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    local targetHRP = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+    if not targetHRP then return end
+
     if HDT.delay > 0 then
-        task.delay(HDT.delay, function() if HDT.enabled and not HDT.debounce and not IsPlayerKiller() then HDT_Dash(k) end end)
-    else
-        HDT_Dash(k)
+        task.wait(HDT.delay)
+        if not HDT.enabled or IsPlayerKiller() then return end
     end
+
+    if (targetHRP.Position - hrp.Position).Magnitude < 2.5 then return end
+
+    local originalWS = hum.WalkSpeed
+    local originalAR = hum.AutoRotate
+    local speed = math.max(1, HDT.speed)
+    local duration = math.max(0.1, HDT.duration)
+    local startTime = tick()
+
+    HDT.debounce = true
+    hum.WalkSpeed = speed
+    hum.AutoRotate = true
+
+    local conn
+    local function cleanup()
+        if conn then pcall(function() conn:Disconnect() end); conn = nil end
+        HDT.debounce = false
+        if hum and hum.Parent then
+            pcall(function()
+                hum.WalkSpeed = originalWS
+                hum.AutoRotate = originalAR
+                hum:Move(Vector3.zero, false)
+            end)
+        end
+    end
+
+    conn = RunService.Heartbeat:Connect(function()
+        if IsPlayerKiller() then cleanup(); return end
+        if not HDT.enabled then cleanup(); return end
+        if not char.Parent or not hum.Parent or not hrp.Parent then cleanup(); return end
+        if not target.Parent then cleanup(); return end
+
+        local curTargetHRP = target:FindFirstChild("HumanoidRootPart")
+        if not curTargetHRP then cleanup(); return end
+
+        if tick() - startTime >= duration then cleanup(); return end
+
+        hum.WalkSpeed = speed
+
+        local flat = Vector3.new(
+            curTargetHRP.Position.X - hrp.Position.X,
+            0,
+            curTargetHRP.Position.Z - hrp.Position.Z
+        )
+        if flat.Magnitude <= 2 then cleanup(); return end
+        hum:Move(flat.Unit, false)
+    end)
+
+    task.delay(duration + 0.5, function()
+        if HDT.debounce then cleanup() end
+    end)
 end
 
-local function HDT_TryAttach()
-    if IsPlayerKiller() then return end
-    local c = LP.Character; if not c then return end
-    local h = c:FindFirstChildOfClass("Humanoid"); if not h then return end
-    local an = h:FindFirstChildOfClass("Animator"); if not an then return end
-    if HDT_CA == an and HDT_WC and HDT_WC.Connected then return end
-    if HDT_WC then pcall(function() HDT_WC:Disconnect() end); HDT_WC = nil end
-    HDT_CA = an
-    HDT_WC = an.AnimationPlayed:Connect(function(track) pcall(HDT_OnAnim, track) end)
+local function HDT_TriggerFromBlock()
+    if not HDT.enabled or IsPlayerKiller() or HDT.debounce then return end
+    local killer = HDT_NearestKiller()
+    if not killer then return end
+    task.spawn(function() HDT_Dash(killer) end)
 end
 
-local function HDT_StartWatcher()
-    if not HDT.enabled then return end
-    HDT_TryAttach()
-    if not HDT_CH then
-        HDT_CH = LP.CharacterAdded:Connect(function()
-            task.wait(0.3); if HDT.enabled then HDT_TryAttach() end
-            task.wait(1);   if HDT.enabled then HDT_TryAttach() end
-        end)
+local function attachHDTWatcher(char)
+    if HDT_animConn then pcall(function() HDT_animConn:Disconnect() end); HDT_animConn = nil end
+    for _, c in ipairs(HDT_soundConns) do pcall(function() c:Disconnect() end) end
+    HDT_soundConns = {}
+
+    if IsPlayerKiller() then
+        HDT_BLOCK_ANIM_IDS = {}
+        HDT_BLOCK_SOUND_IDS = {}
+        return
     end
-    if not HDT_RT then
-        HDT_RT = task.spawn(function()
-            while HDT.enabled do
-                if not HDT_WC or not HDT_WC.Connected then HDT_TryAttach() end
-                task.wait(0.5)
+
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not hum then return end
+    local animator = hum:WaitForChild("Animator", 5)
+
+    if animator then
+        HDT_animConn = animator.AnimationPlayed:Connect(function(track)
+            if not HDT.enabled or IsPlayerKiller() then return end
+            local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
+            if id and HDT_BLOCK_ANIM_IDS[id] then
+                HDT_TriggerFromBlock()
             end
-            HDT_RT = nil
+        end)
+    end
+
+    local function hookSound(s)
+        if not s:IsA("Sound") then return end
+        local conn = s.Played:Connect(function()
+            if not HDT.enabled or IsPlayerKiller() then return end
+            local sid = tostring(s.SoundId):match("%d+")
+            if sid and HDT_BLOCK_SOUND_IDS[sid] then
+                HDT_TriggerFromBlock()
+            end
+        end)
+        table.insert(HDT_soundConns, conn)
+    end
+
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("Sound") then hookSound(d) end
+    end
+    local descConn = char.DescendantAdded:Connect(function(d)
+        if d:IsA("Sound") then hookSound(d) end
+    end)
+    table.insert(HDT_soundConns, descConn)
+end
+
+local function HDT_Start()
+    if IsPlayerKiller() then return end
+    scanHDTBlockAssets()
+    if LP.Character then attachHDTWatcher(LP.Character) end
+    if not HDT_charConn then
+        HDT_charConn = LP.CharacterAdded:Connect(function(c)
+            task.wait(0.5)
+            if HDT.enabled then
+                scanHDTBlockAssets()
+                attachHDTWatcher(c)
+            end
         end)
     end
 end
-local function HDT_StopWatcher()
+
+local function HDT_Stop()
     HDT.enabled = false
-    if HDT_WC then pcall(function() HDT_WC:Disconnect() end); HDT_WC = nil end
-    if HDT_CH then pcall(function() HDT_CH:Disconnect() end); HDT_CH = nil end
-    if HDT_RT then pcall(task.cancel, HDT_RT); HDT_RT = nil end
-    HDT_CA = nil; HDT.debounce = false
-    pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
+    HDT.debounce = false
+    if HDT_animConn then pcall(function() HDT_animConn:Disconnect() end); HDT_animConn = nil end
+    for _, c in ipairs(HDT_soundConns) do pcall(function() c:Disconnect() end) end
+    HDT_soundConns = {}
+    if HDT_charConn then pcall(function() HDT_charConn:Disconnect() end); HDT_charConn = nil end
+    HDT_BLOCK_ANIM_IDS = {}
+    HDT_BLOCK_SOUND_IDS = {}
 end
 
-local HDTL = Tabs.HDT:AddLeftGroupbox("HDT", "activity")
+local HDTL = Tabs.HDT:AddLeftGroupbox("HDT (Block Trigger)", "activity")
 HDTL:AddToggle("HDT_En_T", { Text = "Enable HDT", Default = false, Callback = function(v)
     if v and IsPlayerKiller() then
         Library:Notify({Title = "Vortex", Description = "HDT disabled (you are Killer)", Time = 3})
         pcall(function() Options.HDT_En_T:Set(false) end); return
     end
     HDT.enabled = v
-    if v then HDT_StartWatcher() else HDT_StopWatcher() end
+    if v then HDT_Start() else HDT_Stop() end
 end })
 HDTL:AddSlider("HDT_Speed_S", { Text = "Speed", Default = 40, Min = 5, Max = 200, Rounding = 0, Callback = function(v) HDT.speed = v end })
-HDTL:AddSlider("HDT_Dur_S", { Text = "Duration (s)", Default = 0.6, Min = 0.05, Max = 3, Rounding = 3, Callback = function(v) HDT.duration = v end })
+HDTL:AddSlider("HDT_Dur_S", { Text = "Duration (s)", Default = 0.6, Min = 0.1, Max = 3, Rounding = 2, Callback = function(v) HDT.duration = v end })
+HDTL:AddSlider("HDT_Delay_S", { Text = "Delay (s)", Default = 0.05, Min = 0, Max = 0.5, Rounding = 2, Callback = function(v) HDT.delay = v end })
+HDTL:AddButton({ Text = "Test Scan (BLOCK IDs)", Func = function()
+    if IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "HDT disabled (you are Killer)", Time = 3})
+        return
+    end
+    scanHDTBlockAssets()
+    local a, s = 0, 0
+    for _ in pairs(HDT_BLOCK_ANIM_IDS) do a = a + 1 end
+    for _ in pairs(HDT_BLOCK_SOUND_IDS) do s = s + 1 end
+    Library:Notify({Title = "Vortex HDT", Description = string.format("BLOCK scan: %d anims, %d sounds", a, s), Time = 5})
+end })
 HDTL:AddButton({ Text = "Force HDT Now", Func = function()
     if IsPlayerKiller() then return end
-    local k = HDT_NearestKiller(); if k then HDT_Dash(k) end
+    local k = HDT_NearestKiller()
+    if k then HDT_Dash(k) end
 end })
 
 --═══════════════════════════════════════════════════════════════════
@@ -2216,15 +2425,20 @@ task.spawn(function()
                 pcall(function() Options.AutoBlockToggle:Set(false) end)
             end
             if HDT.enabled then
-                HDT_StopWatcher()
+                HDT_Stop()
                 pcall(function() Options.HDT_En_T:Set(false) end)
             end
             if stabState.enabled then
                 stabState.enabled = false
                 pcall(function() Options.EnableStabLerp:Set(false) end)
             end
-            if NA.active then
-                NA.active = false
+            if SA.active then
+                SA.active = false
+                if SA.animConn then pcall(function() SA.animConn:Disconnect() end); SA.animConn = nil end
+                for _, c in ipairs(SA.soundConns) do pcall(function() c:Disconnect() end) end
+                SA.soundConns = {}
+                SURVIVOR_ANIM_IDS = {}
+                SURVIVOR_SOUND_IDS = {}
                 pcall(function() Options.SA_En_T:Set(false) end)
             end
             if elliot.enabled then
@@ -2265,7 +2479,7 @@ MenuG:AddDivider()
 MenuG:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
 MenuG:AddButton("Unload", function()
     _ShuttingDown = true
-    pcall(HDT_StopWatcher)
+    pcall(HDT_Stop)
     pcall(VeerATStop)
     pcall(elliot_stop)
     pcall(jd_removePatch)
@@ -2298,7 +2512,7 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function() _ShuttingDown = true; print("[Vortex] Unloaded") end)
 Library:Notify({
     Title = "Vortex Hub",
-    Description = "4-layer auto-block loaded — fastest detection",
+    Description = "Role-gated HDT + Survivor Aim — nothing loads when you're Killer",
     Time = 5,
 })
-print("[Vortex Hub] Loaded (4-layer block)")
+print("[Vortex Hub] Loaded (role-gated)")
