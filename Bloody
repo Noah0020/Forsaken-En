@@ -1,3 +1,6 @@
+--═══════════════════════════════════════════════════════════════════
+-- Cupcake Hub — Silent Aim • Merged Auto Block • Generator Solver
+--═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -15,10 +18,68 @@ local PlayerGui = LP:WaitForChild("PlayerGui")
 local gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name
 local _ShuttingDown = false
 
+--═══════════════════════════════════════════════════════════════════
+-- PROTECTED HTTP LOADERS
+--   - Each fetch + compile + init is wrapped in pcall
+--   - Library is REQUIRED (aborts cleanly if it fails)
+--   - ThemeManager / SaveManager are OPTIONAL (no-op stubs if missing)
+--═══════════════════════════════════════════════════════════════════
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
-local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
-local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
-local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local function safeLoad(url, label)
+    local okFetch, src = pcall(function() return game:HttpGet(url) end)
+    if not okFetch or not src or #src < 100 then
+        warn("[Cupcake] Failed to download " .. label .. ": " .. tostring(src or "empty response"))
+        return nil
+    end
+    local okFn, chunkOrErr = pcall(function() return loadstring(src) end)
+    if not okFn or not chunkOrErr then
+        warn("[Cupcake] Failed to compile " .. label .. ": " .. tostring(chunkOrErr))
+        return nil
+    end
+    local okCall, lib = pcall(chunkOrErr)
+    if not okCall or not lib then
+        warn("[Cupcake] Failed to init " .. label .. ": " .. tostring(lib))
+        return nil
+    end
+    print("[Cupcake] Loaded " .. label)
+    return lib
+end
+
+local Library      = safeLoad(repo .. "Library.lua",              "Library")
+local ThemeManager = safeLoad(repo .. "addons/ThemeManager.lua",  "ThemeManager")
+local SaveManager  = safeLoad(repo .. "addons/SaveManager.lua",   "SaveManager")
+
+-- Library is required — abort cleanly if it failed
+if not Library then
+    warn("[Cupcake] FATAL: UI Library could not be loaded. Aborting script.")
+    return
+end
+
+-- ThemeManager / SaveManager are optional — no-op stubs if unavailable
+if not ThemeManager then
+    ThemeManager = {
+        SetLibrary = function() end,
+        SetDefaultTheme = function() end,
+        SetFolder = function() end,
+        ApplyToTab = function() end,
+    }
+    warn("[Cupcake] ThemeManager unavailable — using Obsidian default theme")
+end
+
+if not SaveManager then
+    SaveManager = {
+        SetLibrary = function() end,
+        IgnoreThemeSettings = function() end,
+        SetIgnoreIndexes = function() end,
+        SetFolder = function() end,
+        SetSubFolder = function() end,
+        BuildConfigSection = function() end,
+        LoadAutoloadConfig = function() end,
+    }
+    warn("[Cupcake] SaveManager unavailable — config save/load disabled")
+end
+
 local Options = Library.Options
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
@@ -166,7 +227,7 @@ function rfDispatch:uninstall(rf)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- PATCH #1: NetworkRF — synchronous lookup + async fallback
+-- NetworkRF: synchronous first, then async fallback
 --═══════════════════════════════════════════════════════════════════
 local NetworkRF = nil
 local _pendingRFRegisters = {}
@@ -471,11 +532,13 @@ local function abIsFacing(myRoot, kHRP)
     if not AB.verifyFacing then return true end
     if not myRoot or not kHRP then return false end
     local dir = myRoot.Position - kHRP.Position
-    local dSq = dir.Magnitude ^ 2
-    if dSq < 0.0001 then return true end
-    if dSq < 25 then return true end
+    local dist = dir.Magnitude
+    if dist < 0.0001 then return true end
+    if dist < 5 then return true end
+    if dist > AB.visionRange then return false end
     return kHRP.CFrame.LookVector:Dot(dir.Unit) >= math.cos(math.rad(AB.visionAngle / 2))
 end
+
 local function abAttributeHeartbeat()
     if not AB.running or not AB.attributeBlockOn or IsPlayerKiller() then return end
     local kf = GetKillersFolder(); if not kf then return end
@@ -1061,10 +1124,6 @@ local function jd_buildCamCF(myHRP, kHRP, v0, g)
     end)
     return ok and result or nil
 end
-
---═══════════════════════════════════════════════════════════════════
--- PATCH #2: jd_applyPatch uses registerRFWhenReady
---═══════════════════════════════════════════════════════════════════
 local function jd_handleRequest(reqName, ...)
     if not (jd.enabled and jd.aimbotOn) then return nil end
     local char = LP.Character
@@ -1089,7 +1148,6 @@ local function jd_handleRequest(reqName, ...)
     end
     return nil
 end
-
 local function jd_applyPatch()
     if jd.patched then return end
     jd.patched = true
@@ -1187,9 +1245,6 @@ task.spawn(function()
     end)
 end)
 
---═══════════════════════════════════════════════════════════════════
--- PATCH #3: Dusekkar uses registerRFWhenReady
---═══════════════════════════════════════════════════════════════════
 local dusekkar = { enabled=false, prediction=0.12, aimOffset=0.0 }
 local function dusekkar_handleRequest(reqName, ...)
     if reqName ~= "GetMousePosition" or not dusekkar.enabled then return nil end
@@ -2199,6 +2254,7 @@ local Config_Gen = {
 local MinigameSolver = {
     Enabled = false, ManualEnabled = false, Generation = 0,
     LockBoard = nil, Installed = false, Available = false,
+    Originals = {},
 }
 local MinigameFolder, ModulesMinigames
 local FlowBoardModule, LockBoardModule
@@ -2231,15 +2287,23 @@ local function connectSolverDelay() return math.max(0, Config_Gen.ConnectDelay o
 local function gearSolverDelay() return math.max(0, Config_Gen.GearDelay or 0.03) end
 local function solverIsEnabled() return MinigameSolver.Enabled end
 local function stillSolving(_, obj) return solverIsEnabled() and obj and not obj.Ended end
-local function waitForSolver(obj)
-    while obj and not obj.Ended and not solverIsEnabled() do task.wait(0.05) end
-    if not (obj and not obj.Ended and solverIsEnabled()) then return false end
+local function waitForSolver(obj, token)
+    while obj and not obj.Ended and not solverIsEnabled()
+          and MinigameSolver.Generation == token do
+        task.wait(0.05)
+    end
+    if not (obj and not obj.Ended and solverIsEnabled())
+       or MinigameSolver.Generation ~= token then
+        return false
+    end
     local started = os.clock()
     while obj and not obj.Ended and solverIsEnabled()
+          and MinigameSolver.Generation == token
           and os.clock() - started < (Config_Gen.StartDelay or 1.5) do
         task.wait(0.05)
     end
     return obj and not obj.Ended and solverIsEnabled()
+        and MinigameSolver.Generation == token
 end
 local function solveFlowBoard(board)
     local size, pairMap = board.Size, board.Pairs
@@ -2316,6 +2380,13 @@ local function installMinigameHooks()
     if MinigameSolver.Installed then return end
     if not MinigameSolver.Available then return end
     MinigameSolver.Installed = true
+
+    MinigameSolver.Originals.LockBoard    = LockBoardModule.new
+    MinigameSolver.Originals.FlowInput    = FlowInputModule.new
+    MinigameSolver.Originals.ConnectInput = ConnectInputModule.new
+    MinigameSolver.Originals.GearInput    = GearInputModule.new
+    MinigameSolver.Originals.LockInput    = LockInputModule.new
+
     local oldLockBoardNew = LockBoardModule.new
     LockBoardModule.new = function(...)
         local board = oldLockBoardNew(...)
@@ -2327,7 +2398,7 @@ local function installMinigameHooks()
         local obj = oldFlowNew(board, renderer, callbacks)
         local token = MinigameSolver.Generation
         task.spawn(function()
-            if not waitForSolver(obj) then return end
+            if not waitForSolver(obj, token) then return end
             task.wait(solverDelay())
             local paths = solveFlowBoard(board)
             if not paths then warn("[Cupcake] Flow: no solution"); return end
@@ -2358,7 +2429,7 @@ local function installMinigameHooks()
         local obj = oldConnectNew(board, renderer, callbacks)
         local token = MinigameSolver.Generation
         task.spawn(function()
-            if not waitForSolver(obj) then return end
+            if not waitForSolver(obj, token) then return end
             task.wait(connectSolverDelay())
             for blob in pairs(board.Blobs) do
                 if not stillSolving(token, obj) then return end
@@ -2383,7 +2454,7 @@ local function installMinigameHooks()
         local obj = oldGearNew(getCenter, callbacks, enabled)
         local token = MinigameSolver.Generation
         task.spawn(function()
-            if not waitForSolver(obj) then return end
+            if not waitForSolver(obj, token) then return end
             task.wait(math.max(0.55, solverDelay()))
             for _ = 1, 100 do
                 if not stillSolving(token, obj) then return end
@@ -2399,7 +2470,7 @@ local function installMinigameHooks()
         local board = MinigameSolver.LockBoard
         local token = MinigameSolver.Generation
         task.spawn(function()
-            if not waitForSolver(obj) then return end
+            if not waitForSolver(obj, token) then return end
             while stillSolving(token, obj) and board and not board:IsBroken() do
                 local now = workspace:GetServerTimeNow()
                 if board:IsOnTarget(board:AngleAt(now)) then
@@ -2414,6 +2485,31 @@ local function installMinigameHooks()
     end
 end
 pcall(installMinigameHooks)
+
+local function uninstallMinigameHooks()
+    if not MinigameSolver.Installed then return end
+    if MinigameSolver.Originals.LockBoard then
+        pcall(function() LockBoardModule.new = MinigameSolver.Originals.LockBoard end)
+    end
+    if MinigameSolver.Originals.FlowInput then
+        pcall(function() FlowInputModule.new = MinigameSolver.Originals.FlowInput end)
+    end
+    if MinigameSolver.Originals.ConnectInput then
+        pcall(function() ConnectInputModule.new = MinigameSolver.Originals.ConnectInput end)
+    end
+    if MinigameSolver.Originals.GearInput then
+        pcall(function() GearInputModule.new = MinigameSolver.Originals.GearInput end)
+    end
+    if MinigameSolver.Originals.LockInput then
+        pcall(function() LockInputModule.new = MinigameSolver.Originals.LockInput end)
+    end
+    MinigameSolver.Originals = {}
+    MinigameSolver.Installed = false
+    MinigameSolver.Generation += 1
+    MinigameSolver.Enabled = false
+    MinigameSolver.ManualEnabled = false
+    print("[Cupcake] Minigame hooks uninstalled")
+end
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — ESP
@@ -2467,14 +2563,15 @@ end })
 ABLeft:AddDivider()
 ABLeft:AddDropdown("AB_Mode", { Text="Block Ability", Values={"Guest1337","007n7"}, Default="Guest1337", Multi=false, Callback=function(v) Settings.AB_Mode=v end })
 ABLeft:AddDropdown("AB_Format", { Text="Fire Format", Values={"Both","Buffer","String"}, Default="Both", Multi=false, Callback=function(v) AB.fireFormat=v end })
-ABLeft:AddSlider("AB_DetRange", { Text="Detection Range", Default=20, Min=3, Max=60, Rounding=0, Callback=function(v) AB.detectionRange=v end })
+ABLeft:AddSlider("AB_DetRange", { Text="Detection Range (max scan)", Default=20, Min=3, Max=60, Rounding=0, Callback=function(v) AB.detectionRange=v end })
 ABLeft:AddSlider("AB_Cooldown", { Text="Block Cooldown (s)", Default=0.35, Min=0.02, Max=2, Rounding=2, Callback=function(v) AB.blockCooldown=v end })
 ABLeft:AddSlider("AB_Debounce", { Text="Attr Debounce (s)", Default=0.08, Min=0.02, Max=0.5, Rounding=2, Callback=function(v) Settings.AB_Debounce=v end })
 
 local ABRight = Tabs.AutoBlock:AddRightGroupbox("Vision & Punch", "eye")
 ABRight:AddToggle("AB_Facing", { Text="Verify Facing Check", Default=true, Callback=function(v) AB.verifyFacing=v end })
-ABRight:AddSlider("AB_VisRange", { Text="Vision Range (studs)", Default=13.5, Min=1, Max=30, Rounding=1, Callback=function(v) AB.visionRange=v end })
+ABRight:AddSlider("AB_VisRange", { Text="Vision Range (attack reach)", Default=13.5, Min=1, Max=30, Rounding=1, Callback=function(v) AB.visionRange=v end })
 ABRight:AddSlider("AB_VisAngle", { Text="Vision Angle (°)", Default=85, Min=10, Max=200, Rounding=0, Callback=function(v) AB.visionAngle=v end })
+ABRight:AddLabel({ Text="Detection Range = how far we scan. Vision Range = killer's attack reach. Both must pass.", DoesWrap=true })
 ABRight:AddToggle("AB_VisCone", { Text="Show Vision Cone", Default=false, Callback=function(v)
     AB.showVisionCone = v
     if not v then abCleanupVision() else task.spawn(abUpdateVision) end
@@ -2653,6 +2750,9 @@ GenLeft:AddToggle("GS_En", {
         MinigameSolver.ManualEnabled = v
         MinigameSolver.Enabled = v
         MinigameSolver.Generation += 1
+        if not v then
+            print("[Cupcake] Generator Solver disabled — active solves aborted")
+        end
     end,
 })
 GenLeft:AddSlider("GS_Start", { Text = "Start Delay (s)", Default = 1.5, Min = 0, Max = 5, Rounding = 1, Callback = function(v) Config_Gen.StartDelay = v end })
@@ -2703,7 +2803,7 @@ local AntisRight = Tabs.Antis:AddRightGroupbox("Physics", "shield")
 AntisRight:AddToggle("Anti_Pull_T", { Text="Anti-Pull", Default=false, Callback=function(v) setAntiPull(v) end })
 
 --═══════════════════════════════════════════════════════════════════
--- UI — SETTINGS (PATCH #4: AddLabel chain restored)
+-- UI — SETTINGS + THEME (with MainColor added)
 --═══════════════════════════════════════════════════════════════════
 local MenuGroup = Tabs.Settings:AddLeftGroupbox("Menu", "wrench")
 MenuGroup:AddToggle("KeybindMenuOpen", { Default=Library.KeybindFrame.Visible, Text="Open Keybind Menu", Callback=function(v) Library.KeybindFrame.Visible=v end })
@@ -2715,6 +2815,7 @@ MenuGroup:AddButton("Unload", function()
     pcall(AP_Disable); pcall(HDT_Disable); pcall(Stam_StopLoop)
     pcall(veeATStop); pcall(VeePhaseStop); pcall(TTStop); pcall(NoliAimStop)
     pcall(jd_removePatch); pcall(univ_unlock)
+    pcall(uninstallMinigameHooks)
     pcall(function() if NetworkRF then rfDispatch:uninstall(NetworkRF) end end)
     pcall(function() setFullbright(false) end)
     pcall(function() setNoclip(false) end)
@@ -2728,6 +2829,7 @@ Library.ToggleKeybind = Options.MenuKeybind
 ThemeManager:SetLibrary(Library)
 ThemeManager:SetDefaultTheme({
     BackgroundColor = Color3.fromRGB(30, 15, 20),
+    MainColor       = Color3.fromRGB(48, 22, 32),   -- panel/groupbox surface
     AccentColor     = Color3.fromRGB(220, 45, 60),
     OutlineColor    = Color3.fromRGB(80, 30, 40),
     FontColor       = Color3.fromRGB(245, 235, 240),
