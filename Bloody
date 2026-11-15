@@ -1,11 +1,5 @@
 --═══════════════════════════════════════════════════════════════════
--- Cupcake Hub v14 — Facing Box Build
---   • Auto Block: editable facing box (W/H/L/OffsetY/Thickness/Color/Follow/Detect)
---   • Anti-bait logic removed — one detection, one fire path
---   • Aim tab: Survivor Aim + Auto Parry + Punch + Elliot + Chance
---   • Silent Aim: Jane + Dusekkar
---   • HDT: single working implementation
---   • Antis populated (Anti-Pull, Anti-Fall-Slow)
+-- Cupcake Hub v12 — Noli v3 + Killer Facing Box
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -14,9 +8,11 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
+local Stats = game:GetService("Stats")
+local TextChatService = game:GetService("TextChatService")
 local Lighting = game:GetService("Lighting")
 local UserInputService = game:GetService("UserInputService")
-local Debris = game:GetService("Debris")
+local PathfindingService = game:GetService("PathfindingService")
 
 local PlayerGui = LP:WaitForChild("PlayerGui")
 local gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name
@@ -45,10 +41,10 @@ local Tabs = {
     AutoBlock = Window:AddTab("Auto Block", "shield"),
     HDT       = Window:AddTab("HDT", "activity"),
     Aim       = Window:AddTab("Aim", "crosshair"),
-    Silent    = Window:AddTab("Silent Aim", "target"),
     TwoTime   = Window:AddTab("Two Time", "user"),
     Noli      = Window:AddTab("Noli", "zap"),
     Vee       = Window:AddTab("Vee", "gamepad-2"),
+    Gen       = Window:AddTab("Gen", "cpu"),
     Misc      = Window:AddTab("Misc", "wrench"),
     Antis     = Window:AddTab("Antis", "lock"),
     Settings  = Window:AddTab("Settings", "settings"),
@@ -58,37 +54,41 @@ local Tabs = {
 -- SETTINGS
 --═══════════════════════════════════════════════════════════════════
 local Settings = {
-    -- Auto Block
-    ABMode = "Guest 1337",
-    AimPunch = false, PunchDelay = 0.5,
-    -- HDT
-    HDTEnabled = false, HDTDelay = 0.05, HDTDuration = 0.6, HDTSpeed = 40,
-    -- Survivor Aim
-    AIM_Enabled = false, AIM_Mode = "Character", AIM_Prediction = 4, AIM_LockTime = 0.7,
-    -- Auto Parry / Punch
+    AB_Mode = "Guest1337", AB_Debounce = 0.08, AB_ShowBox = true,
+    RectDistance = 3, RectOffset = 0,
+    RectEdgeTransparency = 0.2, RectEdgeThickness = 0.05,
+    RectDuration = 0.3, RectWidth = 4, RectHeight = 4, RectLength = 6,
+    RectSuccessColor = "120,255,120",
+    Stam_MaxStamina = 100, Stam_SprintSpeed = 26, Stam_Gain = 20, Stam_Loss = 10,
+    HDT_Speed = 40, HDT_Duration = 0.6,
+    AIM_Enabled = false, AIM_Mode = "Character", AIM_Prediction = 4,
+    AIM_LockTime = 0.7,
     AP_Delay = 0.5, PA_Enabled = false, PA_Prediction = 4,
-    -- Elliot
-    Elliot_Enabled = false, Elliot_AimType = "Camera + Character", Elliot_TargetMode = "Low HP",
-    Elliot_ThrowDur = 0.6, Elliot_Smoothness = 0.15, Elliot_PredDist = 5, Elliot_RequireAnim = true,
-    -- Chance
-    Chance_Enabled = false, Chance_PredMode = "Velocity", Chance_PredValue = 0.5,
-    Chance_AimBehavior = "Normal", Chance_HoldToAim = true,
-    -- Silent Aim
-    Jane_Enabled = false, Jane_AimbotOn = false, Jane_AimOffset = -0.3, Jane_Prediction = 0.6,
-    Dusekkar_Enabled = false, Dusekkar_Prediction = 0.12, Dusekkar_AimOffset = 0.0,
-    -- Two Time
-    TT_Enabled = false, TT_BehindOffset = 1.7, TT_MaxRange = 60, TT_Cooldown = 0.5,
+    ESP_Killer = false, ESP_Survivor = false,
+    ESP_Generator = false, ESP_Medkit = false, ESP_Bloxy = false,
+    ESP_WallCheck = false, ESP_MaxDist = 150,
+    TT_Enabled = false,
+    TT_BehindOffset = 1.7, TT_MaxRange = 60, TT_Cooldown = 0.5,
     TT_FollowDuration = 0.5, TT_LerpSpeed = 45,
-    -- ESP
-    ESP_Killer = false, ESP_Survivor = false, ESP_Generator = false,
-    ESP_Medkit = false, ESP_Bloxy = false, ESP_WallCheck = false, ESP_MaxDist = 150,
-    -- Noli (stub)
-    Noli_AIM_Enabled = false, Noli_AimDuration = 3.5, Noli_MaxRange = 500,
-    Noli_LineColor = "255,0,0", Noli_LineThickness = 0.22,
-    -- Vee
-    VeeAutoTrick = false,
+    Noli_AIM_Enabled = false,
+    Noli_AimDuration = 3.5,
+    Noli_MaxRange = 500,
+    Noli_LineColor = "255,0,0",
+    Noli_LineThickness = 0.22,
+    Noli_UseStraight = false,
+    Noli_MoveSpeed = 45,
+    Noli_TurnSmoothness = 10,
+    VeeAutoTrick = false, VeeAutoPhase = false,
+    VeeSkateControl = false, VeeCustomStats = false,
+    VeeSk8Speed = 1.15, VeeSk8StaminaCost = 1.35, VeeSk8TrickAirborne = 1.42,
+    VeeSk8BumpPower = 11.9, VeeSk8TrickStamina = 4, VeeSk8TrickCooldown = 1,
+    GS_StartDelay = 1.5, GS_FlowDelay = 0.05, GS_ConnectDelay = 1.0, GS_GearDelay = 0.03,
+    FOV_Mult = 1,
 }
 
+--═══════════════════════════════════════════════════════════════════
+-- HELPERS
+--═══════════════════════════════════════════════════════════════════
 local function ParseColor(s, dr, dg, db)
     local r, g, b = string.match(tostring(s or ""), "(%d+),(%d+),(%d+)")
     return Color3.fromRGB(tonumber(r) or dr, tonumber(g) or dg, tonumber(b) or db)
@@ -121,131 +121,7 @@ LP.CharacterAdded:Connect(function(c)
 end)
 
 --═══════════════════════════════════════════════════════════════════
--- BOX FACING CHECK  (fully editable visual + detection)
---═══════════════════════════════════════════════════════════════════
-local FacingCheck = {
-    Width  = 8,
-    Height = 6,
-    Length = 15,
-
-    Color        = Color3.fromRGB(255, 40, 40),
-    Transparency = 0,
-    Thickness    = 0.045,
-
-    FollowPlayer     = true,  -- box tracks your character
-    OffsetY          = 0,     -- raise/lower box center
-    VisualEnabled    = true,  -- draw the 12 neon edges
-    DetectionEnabled = true,  -- gate auto block detection
-}
-
-local FacingFolder = Instance.new("Folder")
-FacingFolder.Name = "Cupcake_FacingCheck"
-FacingFolder.Parent = Workspace
-
-local FacingEdges = {}
-for i = 1, 12 do
-    local p = Instance.new("Part")
-    p.Name = "FacingEdge"
-    p.Anchored = true
-    p.CanCollide = false
-    p.CanTouch = false
-    p.CanQuery = false
-    p.CastShadow = false
-    p.Material = Enum.Material.Neon
-    p.Color = FacingCheck.Color
-    p.Transparency = 1
-    p.Size = Vector3.new(1, 1, 1)
-    p.Parent = FacingFolder
-    FacingEdges[i] = p
-end
-
-local FacingConnections = {
-    {1,2}, {3,4}, {5,6}, {7,8},
-    {1,3}, {2,4}, {5,7}, {6,8},
-    {1,5}, {2,6}, {3,7}, {4,8},
-}
-
-local function FacingUpdateVisual()
-    if not FacingCheck.VisualEnabled then
-        for _, e in ipairs(FacingEdges) do
-            if e.Transparency ~= 1 then e.Transparency = 1 end
-        end
-        return
-    end
-
-    local char = LP.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-
-    local W, H, L = FacingCheck.Width, FacingCheck.Height, FacingCheck.Length
-    local center  = root.Position + Vector3.new(0, FacingCheck.OffsetY, 0)
-
-    local lv = root.CFrame.LookVector
-    local flat = Vector3.new(lv.X, 0, lv.Z)
-    if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
-    flat = flat.Unit
-
-    local cf = CFrame.lookAt(center, center + flat)
-
-    local X, Y, Z = W / 2, H / 2, L / 2
-    local corners = {
-        Vector3.new(-X,-Y,-Z), Vector3.new(X,-Y,-Z), Vector3.new(-X,Y,-Z), Vector3.new(X,Y,-Z),
-        Vector3.new(-X,-Y, Z), Vector3.new(X,-Y, Z), Vector3.new(-X,Y, Z), Vector3.new(X,Y, Z),
-    }
-    local P = {}
-    for i, c in ipairs(corners) do P[i] = cf:PointToWorldSpace(c) end
-
-    for i, c in ipairs(FacingConnections) do
-        local A, B = P[c[1]], P[c[2]]
-        local mid  = (A + B) * 0.5
-        local dist = (B - A).Magnitude
-        local e = FacingEdges[i]
-        e.Size     = Vector3.new(FacingCheck.Thickness, FacingCheck.Thickness, dist)
-        e.CFrame   = CFrame.lookAt(mid, B)
-        e.Color    = FacingCheck.Color
-        e.Transparency = FacingCheck.Transparency
-    end
-end
-
-RunService.RenderStepped:Connect(function()
-    if FacingCheck.FollowPlayer then FacingUpdateVisual() end
-end)
-
-LP.CharacterRemoving:Connect(function()
-    for _, e in ipairs(FacingEdges) do e.Transparency = 1 end
-end)
-
-LP.CharacterAdded:Connect(function()
-    task.wait(0.2)
-    FacingUpdateVisual()
-end)
-
--- Point-in-oriented-box test in the player's facing frame
-local function IsInsideFacingBox(worldPos)
-    if not FacingCheck.DetectionEnabled then return false end
-    local char = LP.Character
-    if not char then return false end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return false end
-
-    local lv = root.CFrame.LookVector
-    local flat = Vector3.new(lv.X, 0, lv.Z)
-    if flat.Magnitude < 0.01 then return false end
-    flat = flat.Unit
-
-    local right = Vector3.new(-flat.Z, 0, flat.X)
-    local up    = Vector3.new(0, 1, 0)
-    local center = root.Position + Vector3.new(0, FacingCheck.OffsetY, 0)
-    local d = worldPos - center
-
-    return math.abs(d:Dot(right)) <= FacingCheck.Width  / 2
-       and math.abs(d:Dot(up))    <= FacingCheck.Height / 2
-       and math.abs(d:Dot(flat))  <= FacingCheck.Length / 2
-end
-
---═══════════════════════════════════════════════════════════════════
--- NETWORK
+-- REMOTE
 --═══════════════════════════════════════════════════════════════════
 local NetworkEvent
 do
@@ -255,136 +131,99 @@ do
     NetworkEvent = n2 and n2:FindFirstChild("RemoteEvent")
     if not NetworkEvent then NetworkEvent = ReplicatedStorage:FindFirstChild("RemoteEvent", true) end
 end
-local NetworkRF = nil
-pcall(function()
-    NetworkRF = ReplicatedStorage:WaitForChild("Modules",10):WaitForChild("Network",10):WaitForChild("Network",10):WaitForChild("RemoteFunction",10)
-end)
-
-local rfDispatch = { hooks={}, installed=false, originalCallback=nil }
-function rfDispatch:register(id, cb) self.hooks[id] = cb end
-function rfDispatch:unregister(id) self.hooks[id] = nil end
-function rfDispatch:install(rf)
-    if self.installed then return end
-    if typeof(getcallbackvalue) == "function" then
-        self.originalCallback = getcallbackvalue(rf, "OnClientInvoke")
-    else
-        self.originalCallback = rf.OnClientInvoke
-    end
-    rf.OnClientInvoke = function(name, ...)
-        if name == "GetMousePosition" or name == "GetCameraCF" then
-            for _, cb in pairs(self.hooks) do
-                local ok, res = pcall(cb, name, ...)
-                if ok and res ~= nil then return res end
-            end
-        end
-        if self.originalCallback then
-            local ok, res = pcall(self.originalCallback, name, ...)
-            if ok then return res end
-        end
-    end
-    self.installed = true
-end
-function rfDispatch:uninstall()
-    if not self.installed or not NetworkRF then return end
-    NetworkRF.OnClientInvoke = self.originalCallback
-    self.hooks = {}; self.originalCallback = nil; self.installed = false
-end
-if NetworkRF then pcall(function() rfDispatch:install(NetworkRF) end) end
 
 --═══════════════════════════════════════════════════════════════════
--- VELOCITY
---═══════════════════════════════════════════════════════════════════
-local _velHistory = setmetatable({}, {__mode = "k"})
-local function getHRPVelocity(hrp)
-    if not hrp or not hrp.Parent then return Vector3.zero end
-    local now = tick()
-    local d = _velHistory[hrp]
-    if not d then _velHistory[hrp] = {p=hrp.Position, t=now, v=Vector3.zero, s={}}; return Vector3.zero end
-    local dt = now - d.t
-    if dt > 0.001 then
-        local iv = (hrp.Position - d.p) / dt
-        table.insert(d.s, iv); if #d.s > 6 then table.remove(d.s, 1) end
-        local sum = Vector3.zero
-        for _, v in ipairs(d.s) do sum = sum + v end
-        d.v = sum / #d.s; d.p = hrp.Position; d.t = now
-    end
-    return d.v
-end
-local function predictHRP(hrp, lead)
-    if not hrp then return nil end
-    local vel = getHRPVelocity(hrp)
-    if vel.Magnitude < 0.5 then return hrp.Position end
-    return hrp.Position + vel * (lead or 0.2)
-end
-
---═══════════════════════════════════════════════════════════════════
--- ABILITY IDs (used by Survivor Aim)
+-- ID TABLES
 --═══════════════════════════════════════════════════════════════════
 local STUN_ABILITY_NAMES = {
-    Slash=true, OneShot=true, ["One Shot"]=true, Shoot=true, AimGun=true,
-    GunFire=true, GunExplode=true, GunFail=true, ["Sacrificial Dagger"]=true,
-    Dagger=true, Stab=true, Lunge=true, LungeStart=true, Punch=true, Parry=true, Block=true,
+    Slash = true, OneShot = true, ["One Shot"] = true, Shoot = true,
+    AimGun = true, GunFire = true, GunExplode = true, GunFail = true,
+    ["Sacrificial Dagger"] = true, Dagger = true, Stab = true,
+    Lunge = true, LungeStart = true, Punch = true, Parry = true, Block = true,
 }
 local STUN_SOUND_FIELDS = { "Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds" }
 local STATIC_STUN_ANIM_IDS = {
-    ["103601716322988"]="GunFire",["133491532453922"]="AimGun",["86371356500204"]="GunExplode",
-    ["76649505662612"]="GunFail",["81698196845041"]="GunFail",["100725497418533"]="Stab",["89448354637442"]="Lunge",
+    ["103601716322988"] = "GunFire", ["133491532453922"] = "AimGun",
+    ["86371356500204"] = "GunExplode", ["76649505662612"] = "GunFail",
+    ["81698196845041"] = "GunFail", ["100725497418533"] = "Stab",
+    ["89448354637442"] = "Lunge",
 }
 local STUN_ANIM_IDS, STUN_SOUND_IDS = {}, {}
 local PunchAnims = {}
 for _, id in ipairs({100129666722695,108807732150251,108911997126897,111270184603402,113936304594883,114294293966030,115877419084531,116427323741607,119850211147676,121347891120512,122560631718612,123142632470371,127777649118195,129843313690921,130041116394309,132010205222516,133398613783505,135562195148584,136007065400978,138040001965654,138936949998619,140703210927645,255661850,71190646367497,7130144078,72007882634344,72685103823181,73737871217870,73908019523515,78440860685556,81905101227053,82137285150006,83161312898155,86096387000557,86709774283672,87259391926321,87716278630738,90604236361267,9113764330,91730605416216,91794561199608,91810464218576,94245829151472,99422325754526}) do PunchAnims["rbxassetid://"..id] = true end
-local function extractAnimIds(v)
-    local o = {}
-    if type(v) == "string" or type(v) == "number" then
-        local id = tostring(v):match("%d+"); if id then table.insert(o, id) end
-    elseif type(v) == "table" then
-        for _, x in pairs(v) do for _, id in ipairs(extractAnimIds(x)) do table.insert(o, id) end end
+
+local function extractAnimIds(value)
+    local out = {}
+    if type(value) == "string" or type(value) == "number" then
+        local id = tostring(value):match("%d+")
+        if id then table.insert(out, id) end
+    elseif type(value) == "table" then
+        for _, v in pairs(value) do
+            for _, id in ipairs(extractAnimIds(v)) do table.insert(out, id) end
+        end
     end
-    return o
+    return out
 end
-local function isStunName(n)
-    if type(n) ~= "string" then return false end
-    if STUN_ABILITY_NAMES[n] then return true end
-    local l = n:lower():gsub("[%s_%-]", "")
-    for s in pairs(STUN_ABILITY_NAMES) do if l == s:lower():gsub("[%s_%-]", "") then return true end end
+local function isStunAbilityName(name)
+    if type(name) ~= "string" then return false end
+    if STUN_ABILITY_NAMES[name] then return true end
+    local n = name:lower():gsub("[%s_%-]", "")
+    for s in pairs(STUN_ABILITY_NAMES) do
+        if n == s:lower():gsub("[%s_%-]", "") then return true end
+    end
     return false
 end
-local function readConfig(mod)
-    local ok, cfg = pcall(require, mod); if not ok or type(cfg) ~= "table" then return end
-    if type(cfg.Animations) == "table" then
-        for n, v in pairs(cfg.Animations) do
-            if isStunName(n) then for _, id in ipairs(extractAnimIds(v)) do STUN_ANIM_IDS[id] = n end end
-        end
-    end
-    for _, f in ipairs(STUN_SOUND_FIELDS) do
-        if type(cfg[f]) == "table" then
-            for n, v in pairs(cfg[f]) do
-                if isStunName(n) then for _, id in ipairs(extractAnimIds(v)) do STUN_SOUND_IDS[id] = n end end
+local function readConfigModule(module)
+    local ok, cfg = pcall(require, module)
+    if not ok or type(cfg) ~= "table" then return end
+    local function processAnimTable(t)
+        if type(t) ~= "table" then return end
+        for abilityName, animValue in pairs(t) do
+            if isStunAbilityName(abilityName) then
+                for _, id in ipairs(extractAnimIds(animValue)) do STUN_ANIM_IDS[id] = abilityName end
             end
         end
+    end
+    if type(cfg.Animations) == "table" then processAnimTable(cfg.Animations) end
+    if type(cfg.Config) == "table" and type(cfg.Config.Animations) == "table" then processAnimTable(cfg.Config.Animations) end
+    local function processSoundTable(t)
+        if type(t) ~= "table" then return end
+        for abilityName, soundValue in pairs(t) do
+            if isStunAbilityName(abilityName) then
+                for _, id in ipairs(extractAnimIds(soundValue)) do STUN_SOUND_IDS[id] = abilityName end
+            end
+        end
+    end
+    for _, field in ipairs(STUN_SOUND_FIELDS) do
+        if type(cfg[field]) == "table" then processSoundTable(cfg[field]) end
+        if type(cfg.Config) == "table" and type(cfg.Config[field]) == "table" then processSoundTable(cfg.Config[field]) end
     end
 end
 local function LoadAbilityIds(char)
     STUN_ANIM_IDS, STUN_SOUND_IDS = {}, {}
-    for id, n in pairs(STATIC_STUN_ANIM_IDS) do STUN_ANIM_IDS[id] = n end
-    local assets = ReplicatedStorage:FindFirstChild("Assets"); if not assets then return end
-    local cn = char:GetAttribute("CharacterName") or char.Name
-    local sn = char:GetAttribute("SkinName") or "Default"
-    for _, role in ipairs({"Survivors","Killers"}) do
-        local rf = assets:FindFirstChild(role); local cf = rf and rf:FindFirstChild(cn)
+    for id, name in pairs(STATIC_STUN_ANIM_IDS) do STUN_ANIM_IDS[id] = name end
+    local assets = ReplicatedStorage:FindFirstChild("Assets")
+    if not assets then return end
+    local charName = char:GetAttribute("CharacterName") or char.Name
+    local skinName = char:GetAttribute("SkinName") or "Default"
+    for _, role in ipairs({"Survivors", "Killers"}) do
+        local rf = assets:FindFirstChild(role)
+        local cf = rf and rf:FindFirstChild(charName)
         if cf then
-            local c = cf:FindFirstChild("Config"); if c then readConfig(c) end
-            local b = cf:FindFirstChild("Behavior"); if b then readConfig(b) end
+            local c = cf:FindFirstChild("Config"); if c then readConfigModule(c) end
+            local b = cf:FindFirstChild("Behavior"); if b then readConfigModule(b) end
         end
     end
-    if sn ~= "Default" then
+    if skinName and skinName ~= "Default" then
         local sr = assets:FindFirstChild("Skins")
         if sr then
-            for _, role in ipairs({"Survivors","Killers"}) do
-                local r = sr:FindFirstChild(role); local c = r and r:FindFirstChild(cn); local s = c and c:FindFirstChild(sn)
-                if s then
-                    local cc = s:FindFirstChild("Config"); if cc then readConfig(cc) end
-                    local bb = s:FindFirstChild("Behavior"); if bb then readConfig(bb) end
+            for _, role in ipairs({"Survivors", "Killers"}) do
+                local srole = sr:FindFirstChild(role)
+                local sc = srole and srole:FindFirstChild(charName)
+                local sf = sc and sc:FindFirstChild(skinName)
+                if sf then
+                    local c = sf:FindFirstChild("Config"); if c then readConfigModule(c) end
+                    local b = sf:FindFirstChild("Behavior"); if b then readConfigModule(b) end
                 end
             end
         end
@@ -392,282 +231,67 @@ local function LoadAbilityIds(char)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- FIRE ABILITY
+-- PREDICTION
 --═══════════════════════════════════════════════════════════════════
-local function FireAbility(name)
-    if not NetworkEvent then return end
-    pcall(function() NetworkEvent:FireServer("UseActorAbility", {name}) end)
+local _velHistoryByHrp = setmetatable({}, {__mode = "k"})
+local PRED_MIN, PRED_MAX = 2, 3
+local function smoothedVelocity(hrp)
+    if not hrp then return Vector3.zero end
+    local v = hrp.AssemblyLinearVelocity
+    local hist = _velHistoryByHrp[hrp]
+    if not hist then hist = {}; _velHistoryByHrp[hrp] = hist end
+    table.insert(hist, v)
+    if #hist > 10 then table.remove(hist, 1) end
+    local sum = Vector3.zero
+    for i = 1, #hist do sum = sum + hist[i] end
+    return sum / math.max(#hist, 1)
 end
-local function FireBlockBuffer()
-    if not NetworkEvent then return end
-    pcall(function() NetworkEvent:FireServer(unpack({"UseActorAbility", {buffer.fromstring("\003\005\000\000\000Block")}})) end)
-end
-local function FireCloneBuffer()
-    if not NetworkEvent then return end
-    pcall(function() NetworkEvent:FireServer(unpack({"UseActorAbility", {buffer.fromstring("\003\005\000\000\000Clone")}})) end)
-end
-local function FireABByMode()
-    if Settings.ABMode == "007n7" then FireCloneBuffer() else FireBlockBuffer() end
-end
-
---═══════════════════════════════════════════════════════════════════
--- HDT (single working implementation)
---═══════════════════════════════════════════════════════════════════
-HDT = { enabled=false, speed=40, delay=0.05, duration=0.6, debounce=false }
-local HDT_BIND = "Cupcake_HDT_Bind"
-local HDT_ANIMS = { ["72722244508749"]=true,["96959123077498"]=true,["95802026624883"]=true,["140671644163156"]=true,["100926346851492"]=true }
-local HDT_WC, HDT_CH, HDT_RT, HDT_CA = nil, nil, nil, nil
-
-local function HDT_NearestKiller()
-    local kf = GetKillersFolder(); if not kf then return nil end
-    local c = LP.Character; local mr = c and c:FindFirstChild("HumanoidRootPart"); if not mr then return nil end
-    local best, bd = nil, math.huge
-    for _, k in ipairs(kf:GetChildren()) do
-        if k:IsA("Model") then
-            local kr = k:FindFirstChild("HumanoidRootPart")
-            if kr then local d = (kr.Position - mr.Position).Magnitude; if d < bd then best, bd = k, d end end
+local function PredictPosition(hrp)
+    if not hrp then return nil end
+    local pos = hrp.Position
+    local slider = math.clamp(Settings.AIM_Prediction or 4, 0, 10)
+    if slider <= 0.01 then return pos end
+    local vel = smoothedVelocity(hrp)
+    local horiz = Vector3.new(vel.X, 0, vel.Z)
+    local speed = horiz.Magnitude
+    if speed < 1.2 then return pos end
+    local mul = slider / 4
+    local lead = (PRED_MIN + (PRED_MAX - PRED_MIN) * math.clamp(speed / 28, 0, 1)) * mul
+    local hist = _velHistoryByHrp[hrp]
+    if hist and #hist >= 3 then
+        local a = hist[#hist - 2]; local b = hist[#hist]
+        local ah = Vector3.new(a.X, 0, a.Z); local bh = Vector3.new(b.X, 0, b.Z)
+        if ah.Magnitude > 2 and bh.Magnitude > 2 and ah.Unit:Dot(bh.Unit) < 0.45 then
+            lead = lead + 0.9 * mul
         end
     end
-    return best
+    return pos + horiz.Unit * lead
 end
-local function HDT_Dash(km)
-    if HDT.debounce or not km or not km.Parent then return end
-    local c = LP.Character; if not c then return end
-    local hrp = c:FindFirstChild("HumanoidRootPart"); local h = c:FindFirstChildOfClass("Humanoid")
-    if not hrp or not h then return end
-    local kr = km:FindFirstChild("HumanoidRootPart") or km.PrimaryPart; if not kr then return end
-    if (kr.Position - hrp.Position).Magnitude < 2.5 then return end
-    HDT.debounce = true
-    local oWS, oAR = h.WalkSpeed, h.AutoRotate
-    h.WalkSpeed = HDT.speed; h.AutoRotate = true
-    local st = tick()
-    pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
-    RunService:BindToRenderStep(HDT_BIND, Enum.RenderPriority.Last.Value + 1, function()
-        if not HDT.debounce then pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end); return end
-        if not c.Parent or not km.Parent or not h.Parent then HDT.debounce = false; return end
-        local t = km:FindFirstChild("HumanoidRootPart"); if not t then HDT.debounce = false; return end
-        local flat = Vector3.new(t.Position.X - hrp.Position.X, 0, t.Position.Z - hrp.Position.Z)
-        if flat.Magnitude <= 2 then HDT.debounce = false; return end
-        h.WalkSpeed = HDT.speed; h:Move(flat.Unit, false)
-        if tick() - st > HDT.duration then HDT.debounce = false end
-    end)
-    task.delay(HDT.duration + 0.2, function() if HDT.debounce then HDT.debounce = false end end)
-    task.spawn(function()
-        while HDT.debounce do task.wait() end
-        pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
-        if h and h.Parent then pcall(function() h:Move(Vector3.zero, false); h.WalkSpeed = oWS; h.AutoRotate = oAR end) end
-    end)
-end
-local function HDT_OnAnim(track)
-    if not HDT.enabled or HDT.debounce or IsPlayerKiller() then return end
-    local id; pcall(function() id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+") end)
-    if not id or not HDT_ANIMS[id] then return end
-    local k = HDT_NearestKiller(); if not k then return end
-    if HDT.delay > 0 then task.delay(HDT.delay, function() if HDT.enabled and not HDT.debounce then HDT_Dash(k) end end)
-    else HDT_Dash(k) end
-end
-local function HDT_TryAttach()
-    local c = LP.Character; if not c then return end
-    local h = c:FindFirstChildOfClass("Humanoid"); if not h then return end
-    local an = h:FindFirstChildOfClass("Animator"); if not an then return end
-    if HDT_CA == an and HDT_WC and HDT_WC.Connected then return end
-    if HDT_WC then pcall(function() HDT_WC:Disconnect() end); HDT_WC = nil end
-    HDT_CA = an
-    HDT_WC = an.AnimationPlayed:Connect(function(track) pcall(HDT_OnAnim, track) end)
-end
-local function HDT_StartWatcher()
-    if not HDT.enabled then return end
-    HDT_TryAttach()
-    if not HDT_CH then
-        HDT_CH = LP.CharacterAdded:Connect(function()
-            task.wait(0.3); if HDT.enabled then HDT_TryAttach() end
-            task.wait(1); if HDT.enabled then HDT_TryAttach() end
-        end)
-    end
-    if not HDT_RT then
-        HDT_RT = task.spawn(function()
-            while HDT.enabled do
-                if not HDT_WC or not HDT_WC.Connected then HDT_TryAttach() end
-                task.wait(0.5)
-            end
-            HDT_RT = nil
-        end)
-    end
-end
-local function HDT_StopWatcher()
-    HDT.enabled = false
-    if HDT_WC then pcall(function() HDT_WC:Disconnect() end); HDT_WC = nil end
-    if HDT_CH then pcall(function() HDT_CH:Disconnect() end); HDT_CH = nil end
-    if HDT_RT then pcall(task.cancel, HDT_RT); HDT_RT = nil end
-    HDT_CA = nil; HDT.debounce = false
-    pcall(function() RunService:UnbindFromRenderStep(HDT_BIND) end)
-end
-
---═══════════════════════════════════════════════════════════════════
--- AUTO BLOCK — FACING BOX DETECTION (no anti-bait)
---═══════════════════════════════════════════════════════════════════
-local NS_KILLER_TIMING = {
-    ["CoolKid"]={dura=0.05,life=0.05},["Slasher"]={dura=0.35,life=0.35},
-    ["1x1x1x1"]={dura=0.45,life=0.45},["JohnDoe"]={dura=0.45,life=0.45},
-    ["John Doe"]={dura=0.45,life=0.45},["Nosferatu"]={dura=0.42,life=0.42},
-    ["Sixer"]={dura=0.42,life=0.42},["Noli"]={dura=0.37,life=0.37},["Azure"]={dura=0.35,life=0.35},
-}
-local NS_DEFAULT_TIMING = { dura=0.26, life=0.26 }
-local function NS_getTiming(n)
-    if not n then return NS_DEFAULT_TIMING end
-    for k, v in pairs(NS_KILLER_TIMING) do if string.find(n, k, 1, true) then return v end end
-    return NS_DEFAULT_TIMING
-end
-
-local _ns_spamThread = nil
-local function NS_spamBlock(dur)
-    if _ns_spamThread then task.cancel(_ns_spamThread) end
-    _ns_spamThread = task.spawn(function()
-        local t = tick() + dur
-        while tick() < t do FireABByMode(); task.wait(0.001) end
-        _ns_spamThread = nil
-    end)
-end
-
-local function NS_CheckFacingBox(killerModel)
-    if IsPlayerKiller() then return end
-    if not killerModel or not killerModel.Parent then return end
-
-    local timing = NS_getTiming(killerModel.Name)
-
-    task.spawn(function()
-        local st = tick()
-        local blocked = false
-        while tick() - st < timing.dura do
-            if blocked or IsPlayerKiller() then break end
-            local ckr = killerModel:FindFirstChild("HumanoidRootPart")
-                     or killerModel:FindFirstChild("RootPart")
-            if not ckr then break end
-
-            if IsInsideFacingBox(ckr.Position) then
-                blocked = true
-                FireABByMode(); FireABByMode(); FireABByMode(); FireABByMode()
-                NS_spamBlock(0.05)
-                break
-            end
-            RunService.Heartbeat:Wait()
-        end
-    end)
-end
-
---═══════════════════════════════════════════════════════════════════
--- AUTO BLOCK CORE
---═══════════════════════════════════════════════════════════════════
-AB = { running = false, loopConn = nil, killerStates = {}, soundConns = {} }
-
-local BlockSuccessSounds = {
-    ["rbxassetid://132298811847315"]=true, ["rbxassetid://81114852524420"]=true,
-    ["rbxassetid://123825742002486"]=true, ["rbxassetid://116616310968045"]=true,
-    ["rbxassetid://102808968188291"]=true, ["rbxassetid://117828699507982"]=true,
-    ["rbxassetid://125854302746190"]=true, ["rbxassetid://18568553101"]=true,
-    ["rbxassetid://95135835034592"]=true, ["rbxassetid://135209101640984"]=true,
-    ["rbxassetid://91165993312513"]=true, ["rbxassetid://82772022662025"]=true,
-}
-
-local function HookAutoPunch(char)
-    if not char then return end
-    local function try(s)
-        if not s:IsA("Sound") or not BlockSuccessSounds[s.SoundId] then return end
-        if not Settings.AimPunch then return end
-        task.delay(Settings.PunchDelay or 0.5, function()
-            if Settings.AimPunch then FireAbility("Punch") end
-        end)
-    end
-    for _, d in ipairs(char:GetDescendants()) do
-        if d:IsA("Sound") then d.Played:Connect(function() try(d) end) end
-    end
-    table.insert(AB.soundConns, char.DescendantAdded:Connect(function(d)
-        if d:IsA("Sound") then d.Played:Connect(function() try(d) end) end
-    end))
-end
-
-local function StartAutoBlock()
-    if AB.running then return end
-    AB.running = true
-    AB.killerStates = {}
-    if LP.Character then HookAutoPunch(LP.Character) end
-    table.insert(AB.soundConns, LP.CharacterAdded:Connect(HookAutoPunch))
-
-    AB.loopConn = RunService.Heartbeat:Connect(function()
-        if not AB.running or IsPlayerKiller() then return end
-        local kf = GetKillersFolder(); if not kf then return end
-        for _, k in ipairs(kf:GetChildren()) do
-            if k:IsA("Model") then
-                local alu = k:GetAttribute("AbilityLastUsed") or 0
-                local st  = AB.killerStates[k]
-                if not st then
-                    AB.killerStates[k] = { lastAbility = alu }
-                elseif alu > st.lastAbility then
-                    st.lastAbility = alu
-                    NS_CheckFacingBox(k)   -- one detection, one fire path
-                end
-            end
-        end
-    end)
-end
-local function StopAutoBlock()
-    AB.running = false
-    if AB.loopConn then pcall(function() AB.loopConn:Disconnect() end); AB.loopConn = nil end
-    for _, c in ipairs(AB.soundConns) do pcall(function() c:Disconnect() end) end
-    AB.soundConns = {}
-    AB.killerStates = {}
-    if _ns_spamThread then pcall(task.cancel, _ns_spamThread); _ns_spamThread = nil end
-end
-
--- Idk auto mode detect
-local IdkLoop = { running = false, thread = nil }
-local function StartIdkLoop()
-    if IdkLoop.running then return end
-    IdkLoop.running = true
-    IdkLoop.thread = task.spawn(function()
-        while IdkLoop.running do
-            task.wait(0.3)
-            local m = PlayerGui:FindFirstChild("MainUI")
-            local c = m and m:FindFirstChild("AbilityContainer", true)
-            if c then
-                local hasB = c:FindFirstChild("Block") ~= nil
-                local hasC = c:FindFirstChild("Clone") ~= nil
-                local expected = (hasC and not hasB) and "007n7" or ((hasB and not hasC) and "Guest 1337" or nil)
-                if expected and Settings.ABMode ~= expected then
-                    Settings.ABMode = expected
-                    pcall(function() Options.AB_Mode_DD:Set(expected) end)
-                end
-            end
-        end
-    end)
-end
-local function StopIdkLoop()
-    IdkLoop.running = false
-    if IdkLoop.thread then pcall(task.cancel, IdkLoop.thread); IdkLoop.thread = nil end
-end
-
---═══════════════════════════════════════════════════════════════════
--- SURVIVOR AIM
---═══════════════════════════════════════════════════════════════════
 local function GetNearestKillerHrp()
     local char = LP.Character; if not char then return nil end
     local kf = GetKillersFolder(); if not kf then return nil end
     local myHrp = char:FindFirstChild("HumanoidRootPart"); if not myHrp then return nil end
-    local best, bd = nil, math.huge
+    local best, bestD = nil, math.huge
     for _, m in ipairs(kf:GetChildren()) do
         if m:IsA("Model") then
-            local mHrp = m:FindFirstChild("HumanoidRootPart"); local mHum = m:FindFirstChildOfClass("Humanoid")
+            local mHrp = m:FindFirstChild("HumanoidRootPart")
+            local mHum = m:FindFirstChildOfClass("Humanoid")
             if mHrp and mHum and mHum.Health > 0 then
                 local d = (mHrp.Position - myHrp.Position).Magnitude
-                if d < bd then bd = d; best = mHrp end
+                if d < bestD then bestD = d; best = mHrp end
             end
         end
     end
     return best
 end
-local function HardLockFacing(dur, wantCam)
+
+--═══════════════════════════════════════════════════════════════════
+-- HARD LOCK
+--═══════════════════════════════════════════════════════════════════
+local function HardLockFacing(duration, wantCamera)
     local char = LP.Character; if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart"); local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then return end
     local savedWS = hum.WalkSpeed
     hum.WalkSpeed = 0; hum.AutoRotate = false
@@ -678,32 +302,49 @@ local function HardLockFacing(dur, wantCam)
         if conn then pcall(function() conn:Disconnect() end); conn = nil end
         if not (hum and hum.Parent) then return end
         pcall(function() hum.WalkSpeed = savedWS; hum.AutoRotate = true; hum:Move(Vector3.zero, false) end)
+        task.spawn(function()
+            task.wait(0.05)
+            if hum and hum.Parent then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Freefall) end) end
+            task.wait(0.05)
+            if hum and hum.Parent then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end) end
+        end)
     end
     conn = RunService.RenderStepped:Connect(function()
         if not char.Parent or not hrp.Parent or not hum.Parent then release(); return end
-        if tick() - startT > (dur or 0.5) then release(); return end
-        local t = GetNearestKillerHrp(); if not t or not t.Parent then return end
-        local aim = predictHRP(t, (Settings.AIM_Prediction or 4) * 0.05) or t.Position
-        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(aim.X, hrp.Position.Y, aim.Z))
+        if tick() - startT > (duration or 0.5) then release(); return end
+        local targetHrp = GetNearestKillerHrp()
+        if not targetHrp or not targetHrp.Parent then return end
+        local aimPos = PredictPosition(targetHrp) or targetHrp.Position
+        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(aimPos.X, hrp.Position.Y, aimPos.Z))
     end)
-    if wantCam then
-        local cam = Workspace.CurrentCamera; local camStart = tick(); local camConn
+    if wantCamera then
+        local cam = Workspace.CurrentCamera
+        local camStart = tick(); local camConn
         camConn = RunService.RenderStepped:Connect(function()
-            if not cam or tick() - camStart > (dur or 0.5) then pcall(function() camConn:Disconnect() end); return end
-            local t = GetNearestKillerHrp()
-            if t and t.Parent then
-                local aim = predictHRP(t, (Settings.AIM_Prediction or 4) * 0.05) or t.Position
-                pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aim) end)
+            if not cam or tick() - camStart > (duration or 0.5) then
+                pcall(function() camConn:Disconnect() end); return
+            end
+            local tgt = GetNearestKillerHrp()
+            if tgt and tgt.Parent then
+                local aimPos = PredictPosition(tgt) or tgt.Position
+                pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aimPos) end)
             end
         end)
     end
 end
-local NA = { active = false, animConn = nil, soundConns = {} }
-local PA = { active = false }
+
+--═══════════════════════════════════════════════════════════════════
+-- SURVIVOR AIM
+--═══════════════════════════════════════════════════════════════════
+local NA = { active=false, animConn=nil, soundConns={} }
+local PA = { active=false }
+local function GetLockDuration(track)
+    if Settings.AIM_LockTime and Settings.AIM_LockTime > 0 then return Settings.AIM_LockTime end
+    return math.max(0.5, (track and track.Length or 0.8) + 0.15)
+end
 local function fireStunAim(track)
     if not NA.active or IsPlayerKiller() then return end
-    local dur = Settings.AIM_LockTime or math.max(0.5, (track and track.Length or 0.8) + 0.15)
-    task.spawn(function() HardLockFacing(dur, Settings.AIM_Mode == "Camera" or Settings.AIM_Mode == "Both") end)
+    task.spawn(function() HardLockFacing(GetLockDuration(track), Settings.AIM_Mode == "Camera" or Settings.AIM_Mode == "Both") end)
 end
 local function firePunchAim(track)
     if not PA.active or IsPlayerKiller() then return end
@@ -712,8 +353,8 @@ end
 local function AttachAnimWatcher(char)
     if NA.animConn then pcall(function() NA.animConn:Disconnect() end); NA.animConn = nil end
     local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
-    local an = hum:WaitForChild("Animator", 5); if not an then return end
-    NA.animConn = an.AnimationPlayed:Connect(function(track)
+    local animator = hum:WaitForChild("Animator", 5); if not animator then return end
+    NA.animConn = animator.AnimationPlayed:Connect(function(track)
         local anim = track.Animation; if not anim then return end
         local aid = tostring(anim.AnimationId):match("%d+"); if not aid then return end
         if STUN_ANIM_IDS[aid] then fireStunAim(track)
@@ -725,7 +366,7 @@ local function AttachSoundWatcher(char)
     NA.soundConns = {}
     local function hook(s)
         if not s:IsA("Sound") then return end
-        local c = s.Played:Connect(function()
+        local conn = s.Played:Connect(function()
             if not NA.active or IsPlayerKiller() then return end
             local sid = tostring(s.SoundId):match("%d+"); if not sid then return end
             if STUN_SOUND_IDS[sid] then
@@ -735,38 +376,873 @@ local function AttachSoundWatcher(char)
                 end)
             end
         end)
-        table.insert(NA.soundConns, c)
+        table.insert(NA.soundConns, conn)
     end
     for _, d in ipairs(char:GetDescendants()) do hook(d) end
     table.insert(NA.soundConns, char.DescendantAdded:Connect(function(d) hook(d) end))
 end
-local function OnCharSpawn(char)
+local function OnCharacterSpawn(char)
     if not char or char ~= LP.Character then return end
     task.spawn(function()
         task.wait(0.3)
-        LoadAbilityIds(char); AttachAnimWatcher(char); AttachSoundWatcher(char)
+        LoadAbilityIds(char)
+        AttachAnimWatcher(char)
+        AttachSoundWatcher(char)
     end)
 end
-if LP.Character then OnCharSpawn(LP.Character) end
-LP.CharacterAdded:Connect(OnCharSpawn)
+if LP.Character then OnCharacterSpawn(LP.Character) end
+LP.CharacterAdded:Connect(OnCharacterSpawn)
+
+--═══════════════════════════════════════════════════════════════════
+-- AUTO BLOCK + KILLER FACING BOX
+--═══════════════════════════════════════════════════════════════════
+local AB = { running=false, connections={}, attrStates={}, attrDebounce=0, generation=0, RemoteEvent=NetworkEvent, KillersFolder=nil, LocalRoot=nil }
+local PLAYER_R = 1.5
+local function FireAbility(name)
+    if AB.RemoteEvent then pcall(function() AB.RemoteEvent:FireServer("UseActorAbility", {name}) end) end
+end
+local function FireByMode()
+    if Settings.AB_Mode == "007n7" then FireAbility("Clone") else FireAbility("Block") end
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- KILLER FACING BOX (visual + detection)
+--═══════════════════════════════════════════════════════════════════
+local FacingCheck = {
+    Width         = 8,
+    Height        = 6,
+    Length        = 15,
+
+    Color         = Color3.fromRGB(255, 40, 40),
+    Transparency  = 0,
+    Thickness     = 0.045,
+
+    OffsetY       = 0,
+    ForwardOnly   = true,
+    VisualEnabled = true,
+    DetectionEnabled = true,
+}
+
+local FacingFolder = nil
+local FacingEdges = {}
+
+local function EnsureFacingFolder()
+    if not FacingFolder or not FacingFolder.Parent then
+        FacingFolder = Instance.new("Folder")
+        FacingFolder.Name = "Cupcake_KillerFacing"
+        FacingFolder.Parent = Workspace
+    end
+    return FacingFolder
+end
+
+local function GetFacingEdge(i)
+    local f = EnsureFacingFolder()
+    if not FacingEdges[i] or not FacingEdges[i].Parent then
+        local p = Instance.new("Part")
+        p.Name = "FacingEdge"
+        p.Anchored = true
+        p.CanCollide = false
+        p.CanTouch = false
+        p.CanQuery = false
+        p.CastShadow = false
+        p.Material = Enum.Material.Neon
+        p.Color = FacingCheck.Color
+        p.Transparency = 1
+        p.Size = Vector3.new(1, 1, 1)
+        p.Parent = f
+        FacingEdges[i] = p
+    end
+    return FacingEdges[i]
+end
+
+for i = 1, 12 do GetFacingEdge(i) end
+
+local FacingConnections = {
+    {1,2}, {3,4}, {5,6}, {7,8},
+    {1,3}, {2,4}, {5,7}, {6,8},
+    {1,5}, {2,6}, {3,7}, {4,8},
+}
+
+local function GetKillerHRP(killer)
+    if not killer or not killer.Parent then return nil end
+    return killer:FindFirstChild("HumanoidRootPart") or killer:FindFirstChild("RootPart")
+end
+
+local function GetNearestKillerModel()
+    local kf = GetKillersFolder(); if not kf then return nil end
+    local char = LP.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    local best, bd = nil, math.huge
+    for _, k in ipairs(kf:GetChildren()) do
+        if k:IsA("Model") then
+            local kr = GetKillerHRP(k)
+            local kh = k:FindFirstChildOfClass("Humanoid")
+            if kr and (not kh or kh.Health > 0) then
+                local d = (kr.Position - myRoot.Position).Magnitude
+                if d < bd then bd = d; best = k end
+            end
+        end
+    end
+    return best
+end
+
+local function KillerBoxFrame(killer)
+    local kr = GetKillerHRP(killer)
+    if not kr then return nil end
+    local lv = kr.CFrame.LookVector
+    local flat = Vector3.new(lv.X, 0, lv.Z)
+    if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
+    flat = flat.Unit
+    local base = kr.Position + Vector3.new(0, FacingCheck.OffsetY, 0)
+    local center
+    if FacingCheck.ForwardOnly then
+        center = base + flat * (FacingCheck.Length * 0.5)
+    else
+        center = base
+    end
+    return CFrame.lookAt(center, center + flat)
+end
+
+local function UpdateFacingVisual()
+    if not FacingCheck.VisualEnabled then
+        for _, e in ipairs(FacingEdges) do
+            if e and e.Parent and e.Transparency ~= 1 then e.Transparency = 1 end
+        end
+        return
+    end
+    local killer = GetNearestKillerModel()
+    local cf = killer and KillerBoxFrame(killer)
+    if not cf then
+        for _, e in ipairs(FacingEdges) do
+            if e and e.Parent and e.Transparency ~= 1 then e.Transparency = 1 end
+        end
+        return
+    end
+    local W, H, L = FacingCheck.Width, FacingCheck.Height, FacingCheck.Length
+    local X, Y, Z = W / 2, H / 2, L / 2
+    local corners = {
+        Vector3.new(-X,-Y,-Z), Vector3.new(X,-Y,-Z), Vector3.new(-X,Y,-Z), Vector3.new(X,Y,-Z),
+        Vector3.new(-X,-Y, Z), Vector3.new(X,-Y, Z), Vector3.new(-X,Y, Z), Vector3.new(X,Y, Z),
+    }
+    local P = {}
+    for i, c in ipairs(corners) do P[i] = cf:PointToWorldSpace(c) end
+    for i, c in ipairs(FacingConnections) do
+        local A, B = P[c[1]], P[c[2]]
+        local mid = (A + B) * 0.5
+        local dist = (B - A).Magnitude
+        local e = FacingEdges[i]
+        if e and e.Parent then
+            e.Size = Vector3.new(FacingCheck.Thickness, FacingCheck.Thickness, dist)
+            e.CFrame = CFrame.lookAt(mid, B)
+            e.Color = FacingCheck.Color
+            e.Transparency = FacingCheck.Transparency
+        end
+    end
+end
+
+local FacingLoop = nil
+local function EnsureFacingLoop()
+    if FacingLoop then return end
+    FacingLoop = RunService.RenderStepped:Connect(function()
+        if IsPlayerKiller() then
+            for _, e in ipairs(FacingEdges) do
+                if e and e.Parent then e.Transparency = 1 end
+            end
+            return
+        end
+        UpdateFacingVisual()
+    end)
+end
+local function StopFacingLoop()
+    if FacingLoop then pcall(function() FacingLoop:Disconnect() end); FacingLoop = nil end
+end
+local function DestroyFacingBox()
+    for _, e in ipairs(FacingEdges) do
+        if e and e.Parent then pcall(function() e:Destroy() end) end
+    end
+    FacingEdges = {}
+    if FacingFolder then pcall(function() FacingFolder:Destroy() end); FacingFolder = nil end
+end
+
+local function IsPlayerInsideKillerBox(killer)
+    if not FacingCheck.DetectionEnabled then return false end
+    local char = LP.Character
+    if not char then return false end
+    local myRoot = char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return false end
+    local kr = GetKillerHRP(killer)
+    if not kr then return false end
+    local lv = kr.CFrame.LookVector
+    local flat = Vector3.new(lv.X, 0, lv.Z)
+    if flat.Magnitude < 0.01 then return false end
+    flat = flat.Unit
+    local right = Vector3.new(-flat.Z, 0, flat.X)
+    local up = Vector3.new(0, 1, 0)
+    local base = kr.Position + Vector3.new(0, FacingCheck.OffsetY, 0)
+    local center
+    if FacingCheck.ForwardOnly then
+        center = base + flat * (FacingCheck.Length * 0.5)
+    else
+        center = base
+    end
+    local d = myRoot.Position - center
+    return math.abs(d:Dot(right)) <= FacingCheck.Width  / 2 + PLAYER_R
+       and math.abs(d:Dot(up))    <= FacingCheck.Height / 2 + PLAYER_R
+       and math.abs(d:Dot(flat))  <= FacingCheck.Length / 2 + PLAYER_R
+end
+
+local function NS_CheckFacingBox(killer)
+    if IsPlayerKiller() then return end
+    if not killer or not killer.Parent then return end
+    if IsPlayerInsideKillerBox(killer) then
+        FireByMode()
+    end
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- ATTR HEARTBEAT (v12 anti-bait preserved)
+--═══════════════════════════════════════════════════════════════════
+local function AttrHeartbeat()
+    if not AB.running or IsPlayerKiller() then return end
+    if not AB.KillersFolder or not AB.LocalRoot or not AB.LocalRoot.Parent then return end
+    for _, k in ipairs(AB.KillersFolder:GetChildren()) do
+        if k:IsA("Model") then
+            local kr = k:FindFirstChild("HumanoidRootPart")
+            if kr then
+                local alu = k:GetAttribute("AbilityLastUsed") or 0
+                local au = k:GetAttribute("AbilitiesUsed") or 0
+                local st = AB.attrStates[k]
+                if st then
+                    local inc = alu > st.lastAbility
+                    if au > st.lastUsed then st.isBait = true end
+                    if inc then
+                        local n = tick()
+                        if st.castLockUntil and n < st.castLockUntil then
+                            st.lastAbility = alu; st.lastUsed = au
+                        else
+                            if st.isBait then st.isBait = false
+                            else
+                                st.castLockUntil = n + 0.1
+                                if n - AB.attrDebounce >= (Settings.AB_Debounce or 0.08) then
+                                    AB.attrDebounce = n
+                                    pcall(NS_CheckFacingBox, k)
+                                end
+                            end
+                            st.lastAbility = alu; st.lastUsed = au
+                        end
+                    else
+                        st.lastAbility = alu; st.lastUsed = au
+                    end
+                else
+                    AB.attrStates[k] = { lastAbility=alu, lastUsed=au, isBait=false, castLockUntil=0 }
+                end
+            end
+        end
+    end
+end
+
+local function StartAutoBlock()
+    if AB.running then return end
+    AB.running = true; AB.generation = AB.generation + 1
+    local myG = AB.generation; AB.attrStates = {}
+    local c = LP.Character
+    if c then AB.LocalRoot = c:FindFirstChild("HumanoidRootPart") end
+    table.insert(AB.connections, LP.CharacterAdded:Connect(function(cc) AB.LocalRoot = cc:WaitForChild("HumanoidRootPart", 5) end))
+    local p = Workspace:FindFirstChild("Players")
+    AB.KillersFolder = p and p:FindFirstChild("Killers")
+    table.insert(AB.connections, RunService.Heartbeat:Connect(function()
+        if not AB.running or AB.generation ~= myG then return end
+        AttrHeartbeat()
+    end))
+    EnsureFacingLoop()
+end
+local function StopAutoBlock()
+    AB.running = false; AB.generation = AB.generation + 1; AB.attrStates = {}
+    for _, c in ipairs(AB.connections) do pcall(function() c:Disconnect() end) end
+    AB.connections = {}
+    StopFacingLoop()
+    DestroyFacingBox()
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- HDT (unchanged)
+--═══════════════════════════════════════════════════════════════════
+local HDT = { running=false, debounce=false, animConn=nil, charAddedConn=nil, Speed=40, Duration=0.6 }
+local HDT_Anims = {}
+for _, id in ipairs({72722244508749,96959123077498,95802026624883,140671644163156,100926346851492}) do
+    HDT_Anims["rbxassetid://"..id] = true
+end
+local function HDT_Nearest()
+    local kf = GetKillersFolder(); if not kf then return nil end
+    local myRoot = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    local best, bd = nil, math.huge
+    for _, k in ipairs(kf:GetChildren()) do
+        local kr = k:FindFirstChild("HumanoidRootPart")
+        if kr then
+            local d = (kr.Position - myRoot.Position).Magnitude
+            if d < bd then best, bd = k, d end
+        end
+    end
+    return best
+end
+local function HDT_Dash(killer)
+    if HDT.debounce then return end
+    local char = LP.Character; if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then return end
+    if not killer or not killer.Parent then return end
+    local kr = killer:FindFirstChild("HumanoidRootPart"); if not kr then return end
+    if (kr.Position - hrp.Position).Magnitude < 2.5 then return end
+    HDT.debounce = true
+    local oldWS = hum.WalkSpeed; local oldAR = hum.AutoRotate
+    hum.WalkSpeed = HDT.Speed; hum.AutoRotate = true
+    local startT = tick(); local stopped = false; local conn
+    local function stop()
+        if stopped then return end; stopped = true
+        if conn then pcall(function() conn:Disconnect() end); conn = nil end
+        if hum and hum.Parent then
+            pcall(function() hum:Move(Vector3.zero, false); hum.WalkSpeed = oldWS; hum.AutoRotate = oldAR end)
+        end
+        HDT.debounce = false
+    end
+    conn = RunService.RenderStepped:Connect(function()
+        if not hrp.Parent or not hum.Parent or hum.Health <= 0 then stop(); return end
+        if not killer.Parent then stop(); return end
+        if tick() - startT > HDT.Duration then stop(); return end
+        local krCur = killer:FindFirstChild("HumanoidRootPart"); if not krCur then stop(); return end
+        local flat = Vector3.new(krCur.Position.X - hrp.Position.X, 0, krCur.Position.Z - hrp.Position.Z)
+        if flat.Magnitude < 2 then stop(); return end
+        hum.WalkSpeed = HDT.Speed
+        hum:Move(flat.Unit, false)
+    end)
+    task.delay(HDT.Duration + 0.1, stop)
+end
+local function HDT_OnAnim(track)
+    if not HDT.running or HDT.debounce then return end
+    local aid = track.Animation and track.Animation.AnimationId
+    if not aid or not HDT_Anims[aid] then return end
+    local k = HDT_Nearest(); if not k then return end
+    task.delay(0.05, function() if HDT.running and not HDT.debounce then HDT_Dash(k) end end)
+end
+local function HDT_Attach()
+    local char = LP.Character; if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return end
+    local anim = hum:FindFirstChildOfClass("Animator"); if not anim then return end
+    if HDT.animConn then pcall(function() HDT.animConn:Disconnect() end) end
+    HDT.animConn = anim.AnimationPlayed:Connect(HDT_OnAnim)
+end
+local function HDT_Enable()
+    if HDT.running then return end
+    HDT.running = true; HDT_Attach()
+    HDT.charAddedConn = LP.CharacterAdded:Connect(function() task.wait(0.5); if HDT.running then HDT_Attach() end end)
+end
+local function HDT_Disable()
+    HDT.running = false; HDT.debounce = false
+    if HDT.animConn then pcall(function() HDT.animConn:Disconnect() end); HDT.animConn = nil end
+    if HDT.charAddedConn then pcall(function() HDT.charAddedConn:Disconnect() end); HDT.charAddedConn = nil end
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum:Move(Vector3.zero, false) end) end
+end
+local function HDT_ForceNow() local k = HDT_Nearest(); if k then HDT_Dash(k) end end
+
+--═══════════════════════════════════════════════════════════════════
+-- TWO TIME (unchanged)
+--═══════════════════════════════════════════════════════════════════
+local NORMAL_STAB_ID = "100725497418533"
+local CROUCH_STAB_ID = "89448354637442"
+local DAGGER_ANIM_IDS = { [NORMAL_STAB_ID]=true, [CROUCH_STAB_ID]=true }
+local TwoTime = { stabbing=false, lastStab=0, conn=nil, originalAutoRotate=true, animConn=nil, charAddedConn=nil }
+
+local function TTGetKillerFolder()
+    local p = Workspace:FindFirstChild("Players")
+    return p and p:FindFirstChild("Killers")
+end
+local function TTGetMyHRP()
+    local c = LP.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function TTGetMyHum()
+    local c = LP.Character
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+local function TTGetNearestKiller()
+    local f = TTGetKillerFolder()
+    local myHRP = TTGetMyHRP()
+    if not f or not myHRP then return nil end
+    local best, bestD = nil, math.huge
+    for _, k in ipairs(f:GetChildren()) do
+        if k:IsA("Model") then
+            local h = k:FindFirstChild("HumanoidRootPart") or k.PrimaryPart
+            local hum = k:FindFirstChildOfClass("Humanoid")
+            if h and hum and hum.Health > 0 then
+                local d = (h.Position - myHRP.Position).Magnitude
+                if d < bestD then bestD = d; best = k end
+            end
+        end
+    end
+    return best
+end
+local function TTCleanupLunge()
+    if TwoTime.conn then pcall(function() TwoTime.conn:Disconnect() end); TwoTime.conn = nil end
+    local hum = TTGetMyHum()
+    if hum then
+        pcall(function() hum.AutoRotate = TwoTime.originalAutoRotate; hum:Move(Vector3.zero, false) end)
+    end
+    TwoTime.stabbing = false
+end
+local function TTRunLunge(killer)
+    if not Settings.TT_Enabled then return end
+    if TwoTime.stabbing then return end
+    if IsPlayerKiller() then return end
+    local char = LP.Character; if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+    local now = os.clock()
+    if now - TwoTime.lastStab < (Settings.TT_Cooldown or 0.5) then return end
+    TwoTime.lastStab = now
+    if not killer or not killer.Parent then return end
+    local khrp = killer:FindFirstChild("HumanoidRootPart"); if not khrp then return end
+    local dist = (khrp.Position - hrp.Position).Magnitude
+    if dist > (Settings.TT_MaxRange or 60) then return end
+    TwoTime.originalAutoRotate = hum.AutoRotate
+    hum.AutoRotate = false
+    TwoTime.stabbing = true
+    local duration = Settings.TT_FollowDuration or 0.5
+    local endTime = tick() + duration
+    local lerpSpeed = Settings.TT_LerpSpeed or 45
+    if TwoTime.conn then pcall(function() TwoTime.conn:Disconnect() end) end
+    TwoTime.conn = RunService.RenderStepped:Connect(function(dt)
+        if not TwoTime.stabbing then return end
+        if tick() >= endTime then TTCleanupLunge(); return end
+        local char2 = LP.Character; if not char2 then TTCleanupLunge(); return end
+        local hrp2 = char2:FindFirstChild("HumanoidRootPart")
+        local hum2 = char2:FindFirstChildOfClass("Humanoid")
+        if not hrp2 or not hum2 or hum2.Health <= 0 then TTCleanupLunge(); return end
+        local khrp2 = killer and killer.Parent and killer:FindFirstChild("HumanoidRootPart")
+        if not khrp2 or not khrp2.Parent then TTCleanupLunge(); return end
+        local kCF = khrp2.CFrame
+        local behindPos = kCF.Position - kCF.LookVector * (Settings.TT_BehindOffset or 1.7)
+        local targetPos = Vector3.new(behindPos.X, hrp2.Position.Y, behindPos.Z)
+        local dist = (targetPos - hrp2.Position).Magnitude
+        if dist > 0.15 then
+            local step = math.min(lerpSpeed * dt, dist)
+            local dir = (targetPos - hrp2.Position).Unit
+            local newPos = hrp2.Position + dir * step
+            pcall(function()
+                hrp2.CFrame = CFrame.lookAt(newPos, Vector3.new(kCF.Position.X, newPos.Y, kCF.Position.Z))
+                hrp2.AssemblyLinearVelocity = Vector3.zero
+                hrp2.AssemblyAngularVelocity = Vector3.zero
+            end)
+        else
+            pcall(function()
+                hrp2.CFrame = CFrame.lookAt(hrp2.Position, Vector3.new(kCF.Position.X, hrp2.Position.Y, kCF.Position.Z))
+                hrp2.AssemblyLinearVelocity = Vector3.zero
+                hrp2.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+    end)
+    task.delay(duration + 0.1, function() if TwoTime.stabbing then TTCleanupLunge() end end)
+end
+local function TTAttachAnimWatcher(char)
+    local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
+    local animator = hum:WaitForChild("Animator", 5); if not animator then return end
+    if TwoTime.animConn then pcall(function() TwoTime.animConn:Disconnect() end); TwoTime.animConn = nil end
+    TwoTime.animConn = animator.AnimationPlayed:Connect(function(track)
+        if not Settings.TT_Enabled then return end
+        local anim = track.Animation; if not anim then return end
+        local id = tostring(anim.AnimationId):match("%d+"); if not id then return end
+        if DAGGER_ANIM_IDS[id] then
+            local killer = TTGetNearestKiller()
+            if killer then TTRunLunge(killer) end
+        end
+    end)
+end
+local function TTStart()
+    if LP.Character then TTAttachAnimWatcher(LP.Character) end
+    TwoTime.charAddedConn = LP.CharacterAdded:Connect(function(c)
+        task.wait(0.5)
+        if Settings.TT_Enabled then TTAttachAnimWatcher(c) end
+    end)
+end
+local function TTStop()
+    TTCleanupLunge()
+    if TwoTime.animConn then pcall(function() TwoTime.animConn:Disconnect() end); TwoTime.animConn = nil end
+    if TwoTime.charAddedConn then pcall(function() TwoTime.charAddedConn:Disconnect() end); TwoTime.charAddedConn = nil end
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- NOLI VOID RUSH v3 (untouched)
+--═══════════════════════════════════════════════════════════════════
+local NOLI_VOIDRUSH_ANIM_IDS = {
+    ["93841120533318"] = true,
+    ["91758760621955"] = true,
+    ["85568995953372"] = true,
+}
+
+local NoliAim = {
+    active = false,
+    endTime = 0,
+    conn = nil,
+    pathFolder = nil,
+    segments = {},
+    waypoints = {},
+    currentWaypoint = 1,
+    lastPathUpdate = 0,
+    lastRetarget = 0,
+    currentTarget = nil,
+    animConn = nil,
+    charAddedConn = nil,
+    hooked = false,
+    smoothDir = nil,
+    cameWithin = nil,
+    savedWalkSpeed = nil,
+}
+
+local function NoliClearPath()
+    for _, seg in ipairs(NoliAim.segments) do
+        if seg and seg.Parent then pcall(function() seg:Destroy() end) end
+    end
+    NoliAim.segments = {}
+    NoliAim.waypoints = {}
+    NoliAim.currentWaypoint = 1
+end
+
+local function NoliGroundPos(pos)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignored = {}
+    if NoliAim.pathFolder then table.insert(ignored, NoliAim.pathFolder) end
+    if LP.Character then table.insert(ignored, LP.Character) end
+    params.FilterDescendantsInstances = ignored
+    local res = Workspace:Raycast(pos + Vector3.new(0, 8, 0), Vector3.new(0, -100, 0), params)
+    if res then return Vector3.new(pos.X, res.Position.Y + 0.08, pos.Z) end
+    return pos
+end
+
+local function NoliDrawSegment(a, b)
+    local ga = NoliGroundPos(a)
+    local gb = NoliGroundPos(b)
+    local diff = gb - ga
+    local len = diff.Magnitude
+    if len < 0.1 then return end
+    local color = ParseColor(Settings.Noli_LineColor, 255, 0, 0)
+    local thickness = Settings.Noli_LineThickness or 0.22
+    local seg = Instance.new("Part")
+    seg.Name = "NoliPathSeg"
+    seg.Anchored = true; seg.CanCollide = false
+    seg.CanTouch = false; seg.CanQuery = false; seg.CastShadow = false
+    seg.Material = Enum.Material.Neon
+    seg.Color = color
+    seg.Size = Vector3.new(thickness, 0.035, len)
+    seg.CFrame = CFrame.lookAt((ga + gb) / 2, gb) * CFrame.Angles(math.rad(90), 0, 0)
+    seg.Parent = NoliAim.pathFolder
+    table.insert(NoliAim.segments, seg)
+end
+
+local function NoliGetClosestSurvivor()
+    local myChar = LP.Character
+    local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return nil end
+    local sf = GetSurvivorsFolder()
+    if not sf then return nil end
+    local best, bestD = nil, Settings.Noli_MaxRange or 500
+    for _, s in ipairs(sf:GetChildren()) do
+        if s:IsA("Model") and s ~= myChar then
+            local sHRP = s:FindFirstChild("HumanoidRootPart")
+            local sHum = s:FindFirstChildOfClass("Humanoid")
+            if sHRP and sHum and sHum.Health > 0 then
+                local d = (sHRP.Position - myHRP.Position).Magnitude
+                if d < bestD then bestD = d; best = s end
+            end
+        end
+    end
+    return best
+end
+
+local function NoliBuildPath()
+    if not NoliAim.active then return end
+    if not NoliAim.currentTarget or not NoliAim.currentTarget.Parent then
+        NoliAim.currentTarget = NoliGetClosestSurvivor()
+        if not NoliAim.currentTarget then NoliClearPath(); return end
+    end
+    local myChar = LP.Character
+    local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local tgt = NoliAim.currentTarget
+    local tgtHRP = tgt and tgt:FindFirstChild("HumanoidRootPart")
+    if not myHRP or not tgtHRP then NoliClearPath(); return end
+    NoliClearPath()
+    if Settings.Noli_UseStraight then
+        NoliDrawSegment(myHRP.Position, tgtHRP.Position)
+        return
+    end
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2, AgentHeight = 5,
+        AgentCanJump = false, AgentCanClimb = false,
+        WaypointSpacing = 2,
+    })
+    local ok = pcall(function() path:ComputeAsync(myHRP.Position, tgtHRP.Position) end)
+    if not ok or path.Status ~= Enum.PathStatus.Success then
+        NoliDrawSegment(myHRP.Position, tgtHRP.Position)
+        return
+    end
+    NoliAim.waypoints = path:GetWaypoints()
+    NoliAim.currentWaypoint = 1
+    for i = 1, #NoliAim.waypoints - 1 do
+        NoliDrawSegment(NoliAim.waypoints[i].Position, NoliAim.waypoints[i+1].Position)
+    end
+end
+
+local function NoliGetAimPoint(hrp)
+    if Settings.Noli_UseStraight then
+        local tgt = NoliAim.currentTarget
+        local tHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
+        if tHRP then return tHRP.Position end
+        return nil
+    end
+    local wps = NoliAim.waypoints
+    if #wps == 0 then
+        local tgt = NoliAim.currentTarget
+        local tHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
+        if tHRP then return tHRP.Position end
+        return nil
+    end
+    local closestIdx, closestD = 1, math.huge
+    for i = 1, #wps do
+        local d = (wps[i].Position - hrp.Position).Magnitude
+        if d < closestD then closestD = d; closestIdx = i end
+    end
+    while closestIdx < #wps and (wps[closestIdx].Position - hrp.Position).Magnitude < 4 do
+        closestIdx = closestIdx + 1
+    end
+    if closestD < 10 and closestIdx < #wps then
+        return wps[closestIdx + 1].Position
+    end
+    return wps[closestIdx].Position
+end
+
+local function NoliAimStop()
+    if NoliAim.conn then pcall(function() NoliAim.conn:Disconnect() end); NoliAim.conn = nil end
+    NoliClearPath()
+    NoliAim.active = false
+    NoliAim.currentTarget = nil
+    NoliAim.smoothDir = nil
+    NoliAim.cameWithin = nil
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum:Move(Vector3.zero, false)
+            hum.AutoRotate = true
+            if NoliAim.savedWalkSpeed then
+                hum.WalkSpeed = NoliAim.savedWalkSpeed
+            end
+        end)
+    end
+    NoliAim.savedWalkSpeed = nil
+end
+
+local function NoliAimStep(dt)
+    if not NoliAim.active then return end
+    if tick() >= NoliAim.endTime then NoliAimStop(); return end
+    local char = LP.Character; if not char then NoliAimStop(); return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then NoliAimStop(); return end
+
+    hum.AutoRotate = false
+    hum.WalkSpeed = Settings.Noli_MoveSpeed or 45
+
+    if tick() - (NoliAim.lastRetarget or 0) > 0.2 then
+        NoliAim.lastRetarget = tick()
+        local tgt = NoliAim.currentTarget
+        local tgtHum = tgt and tgt.Parent and tgt:FindFirstChildOfClass("Humanoid")
+        local tgtHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
+        local needRetarget = (not tgt) or (not tgtHRP) or (not tgtHum) or (tgtHum.Health <= 0)
+        if not needRetarget and tgtHRP then
+            local curDist = (tgtHRP.Position - hrp.Position).Magnitude
+            if curDist < 10 then
+                NoliAim.cameWithin = curDist
+            elseif NoliAim.cameWithin and NoliAim.cameWithin < 10 and curDist > 20 then
+                needRetarget = true
+            end
+        end
+        if needRetarget then
+            local newTgt = NoliGetClosestSurvivor()
+            if newTgt and newTgt ~= tgt then
+                NoliAim.currentTarget = newTgt
+                NoliAim.cameWithin = nil
+                NoliAim.smoothDir = nil
+                NoliAim.lastPathUpdate = 0
+            end
+        end
+    end
+
+    if tick() - NoliAim.lastPathUpdate > 0.25 then
+        NoliAim.lastPathUpdate = tick()
+        NoliBuildPath()
+    end
+
+    local aimPos = NoliGetAimPoint(hrp)
+    if not aimPos then
+        local tgt = NoliAim.currentTarget
+        local tHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
+        if tHRP then aimPos = tHRP.Position end
+    end
+    if not aimPos then NoliAimStop(); return end
+
+    local targetDir = aimPos - hrp.Position
+    targetDir = Vector3.new(targetDir.X, 0, targetDir.Z)
+    if targetDir.Magnitude < 0.1 then return end
+    targetDir = targetDir.Unit
+
+    if not NoliAim.smoothDir then
+        NoliAim.smoothDir = targetDir
+    else
+        local turnRate = Settings.Noli_TurnSmoothness or 10
+        local alpha = 1 - math.exp(-dt * turnRate)
+        NoliAim.smoothDir = NoliAim.smoothDir:Lerp(targetDir, alpha)
+        if NoliAim.smoothDir.Magnitude > 0.01 then
+            NoliAim.smoothDir = NoliAim.smoothDir.Unit
+        end
+    end
+
+    pcall(function()
+        hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + NoliAim.smoothDir)
+    end)
+    pcall(function()
+        hum:Move(NoliAim.smoothDir, false)
+    end)
+end
+
+local function NoliAimTrigger()
+    if not Settings.Noli_AIM_Enabled then return end
+    if not IsPlayerKiller() then return end
+    local char = LP.Character; if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    local target = NoliGetClosestSurvivor()
+    if not target then return end
+
+    if NoliAim.active then
+        NoliAim.endTime = math.max(NoliAim.endTime, tick() + (Settings.Noli_AimDuration or 3.5))
+        if target ~= NoliAim.currentTarget then
+            NoliAim.currentTarget = target
+            NoliAim.cameWithin = nil
+            NoliAim.smoothDir = nil
+            NoliAim.lastPathUpdate = 0
+        end
+        return
+    end
+
+    NoliAim.active = true
+    NoliAim.endTime = tick() + (Settings.Noli_AimDuration or 3.5)
+    NoliAim.lastPathUpdate = 0
+    NoliAim.lastRetarget = 0
+    NoliAim.currentTarget = target
+    NoliAim.smoothDir = nil
+    NoliAim.cameWithin = nil
+    if hum then NoliAim.savedWalkSpeed = hum.WalkSpeed end
+
+    if not NoliAim.pathFolder or not NoliAim.pathFolder.Parent then
+        NoliAim.pathFolder = Instance.new("Folder")
+        NoliAim.pathFolder.Name = "Cupcake_NoliPath"
+        NoliAim.pathFolder.Parent = Workspace
+    end
+
+    NoliAim.conn = RunService.RenderStepped:Connect(NoliAimStep)
+end
+
+local function NoliIsVoidRushAbility(name)
+    if type(name) ~= "string" then return false end
+    local l = name:lower()
+    return l:find("voidrush") ~= nil
+        or l:find("void_rush") ~= nil
+        or l:find("void-rush") ~= nil
+end
+
+local function NoliInstallNamecallHook()
+    if NoliAim.hooked then return end
+    if not hookmetamethod or not getnamecallmethod then return end
+    NoliAim.hooked = true
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        if not _ShuttingDown and getnamecallmethod() == "FireServer" and self == NetworkEvent then
+            local args = {...}
+            if args[1] == "UseActorAbility" then
+                local ability = args[2]
+                if type(ability) == "table" then
+                    for _, v in ipairs(ability) do
+                        if type(v) == "buffer" then
+                            local ok, str = pcall(buffer.tostring, v)
+                            if ok and str and NoliIsVoidRushAbility(str) then
+                                pcall(NoliAimTrigger)
+                                break
+                            end
+                        elseif NoliIsVoidRushAbility(v) then
+                            pcall(NoliAimTrigger)
+                            break
+                        end
+                    end
+                elseif NoliIsVoidRushAbility(ability) then
+                    pcall(NoliAimTrigger)
+                end
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
+end
+
+local function NoliAimAttachAnim(char)
+    local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
+    local animator = hum:WaitForChild("Animator", 5); if not animator then return end
+    if NoliAim.animConn then pcall(function() NoliAim.animConn:Disconnect() end); NoliAim.animConn = nil end
+    NoliAim.animConn = animator.AnimationPlayed:Connect(function(track)
+        if not Settings.Noli_AIM_Enabled then return end
+        local aid = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
+        if aid and NOLI_VOIDRUSH_ANIM_IDS[aid] then
+            NoliAimTrigger()
+        end
+    end)
+end
+
+local function NoliAimStart()
+    pcall(NoliInstallNamecallHook)
+    if LP.Character then NoliAimAttachAnim(LP.Character) end
+    NoliAim.charAddedConn = LP.CharacterAdded:Connect(function(c)
+        task.wait(0.5)
+        if Settings.Noli_AIM_Enabled then NoliAimAttachAnim(c) end
+    end)
+end
+
+local function NoliAimCleanup()
+    NoliAimStop()
+    if NoliAim.animConn then pcall(function() NoliAim.animConn:Disconnect() end); NoliAim.animConn = nil end
+    if NoliAim.charAddedConn then pcall(function() NoliAim.charAddedConn:Disconnect() end); NoliAim.charAddedConn = nil end
+    if NoliAim.pathFolder then pcall(function() NoliAim.pathFolder:Destroy() end); NoliAim.pathFolder = nil end
+end
 
 --═══════════════════════════════════════════════════════════════════
 -- AUTO PARRY
 --═══════════════════════════════════════════════════════════════════
 local ParrySounds = {}
-for _, id in ipairs({102808968188291,114975236395509,116616310968045,117828699507982,120902177402976,
-    123825742002486,125854302746190,132298811847315,135209101640984,18568553101,423041300,423041325,
-    423041356,81114852524420,82772022662025,86208973578215,91165993312513,95135835034592}) do
-    ParrySounds["rbxassetid://"..id] = true
-end
-local AP = { running=false, conn=nil, soundConns={}, debounce={} }
+for _, id in ipairs({102808968188291,114975236395509,116616310968045,117828699507982,
+    120902177402976,123825742002486,125854302746190,132298811847315,135209101640984,
+    18568553101,423041300,423041325,423041356,81114852524420,82772022662025,
+    86208973578215,91165993312513,95135835034592}) do ParrySounds["rbxassetid://"..id] = true end
+local AP = { running=false, conn=nil, soundConns={}, soundDebounce={} }
 local function AP_Hook(s)
-    if not s:IsA("Sound") or s:GetAttribute("CUPC_AP") then return end
-    s:SetAttribute("CUPC_AP", true)
+    if not s:IsA("Sound") or s:GetAttribute("CUPCAKE_AP") then return end
+    s:SetAttribute("CUPCAKE_AP", true)
     table.insert(AP.soundConns, s.Played:Connect(function()
         if not AP.running or not ParrySounds[s.SoundId] then return end
-        local now = tick(); if now - (AP.debounce[s] or 0) < 0.3 then return end
-        AP.debounce[s] = now
+        local now = tick()
+        if now - (AP.soundDebounce[s] or 0) < 0.3 then return end
+        AP.soundDebounce[s] = now
         task.wait(Settings.AP_Delay)
         if not AP.running then return end
         FireAbility("Block")
@@ -775,293 +1251,219 @@ end
 local function AP_Enable()
     if AP.running then return end
     AP.running = true
-    local c = LP.Character
-    if c then
+    local char = LP.Character
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do AP_Hook(d) end
+        table.insert(AP.soundConns, char.DescendantAdded:Connect(AP_Hook))
+    end
+    AP.conn = LP.CharacterAdded:Connect(function(c)
+        if not AP.running then return end
         for _, d in ipairs(c:GetDescendants()) do AP_Hook(d) end
         table.insert(AP.soundConns, c.DescendantAdded:Connect(AP_Hook))
-    end
-    AP.conn = LP.CharacterAdded:Connect(function(cc)
-        if not AP.running then return end
-        for _, d in ipairs(cc:GetDescendants()) do AP_Hook(d) end
-        table.insert(AP.soundConns, cc.DescendantAdded:Connect(AP_Hook))
     end)
 end
 local function AP_Disable()
     AP.running = false
     for _, c in ipairs(AP.soundConns) do pcall(function() c:Disconnect() end) end
-    AP.soundConns = {}; AP.debounce = {}
+    AP.soundConns = {}; AP.soundDebounce = {}
     if AP.conn then pcall(function() AP.conn:Disconnect() end); AP.conn = nil end
 end
 
 --═══════════════════════════════════════════════════════════════════
--- ELLIOT AIMBOT
+-- GENERATOR SOLVER (unchanged)
 --═══════════════════════════════════════════════════════════════════
-local elliot = { enabled=false, conn=nil, autoRotBak=nil, aimType="Camera + Character", targetMode="Low HP",
-    throwDur=0.6, isThrowing=false, throwTS=0, requireAnim=true, hum=nil, hrp=nil, lastAimTime=0,
-    smoothness=0.15, predDist=5, throwForce=80, throwAnimId="114155003741146" }
-local function elliot_setupChar(char)
-    elliot.hum = char:WaitForChild("Humanoid", 3); elliot.hrp = char:WaitForChild("HumanoidRootPart", 3)
-    if elliot.hum then
-        local an = elliot.hum:FindFirstChildOfClass("Animator")
-        if an then
-            an.AnimationPlayed:Connect(function(track)
-                if not track or not track.Animation then return end
-                local aid = ""; pcall(function() aid = tostring(track.Animation.AnimationId) end)
-                if aid:find(elliot.throwAnimId) then elliot.isThrowing = true; elliot.throwTS = tick() end
-            end)
-        end
-    end
+local MinigameFolder = ReplicatedStorage:FindFirstChild("Systems")
+    and ReplicatedStorage.Systems:FindFirstChild("Player")
+    and ReplicatedStorage.Systems.Player:FindFirstChild("Game")
+    and ReplicatedStorage.Systems.Player.Game:FindFirstChild("Minigames")
+local ModulesMinigames = ReplicatedStorage:FindFirstChild("Modules")
+    and ReplicatedStorage.Modules:FindFirstChild("Minigames")
+
+local FlowBoardModule, LockBoardModule
+local FlowInputModule, GearInputModule, LockInputModule, ConnectInputModule
+if ModulesMinigames then
+    pcall(function() FlowBoardModule = require(ModulesMinigames:FindFirstChild("FlowBoard")) end)
+    pcall(function() LockBoardModule = require(ModulesMinigames:FindFirstChild("LockBoard")) end)
 end
-if LP.Character then elliot_setupChar(LP.Character) end
-LP.CharacterAdded:Connect(elliot_setupChar)
-local function elliot_findTarget()
-    local sf = GetSurvivorsFolder(); if not sf or not elliot.hrp then return nil end
-    local best, bv = nil, math.huge
-    for _, s in ipairs(sf:GetChildren()) do
-        if s ~= LP.Character then
-            local h = s:FindFirstChildOfClass("Humanoid"); local r = s:FindFirstChild("HumanoidRootPart")
-            if h and r and h.Health > 0 then
-                local v = elliot.targetMode == "Closest" and (r.Position - elliot.hrp.Position).Magnitude or h.Health
-                if v < bv then bv = v; best = r end
+if MinigameFolder then
+    pcall(function() FlowInputModule = require(MinigameFolder:FindFirstChild("FlowClientMinigame"):FindFirstChild("FlowInput")) end)
+    pcall(function() GearInputModule = require(MinigameFolder:FindFirstChild("GearClientMinigame"):FindFirstChild("GearInput")) end)
+    pcall(function() LockInputModule = require(MinigameFolder:FindFirstChild("LockClientMinigame"):FindFirstChild("LockInput")) end)
+    pcall(function() ConnectInputModule = require(MinigameFolder:FindFirstChild("ConnectClientMinigame"):FindFirstChild("ConnectInput")) end)
+end
+local MinigameSolver = { Enabled=false, Generation=0, LockBoard=nil, Installed=false }
+local function solverDelay() return math.max(0, Settings.GS_FlowDelay or 0.05) end
+local function connectSolverDelay() return math.max(0, Settings.GS_ConnectDelay or 1) end
+local function gearSolverDelay() return math.max(0, Settings.GS_GearDelay or 0.03) end
+local function solverIsEnabled() return MinigameSolver.Enabled end
+local function stillSolving(_, obj) return solverIsEnabled() and obj and not obj.Ended end
+local function waitForSolver(obj)
+    while obj and not obj.Ended and not solverIsEnabled() do task.wait(0.05) end
+    if not (obj and not obj.Ended and solverIsEnabled()) then return false end
+    local started = os.clock()
+    while obj and not obj.Ended and solverIsEnabled() and os.clock() - started < (Settings.GS_StartDelay or 1.5) do task.wait(0.05) end
+    return obj and not obj.Ended and solverIsEnabled()
+end
+local function solveFlowBoard(board)
+    if not FlowBoardModule then return nil end
+    local size, pairMap = board.Size, board.Pairs
+    local occupied, answer = {}, {}
+    local directions = { {-1,0},{1,0},{0,-1},{0,1} }
+    local endpointOwner = {}
+    for color, pair in pairs(pairMap) do endpointOwner[pair[1]], endpointOwner[pair[2]] = color, color end
+    local remaining = {}
+    for color in pairs(pairMap) do table.insert(remaining, color) end
+    local function candidates(color, limit)
+        local pair = pairMap[color]
+        local from, target = pair[1], pair[2]
+        local results, path, seen = {}, {from}, {[from] = true}
+        local function distance(cell)
+            local r, c = FlowBoardModule.ToRowCol(size, cell)
+            local tr, tc = FlowBoardModule.ToRowCol(size, target)
+            return math.abs(r - tr) + math.abs(c - tc)
+        end
+        local function walk(cell)
+            if #results >= limit then return end
+            if cell == target then table.insert(results, table.clone(path)); return end
+            local row, col = FlowBoardModule.ToRowCol(size, cell)
+            local nextCells = {}
+            for _, d in ipairs(directions) do
+                local nr, nc = row + d[1], col + d[2]
+                if nr >= 1 and nr <= size and nc >= 1 and nc <= size then
+                    local n = FlowBoardModule.ToIndex(size, nr, nc)
+                    local owner = endpointOwner[n]
+                    if not seen[n] and not occupied[n] and (not owner or (owner == color and n == target)) then
+                        table.insert(nextCells, n)
+                    end
+                end
+            end
+            table.sort(nextCells, function(a, b) return distance(a) < distance(b) end)
+            for _, n in ipairs(nextCells) do
+                seen[n] = true; table.insert(path, n); walk(n)
+                path[#path] = nil; seen[n] = nil
+                if #results >= limit then break end
             end
         end
+        walk(from)
+        table.sort(results, function(a, b) return #a < #b end)
+        return results
     end
-    return best
-end
-local function elliot_aimAt(tgt)
-    if not tgt or not tgt.Parent then return end
-    local now = tick(); if now - elliot.lastAimTime < 0.016 then return end; elliot.lastAimTime = now
-    local vel = getHRPVelocity(tgt); local pred = tgt.Position
-    if vel.Magnitude > 2 then
-        local dist = (tgt.Position - elliot.hrp.Position).Magnitude
-        pred = tgt.Position + vel * math.min(dist / elliot.throwForce, 1.0) * (elliot.predDist / 5)
-    end
-    if elliot.hrp and elliot.hum then
-        if elliot.autoRotBak == nil then elliot.autoRotBak = elliot.hum.AutoRotate; elliot.hum.AutoRotate = false end
-        elliot.hrp.AssemblyAngularVelocity = Vector3.zero
-        local flat = Vector3.new(pred.X - elliot.hrp.Position.X, 0, pred.Z - elliot.hrp.Position.Z)
-        if flat.Magnitude > 0.1 then
-            local look = CFrame.lookAt(elliot.hrp.Position, elliot.hrp.Position + flat.Unit)
-            elliot.hrp.CFrame = elliot.hrp.CFrame:Lerp(CFrame.new(elliot.hrp.Position) * look.Rotation, elliot.smoothness)
+    local function search(colors)
+        if #colors == 0 then return true end
+        local bestIndex, bestPaths
+        for i, color in ipairs(colors) do
+            local list = candidates(color, 300)
+            if #list == 0 then return false end
+            if not bestPaths or #list < #bestPaths then bestIndex, bestPaths = i, list end
         end
-    end
-    if elliot.aimType ~= "HRP Aimbot" then
-        local cam = Workspace.CurrentCamera
-        if cam then cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, pred), elliot.smoothness * 1.5) end
-    end
-end
-local function elliot_start()
-    if elliot.conn then elliot.conn:Disconnect() end
-    elliot.conn = RunService.RenderStepped:Connect(function()
-        if not elliot.enabled or not elliot.hum or not elliot.hrp then
-            if elliot.autoRotBak ~= nil and elliot.hum then elliot.hum.AutoRotate = elliot.autoRotBak; elliot.autoRotBak = nil end
-            return
+        local color = colors[bestIndex]
+        local nextColors = table.clone(colors)
+        table.remove(nextColors, bestIndex)
+        for _, path in ipairs(bestPaths) do
+            for _, cell in ipairs(path) do occupied[cell] = true end
+            answer[color] = path
+            if search(nextColors) then return true end
+            answer[color] = nil
+            for _, cell in ipairs(path) do occupied[cell] = nil end
         end
-        local should = (not elliot.requireAnim) or (elliot.isThrowing and (tick() - elliot.throwTS) <= elliot.throwDur)
-        if elliot.isThrowing and (tick() - elliot.throwTS) > elliot.throwDur then elliot.isThrowing = false end
-        if not should then
-            if elliot.autoRotBak ~= nil and elliot.hum then elliot.hum.AutoRotate = elliot.autoRotBak; elliot.autoRotBak = nil end
-            return
-        end
-        local t = elliot_findTarget(); if t then elliot_aimAt(t) end
-    end)
-end
-local function elliot_stop()
-    elliot.enabled = false
-    if elliot.conn then pcall(function() elliot.conn:Disconnect() end); elliot.conn = nil end
-    if elliot.hum then pcall(function() elliot.hum.AutoRotate = true end) end
-end
-
---═══════════════════════════════════════════════════════════════════
--- CHANCE HOLD-TO-AIM
---═══════════════════════════════════════════════════════════════════
-local chance = { enabled=false, predMode="Velocity", predValue=0.5, aimBehavior="Normal",
-    holdToAim=true, aimKey=Enum.KeyCode.Q, holdingKey=false, aiming=false, startTime=0,
-    aimDuration=1.7, bodyGyro=nil }
-local function chance_getNearest()
-    local char = LP.Character; if not char then return nil end
-    local kf = GetKillersFolder(); if not kf then return nil end
-    local my = char:FindFirstChild("HumanoidRootPart"); if not my then return nil end
-    local best, bd = nil, math.huge
-    for _, m in ipairs(kf:GetChildren()) do
-        local r = m:FindFirstChild("HumanoidRootPart"); local h = m:FindFirstChildOfClass("Humanoid")
-        if r and h and h.Health > 0 then
-            local d = (r.Position - my.Position).Magnitude
-            if d < bd then bd = d; best = r end
-        end
+        return false
     end
-    return best
+    return search(remaining) and answer or nil
 end
-local function chance_predict(hrp)
-    local char = LP.Character; local my = char and char:FindFirstChild("HumanoidRootPart")
-    if not my then return hrp.Position end
-    local vel = getHRPVelocity(hrp)
-    if chance.predMode == "Look" then return hrp.Position + hrp.CFrame.LookVector * (vel.Magnitude * chance.predValue) end
-    if vel.Magnitude < 0.5 then return hrp.Position end
-    return hrp.Position + vel * (chance.predValue + ((hrp.Position - my.Position).Magnitude * 0.003))
-end
-UserInputService.InputBegan:Connect(function(i, gp)
-    if gp then return end
-    if chance.holdToAim and i.KeyCode == chance.aimKey then chance.holdingKey = true; chance.aiming = true; chance.startTime = tick() end
-end)
-UserInputService.InputEnded:Connect(function(i)
-    if chance.holdToAim and i.KeyCode == chance.aimKey then chance.holdingKey = false; chance.aiming = false end
-end)
-RunService.RenderStepped:Connect(function(dt)
-    if not chance.enabled then return end
-    local char = LP.Character; local my = char and char:FindFirstChild("HumanoidRootPart"); if not my then return end
-    if chance.holdToAim then if not chance.holdingKey then return end
-    else if not chance.aiming then return end; if tick() - chance.startTime > chance.aimDuration then chance.aiming = false; return end end
-    local target = chance_getNearest(); if not target then return end
-    local pos = chance_predict(target); if not pos then return end
-    if chance.aimBehavior == "360" then
-        local prog = (tick() - chance.startTime) / 0.5
-        if prog < 1 then my.CFrame = CFrame.new(my.Position) * CFrame.Angles(0, math.rad(360*prog), 0); return end
-    end
-    if not chance.bodyGyro or not chance.bodyGyro.Parent then
-        chance.bodyGyro = Instance.new("BodyGyro")
-        chance.bodyGyro.MaxTorque = Vector3.new(0, math.huge, 0)
-        chance.bodyGyro.P = 10000; chance.bodyGyro.D = 500; chance.bodyGyro.Parent = my
-    end
-    chance.bodyGyro.CFrame = CFrame.lookAt(my.Position, pos)
-end)
-
---═══════════════════════════════════════════════════════════════════
--- SILENT AIM (Jane + Dusekkar)
---═══════════════════════════════════════════════════════════════════
-local jd = { enabled=false, aimbotOn=false, patched=false, aimOffset=-0.3, prediction=0.6 }
-local function jd_applyPatch()
-    if jd.patched or not NetworkRF then return end
-    rfDispatch:register("jd", function(reqName, ...)
-        if not (jd.enabled and jd.aimbotOn) then return nil end
-        local char = LP.Character; local myHRP = char and char:FindFirstChild("HumanoidRootPart"); if not myHRP then return nil end
-        local kf = GetKillersFolder(); if not kf then return nil end
-        local best, bd = nil, math.huge
-        for _, k in ipairs(kf:GetChildren()) do
-            local hrp = k:FindFirstChild("HumanoidRootPart"); local h = k:FindFirstChildOfClass("Humanoid")
-            if hrp and h and h.Health > 0 then
-                local d = (hrp.Position - myHRP.Position).Magnitude
-                if d < bd then bd = d; best = hrp end
+local function installMinigameHooks()
+    if MinigameSolver.Installed then return end
+    if not (FlowBoardModule and LockBoardModule and FlowInputModule and GearInputModule and LockInputModule and ConnectInputModule) then return end
+    MinigameSolver.Installed = true
+    local oldLockBoardNew = LockBoardModule.new
+    LockBoardModule.new = function(...) local board = oldLockBoardNew(...); MinigameSolver.LockBoard = board; return board end
+    local oldFlowNew = FlowInputModule.new
+    FlowInputModule.new = function(board, renderer, callbacks)
+        local object = oldFlowNew(board, renderer, callbacks)
+        local token = MinigameSolver.Generation
+        task.spawn(function()
+            if not waitForSolver(object) then return end
+            task.wait(solverDelay())
+            local paths = solveFlowBoard(board); if not paths then return end
+            for color, path in pairs(paths) do
+                if not stillSolving(token, object) then return end
+                local drawing = board:Begin(path[1]); renderer:Render(); task.wait(solverDelay())
+                for index = 2, #path do
+                    if not stillSolving(token, object) then return end
+                    board:Step(drawing, path[index], 0); renderer:Render(); task.wait(solverDelay())
+                end
+                board:Release(drawing, true); renderer:Render(); task.wait(solverDelay())
             end
-        end
-        if not best then return nil end
-        if reqName == "GetMousePosition" then
-            local vel = getHRPVelocity(best)
-            return best.Position + vel * jd.prediction + Vector3.new(0, jd.aimOffset, 0)
-        end
-        return nil
-    end)
-    jd.patched = true
-end
-local function jd_removePatch()
-    if not jd.patched then return end
-    rfDispatch:unregister("jd"); jd.patched = false
-end
-
-local dusekkar = { enabled=false, prediction=0.12, aimOffset=0.0 }
-if NetworkRF then
-    rfDispatch:register("plasma", function(reqName, ...)
-        if reqName ~= "GetMousePosition" or not dusekkar.enabled then return nil end
-        local t = GetNearestKillerHrp(); if not t then return nil end
-        local vel = getHRPVelocity(t)
-        return t.Position + vel * dusekkar.prediction + Vector3.new(0, dusekkar.aimOffset, 0)
-    end)
-end
-
---═══════════════════════════════════════════════════════════════════
--- TWO TIME
---═══════════════════════════════════════════════════════════════════
-local NORMAL_STAB_ID = "100725497418533"; local CROUCH_STAB_ID = "89448354637442"
-local DAGGER_ANIMS = { [NORMAL_STAB_ID]=true, [CROUCH_STAB_ID]=true }
-local TwoTime = { stabbing=false, lastStab=0, conn=nil, savedAR=true, animConn=nil, charConn=nil }
-local function TTGetNearest()
-    local kf = GetKillersFolder(); local c = LP.Character; local my = c and c:FindFirstChild("HumanoidRootPart")
-    if not kf or not my then return nil end
-    local best, bd = nil, math.huge
-    for _, k in ipairs(kf:GetChildren()) do
-        if k:IsA("Model") then
-            local h = k:FindFirstChild("HumanoidRootPart") or k.PrimaryPart
-            local hum = k:FindFirstChildOfClass("Humanoid")
-            if h and hum and hum.Health > 0 then
-                local d = (h.Position - my.Position).Magnitude
-                if d < bd then bd = d; best = k end
-            end
-        end
+            if stillSolving(token, object) and board:IsSolved() then object:__finish(); callbacks.OnSolved() end
+        end)
+        return object
     end
-    return best
+    local oldConnectNew = ConnectInputModule.new
+    ConnectInputModule.new = function(board, renderer, callbacks)
+        local object = oldConnectNew(board, renderer, callbacks)
+        local token = MinigameSolver.Generation
+        task.spawn(function()
+            if not waitForSolver(object) then return end
+            task.wait(connectSolverDelay())
+            for blob in pairs(board.Blobs) do
+                if not stillSolving(token, object) then return end
+                if not board:GetLink(blob) then
+                    local mate = board:GetMate(blob)
+                    if mate then board:Connect(blob, mate); renderer:Render(); task.wait(connectSolverDelay()) end
+                end
+            end
+            if stillSolving(token, object) and board:IsSolved() then object:__finish(); callbacks.OnSolved() end
+        end)
+        return object
+    end
+    local oldGearNew = GearInputModule.new
+    GearInputModule.new = function(getCenter, callbacks, enabled)
+        local object = oldGearNew(getCenter, callbacks, enabled)
+        local token = MinigameSolver.Generation
+        task.spawn(function()
+            if not waitForSolver(object) then return end
+            task.wait(math.max(0.55, solverDelay()))
+            for _ = 1, 100 do
+                if not stillSolving(token, object) then return end
+                callbacks.OnTurn(90); task.wait(gearSolverDelay())
+            end
+        end)
+        return object
+    end
+    local oldLockNew = LockInputModule.new
+    LockInputModule.new = function(ui, callbacks)
+        local object = oldLockNew(ui, callbacks)
+        local board = MinigameSolver.LockBoard
+        local token = MinigameSolver.Generation
+        task.spawn(function()
+            if not waitForSolver(object) then return end
+            while stillSolving(token, object) and board and not board:IsBroken() do
+                local now = workspace:GetServerTimeNow()
+                if board:IsOnTarget(board:AngleAt(now)) then
+                    callbacks.OnPress(); task.wait(math.max(0.08, solverDelay()))
+                else RunService.Heartbeat:Wait() end
+            end
+        end)
+        return object
+    end
 end
-local function TTCleanup()
-    if TwoTime.conn then pcall(function() TwoTime.conn:Disconnect() end); TwoTime.conn = nil end
-    local c = LP.Character; local h = c and c:FindFirstChildOfClass("Humanoid")
-    if h then pcall(function() h.AutoRotate = TwoTime.savedAR; h:Move(Vector3.zero, false) end) end
-    TwoTime.stabbing = false
+pcall(installMinigameHooks)
+local function GS_Enable()
+    if not MinigameSolver.Installed then pcall(installMinigameHooks) end
+    if not MinigameSolver.Installed then
+        Library:Notify({ Title="Generator Solver", Description="Minigame modules not found", Time=3 })
+        return false
+    end
+    MinigameSolver.Enabled = true
+    MinigameSolver.Generation = MinigameSolver.Generation + 1
+    return true
 end
-local function TTRunLunge(killer)
-    if not Settings.TT_Enabled or TwoTime.stabbing or IsPlayerKiller() then return end
-    local c = LP.Character; if not c then return end
-    local hrp = c:FindFirstChild("HumanoidRootPart"); local hum = c:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum then return end
-    local now = os.clock()
-    if now - TwoTime.lastStab < (Settings.TT_Cooldown or 0.5) then return end
-    TwoTime.lastStab = now
-    if not killer or not killer.Parent then return end
-    local khrp = killer:FindFirstChild("HumanoidRootPart"); if not khrp then return end
-    if (khrp.Position - hrp.Position).Magnitude > (Settings.TT_MaxRange or 60) then return end
-    TwoTime.savedAR = hum.AutoRotate; hum.AutoRotate = false
-    TwoTime.stabbing = true
-    local dur = Settings.TT_FollowDuration or 0.5; local endT = tick() + dur
-    local lerp = Settings.TT_LerpSpeed or 45
-    if TwoTime.conn then pcall(function() TwoTime.conn:Disconnect() end) end
-    TwoTime.conn = RunService.RenderStepped:Connect(function(dt)
-        if not TwoTime.stabbing then return end
-        if tick() >= endT then TTCleanup(); return end
-        local c2 = LP.Character; if not c2 then TTCleanup(); return end
-        local h2 = c2:FindFirstChild("HumanoidRootPart"); local hu2 = c2:FindFirstChildOfClass("Humanoid")
-        if not h2 or not hu2 or hu2.Health <= 0 then TTCleanup(); return end
-        local kh = killer and killer.Parent and killer:FindFirstChild("HumanoidRootPart")
-        if not kh or not kh.Parent then TTCleanup(); return end
-        local kcf = kh.CFrame
-        local behind = kcf.Position - kcf.LookVector * (Settings.TT_BehindOffset or 1.7)
-        local tgt = Vector3.new(behind.X, h2.Position.Y, behind.Z)
-        local d = (tgt - h2.Position).Magnitude
-        if d > 0.15 then
-            local step = math.min(lerp * dt, d)
-            local np = h2.Position + (tgt - h2.Position).Unit * step
-            pcall(function()
-                h2.CFrame = CFrame.lookAt(np, Vector3.new(kcf.Position.X, np.Y, kcf.Position.Z))
-                h2.AssemblyLinearVelocity = Vector3.zero; h2.AssemblyAngularVelocity = Vector3.zero
-            end)
-        else
-            pcall(function()
-                h2.CFrame = CFrame.lookAt(h2.Position, Vector3.new(kcf.Position.X, h2.Position.Y, kcf.Position.Z))
-                h2.AssemblyLinearVelocity = Vector3.zero; h2.AssemblyAngularVelocity = Vector3.zero
-            end)
-        end
-    end)
-    task.delay(dur + 0.1, function() if TwoTime.stabbing then TTCleanup() end end)
-end
-local function TTAttach(char)
-    local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
-    local an = hum:WaitForChild("Animator", 5); if not an then return end
-    if TwoTime.animConn then pcall(function() TwoTime.animConn:Disconnect() end); TwoTime.animConn = nil end
-    TwoTime.animConn = an.AnimationPlayed:Connect(function(track)
-        if not Settings.TT_Enabled then return end
-        local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
-        if id and DAGGER_ANIMS[id] then local k = TTGetNearest(); if k then TTRunLunge(k) end end
-    end)
-end
-local function TTStart()
-    if LP.Character then TTAttach(LP.Character) end
-    TwoTime.charConn = LP.CharacterAdded:Connect(function(c) task.wait(0.5); if Settings.TT_Enabled then TTAttach(c) end end)
-end
-local function TTStop()
-    TTCleanup()
-    if TwoTime.animConn then pcall(function() TwoTime.animConn:Disconnect() end); TwoTime.animConn = nil end
-    if TwoTime.charConn then pcall(function() TwoTime.charConn:Disconnect() end); TwoTime.charConn = nil end
+local function GS_Disable()
+    MinigameSolver.Enabled = false
+    MinigameSolver.Generation = MinigameSolver.Generation + 1
 end
 
 --═══════════════════════════════════════════════════════════════════
--- ESP
+-- ESP (unchanged)
 --═══════════════════════════════════════════════════════════════════
 local ESP_HL, ESP_Folder = {}, nil
 local function ES_Ensure()
@@ -1095,9 +1497,8 @@ local function ES_Clear(model)
     local h = ESP_HL[model]
     if h then pcall(function() h:Destroy() end); ESP_HL[model] = nil end
 end
-local function ES_Refresh() for m in pairs(ESP_HL) do ES_Clear(m) end end
 task.spawn(function()
-    local lastScan = 0
+    local lastItemScan = 0
     while not _ShuttingDown do
         task.wait(0.35)
         local anyP = Settings.ESP_Killer or Settings.ESP_Survivor
@@ -1132,19 +1533,21 @@ task.spawn(function()
             end
         end
         local now = os.clock()
-        if anyI and myRoot and (now - lastScan) >= 2 then
-            lastScan = now
+        if anyI and myRoot and (now - lastItemScan) >= 2 then
+            lastItemScan = now
             for _, obj in ipairs(Workspace:GetDescendants()) do
                 if obj:IsA("BasePart") or obj:IsA("Model") then
                     local n = obj.Name; local color
                     if Settings.ESP_Generator and n == "Generator" then color = Color3.fromRGB(255,255,0)
                     elseif Settings.ESP_Medkit and n == "Medkit" then color = Color3.fromRGB(255,105,180)
                     elseif Settings.ESP_Bloxy and n == "BloxyCola" then color = Color3.fromRGB(0,150,255) end
-                    if color then
+                    if color and not ESP_HL[obj] then
                         local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart")
                         if part and (part.Position - myRoot.Position).Magnitude <= Settings.ESP_MaxDist and ES_Visible(part) then
                             seen[obj] = true; ES_Apply(obj, color)
                         end
+                    elseif color and ESP_HL[obj] then
+                        seen[obj] = true; ES_Apply(obj, color)
                     end
                 end
             end
@@ -1154,16 +1557,19 @@ task.spawn(function()
         for m in pairs(ESP_HL) do if not seen[m] or not m.Parent then ES_Clear(m) end end
     end
 end)
+local function ES_Refresh() for m in pairs(ESP_HL) do ES_Clear(m) end end
 
 --═══════════════════════════════════════════════════════════════════
--- STAMINA
+-- STAMINA (unchanged)
 --═══════════════════════════════════════════════════════════════════
 local Stam = { running=false, thread=nil, mod=nil, Infinite=false }
 local function Stam_GetMod()
     if Stam.mod then return Stam.mod end
     local ok, m = pcall(function() return require(ReplicatedStorage.Systems.Character.Game.Sprinting) end)
     if ok and type(m) == "table" then Stam.mod = m; return m end
-    ok, m = pcall(function() return require(ReplicatedStorage:WaitForChild("Systems"):WaitForChild("Character"):WaitForChild("Game"):WaitForChild("Sprinting")) end)
+    ok, m = pcall(function()
+        return require(ReplicatedStorage:WaitForChild("Systems"):WaitForChild("Character"):WaitForChild("Game"):WaitForChild("Sprinting"))
+    end)
     if ok and type(m) == "table" then Stam.mod = m; return m end
     return nil
 end
@@ -1190,7 +1596,10 @@ local function Stam_StopLoop()
 end
 local function Stam_SetInfinite(v)
     if v and not Stam.mod then Stam_GetMod() end
-    if v and not Stam.mod then Library:Notify({Title="Stamina", Description="Sprinting module not found", Time=3}); return end
+    if v and not Stam.mod then
+        Library:Notify({ Title="Stamina", Description="Sprinting module not found", Time=3 })
+        return
+    end
     Stam.Infinite = v
     if Stam.Infinite then Stam_StartLoop() else Stam_StopLoop() end
 end
@@ -1205,84 +1614,143 @@ local function Stam_SetField(field, v)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- VEE AUTO TRICK
+-- VEE (unchanged)
 --═══════════════════════════════════════════════════════════════════
-local VeeAutoTrick = { running=false, thread=nil, last=0 }
-local function IsVeeronica(c) if not c then return false end; return (c:GetAttribute("CharacterName") or c.Name) == "Veeronica" end
-local function IsTrickZoneActive(c)
-    if not c then return false end
-    for _, d in ipairs(c:GetDescendants()) do if d:IsA("Highlight") and d.Enabled and d.Adornee and (d.Adornee == c or d.Adornee:IsDescendantOf(c)) then return true end end
-    for _, d in ipairs(Workspace:GetChildren()) do if d:IsA("Highlight") and d.Enabled and d.Adornee and (d.Adornee == c or d:IsDescendantOf(c)) then return true end end
+local VeeAutoTrickState = { running=false, thread=nil, lastTrigger=0 }
+local VeeAutoPhase = { running=false, thread=nil }
+local VeeCustomStats = { Enabled=false }
+local VeeSkateControl = { Enabled=false }
+local function IsVeeronica(char)
+    if not char then return false end
+    return (char:GetAttribute("CharacterName") or char.Name) == "Veeronica"
+end
+local function IsTrickZoneActive(char)
+    if not char then return false end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("Highlight") and d.Enabled and d.Adornee and (d.Adornee == char or d.Adornee:IsDescendantOf(char)) then return true end
+    end
+    for _, d in ipairs(Workspace:GetChildren()) do
+        if d:IsA("Highlight") and d.Enabled and d.Adornee and (d.Adornee == char or d.Adornee:IsDescendantOf(char)) then return true end
+    end
     return false
 end
 local function VeerFireTrick()
-    local now = tick(); if now - VeeAutoTrick.last < 0.15 then return end; VeeAutoTrick.last = now
-    pcall(function() local VIM = game:GetService("VirtualInputManager"); VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game) end)
-    task.delay(0.05, function() pcall(function() local VIM = game:GetService("VirtualInputManager"); VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end) end)
+    local now = tick()
+    if now - VeeAutoTrickState.lastTrigger < 0.15 then return end
+    VeeAutoTrickState.lastTrigger = now
+    pcall(function()
+        local VIM = game:GetService("VirtualInputManager")
+        VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+    end)
+    task.delay(0.05, function()
+        pcall(function()
+            local VIM = game:GetService("VirtualInputManager")
+            VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+        end)
+    end)
 end
 local function VeerATStart()
-    if VeeAutoTrick.running then return end
-    VeeAutoTrick.running = true
-    VeeAutoTrick.thread = task.spawn(function()
-        while VeeAutoTrick.running do
+    if VeeAutoTrickState.running then return end
+    VeeAutoTrickState.running = true
+    VeeAutoTrickState.thread = task.spawn(function()
+        while VeeAutoTrickState.running do
             task.wait(0.1)
-            if not VeeAutoTrick.running then break end
-            local c = LP.Character
-            if IsVeeronica(c) and IsTrickZoneActive(c) then VeerFireTrick() end
+            if not VeeAutoTrickState.running then break end
+            local char = LP.Character
+            if IsVeeronica(char) and IsTrickZoneActive(char) then VeerFireTrick() end
         end
     end)
 end
 local function VeerATStop()
-    if not VeeAutoTrick.running then return end
-    VeeAutoTrick.running = false
-    if VeeAutoTrick.thread then pcall(task.cancel, VeeAutoTrick.thread); VeeAutoTrick.thread = nil end
+    if not VeeAutoTrickState.running then return end
+    VeeAutoTrickState.running = false
+    if VeeAutoTrickState.thread then pcall(task.cancel, VeeAutoTrickState.thread); VeeAutoTrickState.thread = nil end
 end
-
---═══════════════════════════════════════════════════════════════════
--- ANTIS
---═══════════════════════════════════════════════════════════════════
-local AntiPull = { conn = nil }
-local function setAntiPull(v)
-    if AntiPull.conn then AntiPull.conn:Disconnect(); AntiPull.conn = nil end
-    if not v then return end
-    local function watch(hrp)
-        if not hrp then return end
-        local function kill(c)
-            if c.Name == "CatchVelocity" or c:IsA("AlignPosition") or c:IsA("LinearVelocity")
-               or c:IsA("BodyVelocity") or c:IsA("BodyPosition") or c:IsA("AngularVelocity")
-               or c:IsA("BodyAngularVelocity") then
-                pcall(function() c:Destroy() end)
+local function VeeGetNetwork()
+    local ok, m = pcall(require, ReplicatedStorage.Modules.Network.Network)
+    if ok and type(m) == "table" then return m end
+    ok, m = pcall(require, ReplicatedStorage.Modules.Network)
+    if ok and type(m) == "table" and m.FireServerConnection then return m end
+    return nil
+end
+local function VeeGetPhaseTime()
+    local ok, m = pcall(require, ReplicatedStorage.Assets.Survivors.Veeronica.Behavior)
+    if ok and type(m) == "table" then
+        local ok2, v = pcall(function() return m.Sk8PhaseTime end)
+        if ok2 and type(v) == "number" then return v end
+    end
+    return 3
+end
+local function VeerPhaseStart()
+    if VeeAutoPhase.running then return end
+    VeeAutoPhase.running = true
+    local Network = VeeGetNetwork()
+    VeeAutoPhase.thread = task.spawn(function()
+        while VeeAutoPhase.running do
+            task.wait(0.5)
+            if not VeeAutoPhase.running then break end
+            if not Network then Network = VeeGetNetwork() end
+            local char = LP.Character
+            if not Network or not IsVeeronica(char) then continue end
+            local kf = GetKillersFolder(); if not kf then continue end
+            local phaseTime = VeeGetPhaseTime()
+            for _, killer in ipairs(kf:GetChildren()) do
+                if not VeeAutoPhase.running then break end
+                local hum = killer:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    pcall(function() Network:FireServerConnection(LP.Name.."SkatePhase", "REMOTE_EVENT", killer) end)
+                    task.wait(phaseTime + 0.6)
+                end
             end
-        end
-        for _, c in ipairs(hrp:GetChildren()) do kill(c) end
-        AntiPull.conn = hrp.ChildAdded:Connect(function(c) task.wait(0.1); if v then kill(c) end end)
-    end
-    if LP.Character then
-        local hrp = LP.Character:WaitForChild("HumanoidRootPart", 5)
-        watch(hrp)
-    end
-end
-
-local AntiFall = { running = false }
-local function setAntiFallSlowness(v)
-    AntiFall.running = v
-    if not v then
-        if LP.Character then LP.Character:SetAttribute("NoFallSlow", false) end
-        return
-    end
-    local function apply(c) if c then c:SetAttribute("NoFallSlow", true) end end
-    if LP.Character then apply(LP.Character) end
-    task.spawn(function()
-        LP.CharacterAdded:Connect(function(c) task.wait(0.5); if AntiFall.running then apply(c) end end)
-        while AntiFall.running and not _ShuttingDown do
-            if LP.Character then apply(LP.Character) end
-            task.wait(2)
         end
     end)
 end
+local function VeerPhaseStop()
+    if not VeeAutoPhase.running then return end
+    VeeAutoPhase.running = false
+    if VeeAutoPhase.thread then pcall(task.cancel, VeeAutoPhase.thread); VeeAutoPhase.thread = nil end
+end
+local function VeeGetBehavior()
+    local ok, m = pcall(require, ReplicatedStorage.Assets.Survivors.Veeronica.Behavior)
+    if ok and type(m) == "table" then return m end
+    return nil
+end
+local function VeeSetStat(name, value)
+    local m = VeeGetBehavior()
+    if m then
+        pcall(function() m[name] = value end)
+        pcall(function() rawset(m, name, value) end)
+    end
+    if getgc then
+        pcall(function()
+            for _, obj in pairs(getgc(true)) do
+                if type(obj) == "table" and rawget(obj, "DisplayName") == "Veeronica" then
+                    pcall(function() obj[name] = value end)
+                    pcall(function() rawset(obj, name, value) end)
+                end
+            end
+        end)
+    end
+end
+local function VeeApplyStats()
+    if not VeeCustomStats.Enabled then return end
+    VeeSetStat("Sk8Speed", Settings.VeeSk8Speed)
+    VeeSetStat("Sk8SpeedExhaust", Settings.VeeSk8Speed)
+    VeeSetStat("Sk8StaminaCost", Settings.VeeSk8StaminaCost)
+    VeeSetStat("Sk8StaminaMultiplier", Settings.VeeSk8StaminaCost)
+    VeeSetStat("Sk8TrickAirborneSpeed", Settings.VeeSk8TrickAirborne)
+    VeeSetStat("Sk8BumpPower", Settings.VeeSk8BumpPower)
+    VeeSetStat("Sk8BumpChargedPower", Settings.VeeSk8BumpPower + 3.1)
+    VeeSetStat("Sk8TrickStamina", Settings.VeeSk8TrickStamina)
+    VeeSetStat("Sk8TrickStaminaNerfed", Settings.VeeSk8TrickStamina)
+    VeeSetStat("Sk8TrickCooldown", Settings.VeeSk8TrickCooldown)
+end
+local function VeeSetTurnControl(on)
+    VeeSetStat("Sk8TurnControl", on and 6.5 or 0.65)
+end
 
 --═══════════════════════════════════════════════════════════════════
--- MISC
+-- MISC (unchanged)
 --═══════════════════════════════════════════════════════════════════
 local _savedLight = nil
 local function setFullbright(v)
@@ -1292,9 +1760,9 @@ local function setFullbright(v)
         end
         Lighting.FogEnd = 9999; Lighting.GlobalShadows = false
         Lighting.OutdoorAmbient = Color3.fromRGB(128,128,128); Lighting.Ambient = Color3.fromRGB(220,220,220)
-        local a = Lighting:FindFirstChildOfClass("Atmosphere"); if a then a:Destroy() end
+        local atmos = Lighting:FindFirstChildOfClass("Atmosphere"); if atmos then atmos:Destroy() end
     elseif _savedLight then
-        for k, val in pairs(_savedLight) do pcall(function() Lighting[k] = val end) end
+        for k, val in pairs(_savedLight) do pcall(function() Lighting[k]=val end) end
         _savedLight = nil
     end
 end
@@ -1309,218 +1777,306 @@ local function setNoclip(v)
     if LP.Character then apply(LP.Character) end
     _noclipConn = LP.CharacterAdded:Connect(apply)
 end
+local function setChatEnabled()
+    pcall(function()
+        local cw = TextChatService:FindFirstChildOfClass("ChatWindowConfiguration")
+        local ci = TextChatService:FindFirstChildOfClass("ChatInputBarConfiguration")
+        if cw then cw.Enabled = true end
+        if ci then ci.Enabled = true end
+    end)
+end
+local function showHiddenStats()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local pd = plr:FindFirstChild("PlayerData")
+        local s = pd and pd:FindFirstChild("Settings")
+        local priv = s and s:FindFirstChild("Privacy")
+        if priv then
+            for _, n in ipairs({"HideSurvivorWins","HideKillerWins","HidePlaytime"}) do
+                local v = priv:FindFirstChild(n); if v and v:IsA("BoolValue") then v.Value = false end
+            end
+        end
+    end
+end
+local _fovConn = nil
+local function setCustomFOV(v)
+    if _fovConn then _fovConn:Disconnect(); _fovConn = nil end
+    if not v then
+        pcall(function()
+            local char = LP.Character; local fov = char and char:FindFirstChild("FOVMultipliers")
+            local s = fov and fov:FindFirstChild("FOVSetting"); if s then s.Value = 1 end
+        end)
+        return
+    end
+    _fovConn = RunService.RenderStepped:Connect(function()
+        local char = LP.Character; local fov = char and char:FindFirstChild("FOVMultipliers")
+        local s = fov and fov:FindFirstChild("FOVSetting"); if s then s.Value = Settings.FOV_Mult end
+    end)
+end
+local function noopStatusEffect(name)
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    local schem = modules and modules:FindFirstChild("Schematics")
+    local effects = schem and schem:FindFirstChild("StatusEffects")
+    if not effects then return false end
+    local target = effects:FindFirstChild(name)
+    if not target then
+        for _, sub in ipairs({"KillerExclusive","SurvivorExclusive"}) do
+            local s = effects:FindFirstChild(sub); local f = s and s:FindFirstChild(name); if f then target = f; break end
+        end
+    end
+    if not target then return false end
+    local ok, m = pcall(require, target)
+    if ok and type(m) == "table" then
+        for k, v in pairs(m) do if type(v) == "function" then m[k] = function() end end end
+        return true
+    end
+    return false
+end
+local _antiPullConn = nil
+local function setAntiPull(v)
+    if _antiPullConn then _antiPullConn:Disconnect(); _antiPullConn = nil end
+    if not v then return end
+    local function watch(hrp)
+        if not hrp then return end
+        local function kill(c)
+            if c.Name=="CatchVelocity" or c:IsA("AlignPosition") or c:IsA("LinearVelocity") or c:IsA("BodyVelocity") or c:IsA("BodyPosition") then
+                pcall(function() c:Destroy() end)
+            end
+        end
+        for _, c in ipairs(hrp:GetChildren()) do kill(c) end
+        _antiPullConn = hrp.ChildAdded:Connect(function(c) task.wait(0.1); if v then kill(c) end end)
+    end
+    if LP.Character then watch(LP.Character:WaitForChild("HumanoidRootPart", 5)) end
+end
+local function setAntiFallSlowness(v)
+    if not v then
+        if LP.Character then LP.Character:SetAttribute("NoFallSlow", false) end
+        return
+    end
+    local function apply(c) if c then c:SetAttribute("NoFallSlow", true) end end
+    if LP.Character then apply(LP.Character) end
+    task.spawn(function()
+        LP.CharacterAdded:Connect(function(c) task.wait(0.5); if v then apply(c) end end)
+        while v and not _ShuttingDown do
+            if LP.Character then apply(LP.Character) end
+            task.wait(2)
+        end
+    end)
+end
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — ESP
 --═══════════════════════════════════════════════════════════════════
-local ESPL = Tabs.ESP:AddLeftGroupbox("ESP", "eye")
-ESPL:AddToggle("ESP_Killer_T", { Text="Killer ESP (Red)", Default=false, Callback=function(v) Settings.ESP_Killer=v; ES_Refresh() end })
-ESPL:AddToggle("ESP_Survivor_T", { Text="Survivor ESP (Green)", Default=false, Callback=function(v) Settings.ESP_Survivor=v; ES_Refresh() end })
-ESPL:AddToggle("ESP_Generator_T", { Text="Generator ESP (Yellow)", Default=false, Callback=function(v) Settings.ESP_Generator=v; ES_Refresh() end })
-ESPL:AddToggle("ESP_Medkit_T", { Text="Medkit ESP (Pink)", Default=false, Callback=function(v) Settings.ESP_Medkit=v; ES_Refresh() end })
-ESPL:AddToggle("ESP_Bloxy_T", { Text="BloxyCola ESP (Blue)", Default=false, Callback=function(v) Settings.ESP_Bloxy=v; ES_Refresh() end })
-local ESPR = Tabs.ESP:AddRightGroupbox("Options", "settings")
-ESPR:AddToggle("ESP_Wall_T", { Text="Wall Check", Default=false, Callback=function(v) Settings.ESP_WallCheck=v end })
-ESPR:AddSlider("ESP_MaxDist_S", { Text="Max Distance", Default=150, Min=50, Max=500, Rounding=0, Callback=function(v) Settings.ESP_MaxDist=v end })
+local ESPLeft = Tabs.ESP:AddLeftGroupbox("ESP", "eye")
+ESPLeft:AddToggle("ESP_Killer", { Text="Killer ESP (Red)", Default=false, Callback=function(v) Settings.ESP_Killer=v; ES_Refresh() end })
+ESPLeft:AddToggle("ESP_Survivor", { Text="Survivor ESP (Green)", Default=false, Callback=function(v) Settings.ESP_Survivor=v; ES_Refresh() end })
+ESPLeft:AddToggle("ESP_Generator", { Text="Generator ESP (Yellow)", Default=false, Callback=function(v) Settings.ESP_Generator=v; ES_Refresh() end })
+ESPLeft:AddToggle("ESP_Medkit", { Text="Medkit ESP (Pink)", Default=false, Callback=function(v) Settings.ESP_Medkit=v; ES_Refresh() end })
+ESPLeft:AddToggle("ESP_Bloxy", { Text="BloxyCola ESP (Blue)", Default=false, Callback=function(v) Settings.ESP_Bloxy=v; ES_Refresh() end })
+local ESPRight = Tabs.ESP:AddRightGroupbox("Options", "settings")
+ESPRight:AddToggle("ESP_Wall", { Text="Wall Check", Default=false, Callback=function(v) Settings.ESP_WallCheck=v end })
+ESPRight:AddSlider("ESP_MaxDist", { Text="Max Distance", Default=150, Min=50, Max=500, Rounding=0, Callback=function(v) Settings.ESP_MaxDist=v end })
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — STAMINA
 --═══════════════════════════════════════════════════════════════════
-local StamL = Tabs.Stam:AddLeftGroupbox("Stamina", "zap")
-StamL:AddToggle("Stam_Inf_T", { Text="Infinite Stamina", Default=false, Callback=function(v) Stam_SetInfinite(v) end })
-local StamR = Tabs.Stam:AddRightGroupbox("Overrides", "sliders")
-StamR:AddSlider("Stam_Max_S", { Text="Max Stamina", Default=100, Min=1, Max=1000, Rounding=0, Callback=function(v) Stam_SetField("MaxStamina", v) end })
-StamR:AddSlider("Stam_Sprint_S", { Text="Sprint Speed", Default=26, Min=1, Max=60, Rounding=0, Callback=function(v) Stam_SetField("SprintSpeed", v) end })
-StamR:AddSlider("Stam_Gain_S", { Text="Stamina Gain", Default=20, Min=1, Max=1000, Rounding=0, Callback=function(v) Stam_SetField("StaminaGain", v) end })
-StamR:AddSlider("Stam_Loss_S", { Text="Stamina Loss", Default=10, Min=0, Max=1000, Rounding=0, Callback=function(v) Stam_SetField("StaminaLoss", v) end })
+local StamLeft = Tabs.Stam:AddLeftGroupbox("Stamina", "zap")
+StamLeft:AddToggle("Stam_Inf", { Text="Infinite Stamina", Default=false, Callback=function(v) Stam_SetInfinite(v) end })
+local StamRight = Tabs.Stam:AddRightGroupbox("Overrides", "sliders")
+StamRight:AddSlider("Stam_Max", { Text="Max Stamina", Default=100, Min=1, Max=1000, Rounding=0, Callback=function(v) Stam_SetField("MaxStamina", v) end })
+StamRight:AddSlider("Stam_Sprint", { Text="Sprint Speed", Default=26, Min=1, Max=60, Rounding=0, Callback=function(v) Stam_SetField("SprintSpeed", v) end })
+StamRight:AddSlider("Stam_Gain", { Text="Stamina Gain", Default=20, Min=1, Max=1000, Rounding=0, Callback=function(v) Stam_SetField("StaminaGain", v) end })
+StamRight:AddSlider("Stam_Loss", { Text="Stamina Loss", Default=10, Min=0, Max=1000, Rounding=0, Callback=function(v) Stam_SetField("StaminaLoss", v) end })
 
 --═══════════════════════════════════════════════════════════════════
--- UI — AUTO BLOCK (fully editable facing box)
+-- UI — AUTO BLOCK (killer-facing box)
 --═══════════════════════════════════════════════════════════════════
-local ABL = Tabs.AutoBlock:AddLeftGroupbox("Auto Block (Facing Box)", "shield")
-ABL:AddToggle("AB_En_T", { Text="Enable Auto Block", Default=false, Callback=function(v)
-    if v then StartAutoBlock() else StopAutoBlock() end
-end })
-ABL:AddDropdown("AB_Mode_DD", { Text="Mode", Values={"Guest 1337","007n7"}, Default="Guest 1337", Multi=false,
-    Callback=function(v) Settings.ABMode = v end })
-
-local ABR = Tabs.AutoBlock:AddRightGroupbox("Box Shape", "square")
-ABR:AddSlider("AB_Width_S",   { Text="Width",   Default=8,  Min=1, Max=30, Rounding=1,
-    Callback=function(v) FacingCheck.Width  = v end })
-ABR:AddSlider("AB_Height_S",  { Text="Height",  Default=6,  Min=1, Max=30, Rounding=1,
-    Callback=function(v) FacingCheck.Height = v end })
-ABR:AddSlider("AB_Length_S",  { Text="Length",  Default=15, Min=1, Max=60, Rounding=1,
-    Callback=function(v) FacingCheck.Length = v end })
-ABR:AddSlider("AB_OffsetY_S", { Text="Offset Y", Default=0, Min=-10, Max=10, Rounding=1,
-    Callback=function(v) FacingCheck.OffsetY = v end })
-
-local ABV = Tabs.AutoBlock:AddLeftGroupbox("Box Visual", "eye")
-ABV:AddToggle("AB_ShowVisual_T", { Text="Show Box", Default=true,
-    Callback=function(v) FacingCheck.VisualEnabled = v; FacingUpdateVisual() end })
-ABV:AddToggle("AB_Follow_T", { Text="Follow Player", Default=true,
-    Callback=function(v) FacingCheck.FollowPlayer = v end })
-ABV:AddToggle("AB_Detect_T", { Text="Detection Enabled", Default=true,
-    Callback=function(v) FacingCheck.DetectionEnabled = v end })
-ABV:AddSlider("AB_Trans_S", { Text="Edge Transparency", Default=0, Min=0, Max=1, Rounding=2,
-    Callback=function(v) FacingCheck.Transparency = v end })
-ABV:AddSlider("AB_Thick_S", { Text="Edge Thickness", Default=0.045, Min=0.01, Max=0.5, Rounding=3,
-    Callback=function(v) FacingCheck.Thickness = v end })
-ABV:AddInput("AB_Color_I",  { Text="Edge Color (r,g,b)", Default="255,40,40", Placeholder="255,40,40",
-    Callback=function(v) FacingCheck.Color = ParseColor(v, 255, 40, 40) end })
-
-local ABSup = Tabs.AutoBlock:AddRightGroupbox("Support", "activity")
-ABSup:AddToggle("AB_Punch_T", { Text="Auto Punch (after block)", Default=false,
-    Callback=function(v) Settings.AimPunch = v end })
-ABSup:AddSlider("AB_PunchDelay_S", { Text="Punch Delay", Default=0.5, Min=0, Max=5, Rounding=2,
-    Callback=function(v) Settings.PunchDelay = v end })
-ABSup:AddToggle("AB_Idk_T", { Text="Idk (Auto Guest Mode)", Default=false, Callback=function(v)
-    if v then StartIdkLoop() else StopIdkLoop() end
-end })
+local ABLeft = Tabs.AutoBlock:AddLeftGroupbox("Auto Block", "shield")
+ABLeft:AddToggle("AB_Enable", { Text="Enable Auto Block", Default=false, Callback=function(v) if v then StartAutoBlock() else StopAutoBlock() end end })
+ABLeft:AddDropdown("AB_Mode", { Text="Block Ability", Values={"Guest1337","007n7"}, Default="Guest1337", Multi=false, Callback=function(v) Settings.AB_Mode=v end })
+ABLeft:AddSlider("AB_Debounce", { Text="Debounce (s)", Default=0.08, Min=0.02, Max=0.5, Rounding=2, Callback=function(v) Settings.AB_Debounce=v end })
+ABLeft:AddLabel({ Text="Box follows nearest killer, oriented to their facing. Block fires when YOUR HRP is inside their box on M1.", DoesWrap=true })
+local ABRight = Tabs.AutoBlock:AddRightGroupbox("Box Visual", "square")
+ABRight:AddToggle("AB_ShowBox_T", { Text="Show Box (on killer)", Default=true, Callback=function(v) FacingCheck.VisualEnabled=v end })
+ABRight:AddToggle("AB_Forward_T", { Text="Forward Only (attack cone)", Default=true, Callback=function(v) FacingCheck.ForwardOnly=v end })
+ABRight:AddToggle("AB_Detect_T", { Text="Detection Enabled", Default=true, Callback=function(v) FacingCheck.DetectionEnabled=v end })
+ABRight:AddSlider("AB_RectTrans", { Text="Edge Transparency", Default=0, Min=0, Max=1, Rounding=2, Callback=function(v) FacingCheck.Transparency=v end })
+ABRight:AddSlider("AB_RectOffset", { Text="Offset Y (studs)", Default=0, Min=-10, Max=10, Rounding=1, Callback=function(v) FacingCheck.OffsetY=v end })
+local ABDim = Tabs.AutoBlock:AddLeftGroupbox("Box Dimensions", "sliders")
+ABDim:AddSlider("AB_RectW", { Text="Width (X)", Default=8, Min=1, Max=30, Rounding=1, Callback=function(v) FacingCheck.Width=v end })
+ABDim:AddSlider("AB_RectH", { Text="Height (Y)", Default=6, Min=1, Max=30, Rounding=1, Callback=function(v) FacingCheck.Height=v end })
+ABDim:AddSlider("AB_RectL", { Text="Length (Z)", Default=15, Min=1, Max=60, Rounding=1, Callback=function(v) FacingCheck.Length=v end })
+local ABColor = Tabs.AutoBlock:AddRightGroupbox("Color & Debug", "palette")
+ABColor:AddInput("AB_Color_I", { Text="Edge Color (R,G,B)", Default="255,40,40", Placeholder="255,40,40", Callback=function(v) FacingCheck.Color=ParseColor(v,255,40,40) end })
+ABColor:AddButton({ Text="Test Fire Block", Func=function() FireByMode(); print("[Cupcake] Fired "..Settings.AB_Mode) end })
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — HDT
 --═══════════════════════════════════════════════════════════════════
-local HDTL = Tabs.HDT:AddLeftGroupbox("HDT", "activity")
-HDTL:AddToggle("HDT_En_T", { Text="Enable HDT", Default=false, Callback=function(v)
-    HDT.enabled = v; Settings.HDTEnabled = v
-    if v then HDT_StartWatcher() else HDT_StopWatcher() end
-end })
-HDTL:AddSlider("HDT_Speed_S", { Text="Speed", Default=40, Min=5, Max=200, Rounding=0, Callback=function(v) HDT.speed = v; Settings.HDTSpeed = v end })
-HDTL:AddSlider("HDT_Dur_S", { Text="Duration (s)", Default=0.6, Min=0.05, Max=3, Rounding=3, Callback=function(v) HDT.duration = v; Settings.HDTDuration = v end })
-HDTL:AddButton({ Text="Force HDT Now", Func=function() local k = HDT_NearestKiller(); if k then HDT_Dash(k) end end })
+local HDTLeft = Tabs.HDT:AddLeftGroupbox("HDT", "activity")
+HDTLeft:AddToggle("HDT_Enable", { Text="Enable HDT", Default=false, Callback=function(v) if v then HDT_Enable() else HDT_Disable() end end })
+HDTLeft:AddSlider("HDT_Speed", { Text="Speed", Default=40, Min=5, Max=200, Rounding=0, Callback=function(v) HDT.Speed=math.clamp(tonumber(v) or 40,5,200) end })
+HDTLeft:AddSlider("HDT_Duration", { Text="Duration (s)", Default=0.6, Min=0.05, Max=3, Rounding=3, Callback=function(v) HDT.Duration=math.clamp(tonumber(v) or 0.6,0.05,3) end })
+HDTLeft:AddButton({ Text="Force HDT Now", Func=function() HDT_ForceNow() end })
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — AIM
 --═══════════════════════════════════════════════════════════════════
-local AimSA = Tabs.Aim:AddLeftGroupbox("Survivor Aim (Stun)", "crosshair")
-AimSA:AddToggle("SA_En_T", { Text="Enable Survivor Aim", Default=false, Callback=function(v)
+local AimLeft = Tabs.Aim:AddLeftGroupbox("Auto Parry & Punch Aim", "swords")
+AimLeft:AddToggle("AP_Enable", { Text="Auto Parry", Default=false, Callback=function(v) if v then AP_Enable() else AP_Disable() end end })
+AimLeft:AddSlider("AP_Delay", { Text="Parry Delay (s)", Default=0.5, Min=0, Max=1, Rounding=2, Callback=function(v) Settings.AP_Delay=v end })
+AimLeft:AddToggle("PA_Enable", { Text="Punch Aim (Hardlock)", Default=false, Callback=function(v) Settings.PA_Enabled=v; PA.active=v end })
+AimLeft:AddSlider("PA_Pred", { Text="Punch Prediction (0-10)", Default=4, Min=0, Max=10, Rounding=0, Callback=function(v) Settings.PA_Prediction=v end })
+local AimRight = Tabs.Aim:AddRightGroupbox("Survivor Auto Aim (Stun)", "crosshair")
+AimRight:AddToggle("NA_Enable", { Text="Enable Survivor Aim", Default=false, Callback=function(v)
     Settings.AIM_Enabled = v; NA.active = v
-    if v and LP.Character then LoadAbilityIds(LP.Character); AttachAnimWatcher(LP.Character); AttachSoundWatcher(LP.Character) end
+    if v and LP.Character then
+        LoadAbilityIds(LP.Character)
+        AttachAnimWatcher(LP.Character)
+        AttachSoundWatcher(LP.Character)
+    end
 end })
-AimSA:AddDropdown("SA_Mode_DD", { Text="Aim Mode", Values={"Character","Camera","Both"}, Default="Character", Multi=false, Callback=function(v) Settings.AIM_Mode = v end })
-AimSA:AddSlider("SA_Pred_S", { Text="Prediction (0-10)", Default=4, Min=0, Max=10, Rounding=0, Callback=function(v) Settings.AIM_Prediction = v end })
-AimSA:AddSlider("SA_Lock_S", { Text="Lock Time (s)", Default=0.7, Min=0.2, Max=2, Rounding=2, Callback=function(v) Settings.AIM_LockTime = v end })
-
-local AimAP = Tabs.Aim:AddRightGroupbox("Auto Parry + Punch", "swords")
-AimAP:AddToggle("AP_En_T", { Text="Auto Parry", Default=false, Callback=function(v) if v then AP_Enable() else AP_Disable() end end })
-AimAP:AddSlider("AP_Delay_S", { Text="Parry Delay (s)", Default=0.5, Min=0, Max=1, Rounding=2, Callback=function(v) Settings.AP_Delay = v end })
-AimAP:AddToggle("PA_En_T", { Text="Punch Aim (Hardlock)", Default=false, Callback=function(v) Settings.PA_Enabled = v; PA.active = v end })
-AimAP:AddSlider("PA_Pred_S", { Text="Punch Prediction (0-10)", Default=4, Min=0, Max=10, Rounding=0, Callback=function(v) Settings.PA_Prediction = v end })
-
-local AimEll = Tabs.Aim:AddLeftGroupbox("Elliot (Throw)", "target")
-AimEll:AddToggle("Ell_En_T", { Text="Enable Elliot Aimbot", Default=false, Callback=function(v)
-    elliot.enabled = v
-    if v then elliot_start() else elliot_stop() end
+AimRight:AddDropdown("NA_Mode", { Text="Aim Mode", Values={"Character","Camera","Both"}, Default="Character", Multi=false, Callback=function(v) Settings.AIM_Mode=v end })
+AimRight:AddSlider("NA_Pred", { Text="Prediction (0-10)", Default=4, Min=0, Max=10, Rounding=0, Callback=function(v) Settings.AIM_Prediction=v end })
+AimRight:AddSlider("NA_Lock", { Text="Lock Time (s)", Default=0.7, Min=0.2, Max=2, Rounding=2, Callback=function(v) Settings.AIM_LockTime=v end })
+AimRight:AddButton({ Text="Reload Ability IDs", Func=function()
+    if LP.Character then LoadAbilityIds(LP.Character); Library:Notify({ Title="Aim", Description="Ability IDs reloaded", Time=2 }) end
 end })
-AimEll:AddDropdown("Ell_Type_DD", { Text="Aim Type", Values={"HRP Aimbot","Camera Aimbot","Camera + Character"}, Default="Camera + Character", Multi=false, Callback=function(v) elliot.aimType = v end })
-AimEll:AddDropdown("Ell_Target_DD", { Text="Target Mode", Values={"Low HP","Closest"}, Default="Low HP", Multi=false, Callback=function(v) elliot.targetMode = v end })
-AimEll:AddSlider("Ell_Dur_S", { Text="Throw Window (s)", Default=0.6, Min=0.1, Max=2, Rounding=1, Callback=function(v) elliot.throwDur = v end })
-AimEll:AddSlider("Ell_Smooth_S", { Text="Smoothness", Default=0.15, Min=0.05, Max=0.5, Rounding=2, Callback=function(v) elliot.smoothness = v end })
-AimEll:AddSlider("Ell_Pred_S", { Text="Prediction", Default=5, Min=0, Max=50, Rounding=0, Callback=function(v) elliot.predDist = v end })
-AimEll:AddToggle("Ell_Anim_T", { Text="Require Anim", Default=true, Callback=function(v) elliot.requireAnim = v end })
-
-local AimCh = Tabs.Aim:AddRightGroupbox("Chance", "target")
-AimCh:AddToggle("Ch_En_T", { Text="Enable Chance Aimbot", Default=false, Callback=function(v)
-    chance.enabled = v
-    if not v and chance.bodyGyro and chance.bodyGyro.Parent then chance.bodyGyro:Destroy(); chance.bodyGyro = nil end
-end })
-AimCh:AddDropdown("Ch_Pred_DD", { Text="Prediction Mode", Values={"Velocity","Look"}, Default="Velocity", Multi=false, Callback=function(v) chance.predMode = v end })
-AimCh:AddInput("Ch_PredVal_I", { Text="Prediction Value", Default="0.5", Placeholder="0.5", Callback=function(v) local n = tonumber(v); if n then chance.predValue = n end end })
-AimCh:AddDropdown("Ch_Behav_DD", { Text="Behavior", Values={"Normal","360"}, Default="Normal", Multi=false, Callback=function(v) chance.aimBehavior = v end })
-AimCh:AddToggle("Ch_Hold_T", { Text="Hold-to-Aim (Q)", Default=true, Callback=function(v) chance.holdToAim = v end })
-
---═══════════════════════════════════════════════════════════════════
--- UI — SILENT AIM
---═══════════════════════════════════════════════════════════════════
-local JaneL = Tabs.Silent:AddLeftGroupbox("Jane Doe", "crosshair")
-JaneL:AddToggle("Jane_En_T", { Text="Enable Jane Aimbot", Default=false, Callback=function(v) jd.enabled = v; if v then jd_applyPatch() else jd_removePatch() end end })
-JaneL:AddToggle("Jane_Aim_T", { Text="Silent Aim (Crystal)", Default=false, Callback=function(v) jd.aimbotOn = v; if v then jd_applyPatch() end end })
-JaneL:AddSlider("Jane_Pred_S", { Text="Prediction (s)", Default=0.6, Min=0, Max=2, Rounding=2, Callback=function(v) jd.prediction = v end })
-JaneL:AddSlider("Jane_Off_S", { Text="Aim Offset (Y)", Default=-0.3, Min=-5, Max=5, Rounding=1, Callback=function(v) jd.aimOffset = v end })
-
-local DuskL = Tabs.Silent:AddRightGroupbox("Dusekkar", "zap")
-DuskL:AddToggle("Dusk_En_T", { Text="Enable PlasmaBeam Silent Aim", Default=false, Callback=function(v) dusekkar.enabled = v end })
-DuskL:AddSlider("Dusk_Pred_S", { Text="Prediction (s)", Default=0.12, Min=0, Max=0.5, Rounding=2, Callback=function(v) dusekkar.prediction = v end })
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — TWO TIME
 --═══════════════════════════════════════════════════════════════════
-local TTL = Tabs.TwoTime:AddLeftGroupbox("Two Time Backstab", "user")
-TTL:AddToggle("TT_En_T", { Text="Enable Backstab", Default=false, Callback=function(v)
+local TTLeft = Tabs.TwoTime:AddLeftGroupbox("Two Time Backstab", "user")
+TTLeft:AddToggle("TT_Enable_T", { Text="Enable Backstab", Default=false, Callback=function(v)
     Settings.TT_Enabled = v
     if v then TTStart() else TTStop() end
 end })
-TTL:AddLabel({ Text="Lunges behind killer on stab animation.", DoesWrap=true })
-local TTR = Tabs.TwoTime:AddRightGroupbox("Tuning", "sliders")
-TTR:AddSlider("TT_Off_S", { Text="Behind Offset", Default=1.7, Min=0.5, Max=6, Rounding=2, Callback=function(v) Settings.TT_BehindOffset = v end })
-TTR:AddSlider("TT_Range_S", { Text="Max Range", Default=60, Min=10, Max=150, Rounding=0, Callback=function(v) Settings.TT_MaxRange = v end })
-TTR:AddSlider("TT_CD_S", { Text="Cooldown (s)", Default=0.5, Min=0.1, Max=2, Rounding=2, Callback=function(v) Settings.TT_Cooldown = v end })
-TTR:AddSlider("TT_Dur_S", { Text="Lunge Duration (s)", Default=0.5, Min=0.1, Max=2, Rounding=2, Callback=function(v) Settings.TT_FollowDuration = v end })
-TTR:AddSlider("TT_Lerp_S", { Text="Lerp Speed", Default=45, Min=10, Max=100, Rounding=0, Callback=function(v) Settings.TT_LerpSpeed = v end })
+TTLeft:AddLabel({ Text="Smooth dash toward the killer's back when you play a stab animation.", DoesWrap=true })
+local TTRight = Tabs.TwoTime:AddRightGroupbox("Tuning", "sliders")
+TTRight:AddSlider("TT_BehindOffset_S", { Text="Behind Offset (studs)", Default=1.7, Min=0.5, Max=6, Rounding=2, Callback=function(v) Settings.TT_BehindOffset=v end })
+TTRight:AddSlider("TT_MaxRange_S", { Text="Max Range (studs)", Default=60, Min=10, Max=150, Rounding=0, Callback=function(v) Settings.TT_MaxRange=v end })
+TTRight:AddSlider("TT_Cooldown_S", { Text="Stab Cooldown (s)", Default=0.5, Min=0.1, Max=2, Rounding=2, Callback=function(v) Settings.TT_Cooldown=v end })
+TTRight:AddSlider("TT_FollowDuration_S", { Text="Follow Duration (s)", Default=0.5, Min=0.1, Max=2, Rounding=2, Callback=function(v) Settings.TT_FollowDuration=v end })
+TTRight:AddSlider("TT_LerpSpeed_S", { Text="Lerp Speed (studs/s)", Default=45, Min=10, Max=100, Rounding=0, Callback=function(v) Settings.TT_LerpSpeed=v end })
 
 --═══════════════════════════════════════════════════════════════════
--- UI — NOLI (stub)
+-- UI — NOLI (untouched — v3 smooth drift)
 --═══════════════════════════════════════════════════════════════════
-local NoliL = Tabs.Noli:AddLeftGroupbox("Noli Aim", "target")
-NoliL:AddToggle("Noli_En_T", { Text="Enable Noli Aim", Default=false, Callback=function(v) Settings.Noli_AIM_Enabled = v end })
-NoliL:AddSlider("Noli_Dur_S", { Text="Aim Duration (s)", Default=3.5, Min=0.5, Max=10, Rounding=1, Callback=function(v) Settings.Noli_AimDuration = v end })
-NoliL:AddSlider("Noli_Range_S", { Text="Max Range", Default=500, Min=10, Max=1000, Rounding=0, Callback=function(v) Settings.Noli_MaxRange = v end })
-local NoliR = Tabs.Noli:AddRightGroupbox("Line Visual", "square")
-NoliR:AddInput("Noli_Color_I", { Text="Line Color", Default="255,0,0", Placeholder="255,0,0", Callback=function(v) Settings.Noli_LineColor = v end })
-NoliR:AddSlider("Noli_Thick_S", { Text="Line Thickness", Default=0.22, Min=0.05, Max=1, Rounding=2, Callback=function(v) Settings.Noli_LineThickness = v end })
+local NoliLeft = Tabs.Noli:AddLeftGroupbox("Noli Void Rush Auto Aim", "zap")
+NoliLeft:AddToggle("Noli_Enable_T", { Text="Enable Void Rush Auto Aim", Default=false, Callback=function(v)
+    Settings.Noli_AIM_Enabled = v
+    if v then NoliAimStart() else NoliAimCleanup() end
+end })
+NoliLeft:AddLabel({ Text="Detects Void Rush via network + anim fallback. Locks onto closest survivor, drifts smoothly around corners, retargets only on miss. 3.5s = rush duration.", DoesWrap=true })
+NoliLeft:AddSlider("Noli_Duration_S", { Text="Aim Duration (s)", Default=3.5, Min=1, Max=15, Rounding=1, Callback=function(v) Settings.Noli_AimDuration=v end })
+NoliLeft:AddSlider("Noli_Range_S", { Text="Max Range (studs)", Default=500, Min=50, Max=1000, Rounding=0, Callback=function(v) Settings.Noli_MaxRange=v end })
+NoliLeft:AddSlider("Noli_Speed_S", { Text="Move Speed (studs/s)", Default=45, Min=10, Max=200, Rounding=0, Callback=function(v) Settings.Noli_MoveSpeed=v end })
+NoliLeft:AddSlider("Noli_Turn_S", { Text="Turn Smoothness (1=drift, 30=snap)", Default=10, Min=1, Max=30, Rounding=0, Callback=function(v) Settings.Noli_TurnSmoothness=v end })
+NoliLeft:AddButton({ Text="Force Aim Now", Func=function()
+    NoliAimTrigger()
+    Library:Notify({ Title="Noli", Description="Aim triggered", Time=2 })
+end })
+local NoliRight = Tabs.Noli:AddRightGroupbox("Path Visual", "square")
+NoliRight:AddToggle("Noli_Straight_T", { Text="Straight Line Mode", Default=false, Callback=function(v) Settings.Noli_UseStraight=v end })
+NoliRight:AddLabel({ Text="Off = pathfind around walls. On = direct line through walls.", DoesWrap=true })
+NoliRight:AddInput("Noli_ColorIn", { Text="Line Color (R,G,B)", Default="255,0,0", Placeholder="255,0,0", Callback=function(v) Settings.Noli_LineColor=v end })
+NoliRight:AddSlider("Noli_Thickness_S", { Text="Line Thickness", Default=0.22, Min=0.05, Max=1, Rounding=2, Callback=function(v) Settings.Noli_LineThickness=v end })
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — VEE
 --═══════════════════════════════════════════════════════════════════
-local VeeL = Tabs.Vee:AddLeftGroupbox("Vee (Veeronica)", "gamepad-2")
-VeeL:AddToggle("Vee_AT_T", { Text="Auto Trick", Default=false, Callback=function(v) Settings.VeeAutoTrick = v; if v then VeerATStart() else VeerATStop() end end })
+local VeeLeft = Tabs.Vee:AddLeftGroupbox("Vee (Veeronica)", "gamepad-2")
+VeeLeft:AddToggle("Vee_AutoTrick_T", { Text="Auto Trick", Default=false, Callback=function(v) Settings.VeeAutoTrick=v; if v then VeerATStart() else VeerATStop() end end })
+VeeLeft:AddToggle("Vee_AutoPhase_T", { Text="Auto Phase", Default=false, Callback=function(v) Settings.VeeAutoPhase=v; if v then VeerPhaseStart() else VeerPhaseStop() end end })
+VeeLeft:AddToggle("Vee_SkateCtrl_T", { Text="Skate Control", Default=false, Callback=function(v) Settings.VeeSkateControl=v; VeeSkateControl.Enabled=v; VeeSetTurnControl(v) end })
+VeeLeft:AddDivider()
+VeeLeft:AddToggle("Vee_Custom_T", { Text="Custom Stats", Default=false, Callback=function(v) Settings.VeeCustomStats=v; VeeCustomStats.Enabled=v; VeeApplyStats() end })
+VeeLeft:AddButton({ Text="Force Apply Stats Now", Func=function() VeeApplyStats(); Library:Notify({ Title="Vee", Description="Stats re-applied", Time=2 }) end })
+local VeeRight = Tabs.Vee:AddRightGroupbox("Skate Stats", "sliders")
+VeeRight:AddSlider("Vee_Speed_S", { Text="Skate Speed", Default=1.15, Min=0.5, Max=10, Rounding=2, Callback=function(v) Settings.VeeSk8Speed=v; if VeeCustomStats.Enabled then VeeApplyStats() end end })
+VeeRight:AddSlider("Vee_StamCost_S", { Text="Stamina Cost", Default=1.35, Min=0.1, Max=5, Rounding=2, Callback=function(v) Settings.VeeSk8StaminaCost=v; if VeeCustomStats.Enabled then VeeApplyStats() end end })
+VeeRight:AddSlider("Vee_Trick_S", { Text="Trick Boost Speed", Default=1.42, Min=1, Max=15, Rounding=2, Callback=function(v) Settings.VeeSk8TrickAirborne=v; if VeeCustomStats.Enabled then VeeApplyStats() end end })
+VeeRight:AddSlider("Vee_Bump_S", { Text="Bumper Knockback", Default=11.9, Min=10, Max=150, Rounding=1, Callback=function(v) Settings.VeeSk8BumpPower=v; if VeeCustomStats.Enabled then VeeApplyStats() end end })
+VeeRight:AddSlider("Vee_Stam_S", { Text="Stamina Per Trick", Default=4, Min=0, Max=100, Rounding=0, Callback=function(v) Settings.VeeSk8TrickStamina=v; if VeeCustomStats.Enabled then VeeApplyStats() end end })
+VeeRight:AddSlider("Vee_CD_S", { Text="Trick Cooldown", Default=1, Min=0.1, Max=5, Rounding=2, Callback=function(v) Settings.VeeSk8TrickCooldown=v; if VeeCustomStats.Enabled then VeeApplyStats() end end })
+
+--═══════════════════════════════════════════════════════════════════
+-- UI — GEN
+--═══════════════════════════════════════════════════════════════════
+local GenLeft = Tabs.Gen:AddLeftGroupbox("Generator Solver", "cpu")
+GenLeft:AddToggle("GS_Enabled_T", { Text="Enable Generator Solver", Default=false, Callback=function(v)
+    if v then
+        local ok = GS_Enable()
+        if not ok then Library:Notify({ Title="Generator Solver", Description="Minigame modules not found", Time=4 }) end
+    else GS_Disable() end
+end })
+GenLeft:AddSlider("GS_Start_S", { Text="Start Delay (s)", Default=1.5, Min=0, Max=5, Rounding=1, Callback=function(v) Settings.GS_StartDelay=v end })
+GenLeft:AddSlider("GS_Flow_S", { Text="Flow Cell Speed (ms)", Default=50, Min=0, Max=250, Rounding=0, Callback=function(v) Settings.GS_FlowDelay=(tonumber(v) or 50)/1000 end })
+local GenRight = Tabs.Gen:AddRightGroupbox("Other Minigames", "sliders")
+GenRight:AddSlider("GS_Conn_S", { Text="Connect Pair Delay (ms)", Default=1000, Min=100, Max=3000, Rounding=0, Callback=function(v) Settings.GS_ConnectDelay=(tonumber(v) or 1000)/1000 end })
+GenRight:AddSlider("GS_Gear_S", { Text="Gear Turn Speed (ms)", Default=30, Min=0, Max=150, Rounding=0, Callback=function(v) Settings.GS_GearDelay=(tonumber(v) or 30)/1000 end })
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — MISC
 --═══════════════════════════════════════════════════════════════════
-local MiscL = Tabs.Misc:AddLeftGroupbox("Visuals", "sun")
-MiscL:AddToggle("Misc_FB_T", { Text="Fullbright + No Fog", Default=false, Callback=function(v) setFullbright(v) end })
-local MiscR = Tabs.Misc:AddRightGroupbox("Utility", "wrench")
-MiscR:AddToggle("Misc_Noclip_T", { Text="Noclip", Default=false, Callback=function(v) setNoclip(v) end })
-MiscR:AddButton({ Text="Reset Character", Func=function() local h = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid"); if h then h.Health = 0 end end })
+local MiscLeft = Tabs.Misc:AddLeftGroupbox("Visuals", "sun")
+MiscLeft:AddToggle("Misc_Fullbright_T", { Text="Fullbright + No Fog", Default=false, Callback=function(v) setFullbright(v) end })
+MiscLeft:AddToggle("Misc_FOV_T", { Text="Custom FOV", Default=false, Callback=function(v) setCustomFOV(v) end })
+MiscLeft:AddSlider("Misc_FOV_S", { Text="FOV Multiplier", Default=1, Min=0.5, Max=3, Rounding=1, Callback=function(v) Settings.FOV_Mult=v end })
+local MiscRight = Tabs.Misc:AddRightGroupbox("Utility", "wrench")
+MiscRight:AddToggle("Misc_Noclip_T", { Text="Noclip", Default=false, Callback=function(v) setNoclip(v) end })
+MiscRight:AddButton({ Text="Enable Chat", Func=function() setChatEnabled(); Library:Notify({ Title="Misc", Description="Chat enabled", Time=2 }) end })
+MiscRight:AddButton({ Text="Show Hidden Stats", Func=function() showHiddenStats(); Library:Notify({ Title="Misc", Description="Revealed", Time=2 }) end })
+MiscRight:AddButton({ Text="Reset Character", Func=function()
+    local h = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    if h then h.Health = 0 end
+end })
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — ANTIS
 --═══════════════════════════════════════════════════════════════════
-local AntisL = Tabs.Antis:AddLeftGroupbox("Anti-Pull", "shield")
-AntisL:AddToggle("Anti_Pull_T", { Text="Anti-Pull (Bloodhook/VoidStar)", Default=false, Callback=function(v) setAntiPull(v) end })
-AntisL:AddLabel({ Text="Removes CatchVelocity / AlignPosition / LinearVelocity constraints on your HRP.", DoesWrap=true })
-
-local AntisR = Tabs.Antis:AddRightGroupbox("Anti-Slowness", "wind")
-AntisR:AddToggle("Anti_FallSlow_T", { Text="Anti-Fall Slowness", Default=false, Callback=function(v) setAntiFallSlowness(v) end })
-AntisR:AddLabel({ Text="Sets NoFallSlow attribute on your character to prevent fall-speed penalty.", DoesWrap=true })
+local AntisLeft = Tabs.Antis:AddLeftGroupbox("Status Effects", "lock")
+AntisLeft:AddToggle("Anti_Stun_T", { Text="Anti-Stun", Default=false, Callback=function(v)
+    if v then
+        if not noopStatusEffect("Stunned") then
+            Library:Notify({ Title="Antis", Description="Stunned module not found", Time=3 })
+        end
+    end
+end })
+AntisLeft:AddToggle("Anti_Slow_T", { Text="Anti-Slowness", Default=false, Callback=function(v)
+    if v then
+        if not noopStatusEffect("Slowness") then
+            Library:Notify({ Title="Antis", Description="Slowness module not found", Time=3 })
+        end
+    end
+end })
+local AntisRight = Tabs.Antis:AddRightGroupbox("Physics", "shield")
+AntisRight:AddToggle("Anti_Pull_T", { Text="Anti-Pull (Bloodhook/VoidStar/Azure)", Default=false, Callback=function(v) setAntiPull(v) end })
+AntisRight:AddToggle("Anti_FallSlow_T", { Text="Anti-Fall Slowness", Default=false, Callback=function(v) setAntiFallSlowness(v) end })
 
 --═══════════════════════════════════════════════════════════════════
 -- UI — SETTINGS
 --═══════════════════════════════════════════════════════════════════
-local MenuG = Tabs.Settings:AddLeftGroupbox("Menu", "wrench")
-MenuG:AddToggle("KBMenu", { Default=Library.KeybindFrame.Visible, Text="Open Keybind Menu", Callback=function(v) Library.KeybindFrame.Visible = v end })
-MenuG:AddDivider()
-MenuG:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default="RightShift", NoUI=true, Text="Menu keybind" })
-MenuG:AddButton("Unload", function()
+local MenuGroup = Tabs.Settings:AddLeftGroupbox("Menu", "wrench")
+MenuGroup:AddToggle("KeybindMenuOpen", { Default=Library.KeybindFrame.Visible, Text="Open Keybind Menu", Callback=function(v) Library.KeybindFrame.Visible=v end })
+MenuGroup:AddDivider()
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default="RightShift", NoUI=true, Text="Menu keybind" })
+MenuGroup:AddButton("Unload", function()
     _ShuttingDown = true
     pcall(StopAutoBlock)
-    pcall(StopIdkLoop)
     pcall(AP_Disable)
+    pcall(HDT_Disable)
     pcall(Stam_StopLoop)
     pcall(VeerATStop)
+    pcall(VeerPhaseStop)
+    pcall(GS_Disable)
     pcall(TTStop)
-    pcall(HDT_StopWatcher)
-    pcall(elliot_stop)
-    pcall(jd_removePatch)
-    pcall(function() setAntiPull(false) end)
-    pcall(function() setAntiFallSlowness(false) end)
-    pcall(function() for m in pairs(ESP_HL) do ES_Clear(m) end end)
+    pcall(NoliAimCleanup)
     pcall(function() setFullbright(false) end)
     pcall(function() setNoclip(false) end)
-    pcall(function() if chance.bodyGyro and chance.bodyGyro.Parent then chance.bodyGyro:Destroy() end end)
-    pcall(function() if FacingFolder then FacingFolder:Destroy() end end)
-    pcall(function() if NetworkRF then rfDispatch:uninstall() end end)
+    pcall(function() setAntiPull(false) end)
+    pcall(function() setCustomFOV(false) end)
+    pcall(function() DestroyFacingBox() end)
+    pcall(function() for m in pairs(ESP_HL) do ES_Clear(m) end end)
     Library:Unload()
 end)
 Library.ToggleKeybind = Options.MenuKeybind
@@ -1545,8 +2101,8 @@ SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function() _ShuttingDown = true; print("[Cupcake] Unloaded") end)
 Library:Notify({
-    Title = "Cupcake v14",
-    Description = "Facing box AB (editable) + anti-bait removed",
+    Title = "Cupcake",
+    Description = "Loaded — Noli v3 + Killer Facing Box",
     Time = 5,
 })
-print("[Cupcake] Loaded (facing box build)")
+print("[Cupcake] Loaded — killer facing box + Noli v3")
