@@ -1,3 +1,6 @@
+--═══════════════════════════════════════════════════════════════════
+-- Vortex Hub — Final Build (Chance + Elliot + Silent Aim Fixed)
+--═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -13,7 +16,7 @@ local CoreGui = game:GetService("CoreGui")
 local PlayerGui = LP:WaitForChild("PlayerGui")
 local _ShuttingDown = false
 
--- Polyfills for compatibility (Luau features)
+-- Polyfills for compatibility
 if not table.clone then
     function table.clone(t)
         local n = {}
@@ -232,7 +235,7 @@ task.spawn(function()
         for m in pairs(ESP_HL) do
             if not seen[m] or not m.Parent then ES_Clear(m) end
         end
-        end -- closes the else
+        end -- closes else
     end
 end)
 
@@ -621,6 +624,7 @@ function rfDispatch:install(rf)
         self.originalCallback = getcallbackvalue(rf, "OnClientInvoke")
     else self.originalCallback = rf.OnClientInvoke end
     rf.OnClientInvoke = function(name, ...)
+        -- Debug: log unique request names so we can see what the game asks for
         if name ~= "GetMousePosition" and name ~= "GetCameraCF" and not self.loggedReqs[name] then
             self.loggedReqs[name] = true
             print("[Vortex RF] request:", name)
@@ -640,6 +644,7 @@ function rfDispatch:install(rf)
 end
 if NetworkRF then pcall(function() rfDispatch:install(NetworkRF) end) end
 
+-- Retry: if RF wasn't ready at load, keep trying
 task.spawn(function()
     for i = 1, 30 do
         if rfDispatch.installed then return end
@@ -690,25 +695,20 @@ end
 --═══════════════════════════════════════════════════════════════════
 -- AIM TAB (Survivor Aim + Elliot + Chance)
 --═══════════════════════════════════════════════════════════════════
-local SA = {
-    active = false,
-    mode = "Character",
-    prediction = 4,
-    lockTime = 0.7,
-    animConn = nil,
-    soundConns = {},
-    lastFire = 0,
-    aimConn = nil,          -- only one active aim connection at a time
-}
+local SA = { active = false, mode = "Character", prediction = 4, lockTime = 0.7, animConn = nil, soundConns = {} }
 
--- Expanded ability name list
+-- Exact abilities per survivor (from user):
+-- Guest 1337  → PUNCH / PARRY
+-- Shedletsky  → SLASH
+-- Jane Doe    → HATCHET
+-- Two Times   → SACRIFICIAL DAGGER
 local SURVIVOR_ABILITY_NAMES = {
-    "SLASH", "PUNCH", "PARRY",
+    "PUNCH", "PARRY",
+    "SLASH",
+    "HATCHET", "AXE",
     "SACRIFICIAL DAGGER", "SAC DAGGER", "SACRIFICIAL", "DAGGER",
-    "HATCHET", "AXE", "STAB", "LUNGE", "LUNGE START", "LUNGESTART",
-    "ONE SHOT", "ONESHOT", "SHOOT", "AIM GUN", "AIMGUN",
-    "GUN FIRE", "GUNFIRE", "GUN EXPLODE", "GUNEXPLODE",
-    "GUN FAIL", "GUNFAIL",
+    -- common variations the game modules sometimes use
+    "LUNGE", "STAB",
 }
 
 local function normalizeAbilityName(s)
@@ -727,47 +727,26 @@ end
 
 local SURVIVOR_ANIM_IDS = {}
 local SURVIVOR_SOUND_IDS = {}
-local SA_SCANNED = false   -- cache so we only scan once
+local SA_SCANNED = false
 
-local function extractAnimIdsSafe(v, depth)
-    depth = depth or 0
-    if depth > 6 then return {} end
-    local o = {}
-    local t = type(v)
-    if t == "string" or t == "number" then
-        local id = tostring(v):match("%d+")
-        if id then table.insert(o, id) end
-    elseif t == "table" then
-        for _, x in pairs(v) do
-            for _, id in ipairs(extractAnimIdsSafe(x, depth + 1)) do
-                table.insert(o, id)
-            end
-        end
-    end
-    return o
-end
-
--- Safe, cached scanner. Only runs when needed and never crashes the script.
-local function scanSurvivorAbilityAssets(force)
-    if SA_SCANNED and not force then return end
-    if IsPlayerKiller() then return end
-
+local function scanSurvivorAbilityAssets(char)
+    if SA_SCANNED then return end
     SURVIVOR_ANIM_IDS = {}
     SURVIVOR_SOUND_IDS = {}
+    if not char or IsPlayerKiller() then return end
 
-    local okAssets, assets = pcall(function()
-        return ReplicatedStorage:FindFirstChild("Assets")
-    end)
-    if not okAssets or not assets then
-        warn("[Vortex SurvivorAim] Assets folder not found")
-        return
-    end
-
+    local assets = ReplicatedStorage:FindFirstChild("Assets")
+    if not assets then return end
     local survivors = assets:FindFirstChild("Survivors")
-    if not survivors then
-        warn("[Vortex SurvivorAim] Survivors folder not found")
-        return
-    end
+    if not survivors then return end
+
+    -- Priority folders that match the survivors you listed
+    local priorityNames = {
+        "Guest 1337", "Guest1337", "Guest_1337",
+        "Shedletsky",
+        "Jane Doe", "JaneDoe", "Jane_Doe",
+        "Two Times", "TwoTimes", "Two_Times", "2Times",
+    }
 
     local function scanFolder(folder)
         if not folder then return end
@@ -779,7 +758,7 @@ local function scanSurvivorAbilityAssets(force)
                     if type(data.Animations) == "table" then
                         for name, v in pairs(data.Animations) do
                             if isSurvivorAbilityName(name) then
-                                for _, id in ipairs(extractAnimIdsSafe(v)) do
+                                for _, id in ipairs(extractAnimIds(v)) do
                                     SURVIVOR_ANIM_IDS[id] = true
                                 end
                             end
@@ -789,7 +768,7 @@ local function scanSurvivorAbilityAssets(force)
                         if type(data[field]) == "table" then
                             for name, v in pairs(data[field]) do
                                 if isSurvivorAbilityName(name) then
-                                    for _, id in ipairs(extractAnimIdsSafe(v)) do
+                                    for _, id in ipairs(extractAnimIds(v)) do
                                         SURVIVOR_SOUND_IDS[id] = true
                                     end
                                 end
@@ -801,16 +780,22 @@ local function scanSurvivorAbilityAssets(force)
         end
     end
 
-    -- Scan all survivors (protected)
-    pcall(function()
-        for _, sFolder in ipairs(survivors:GetChildren()) do
-            if sFolder:IsA("Folder") then
-                pcall(scanFolder, sFolder)
-            end
+    -- First scan the exact survivors you listed
+    for _, name in ipairs(priorityNames) do
+        local folder = survivors:FindFirstChild(name)
+        if folder then
+            pcall(scanFolder, folder)
         end
-    end)
+    end
 
-    -- Scan skins (protected)
+    -- Also scan every other survivor folder so skins / other characters still work
+    for _, sFolder in ipairs(survivors:GetChildren()) do
+        if sFolder:IsA("Folder") then
+            pcall(scanFolder, sFolder)
+        end
+    end
+
+    -- Scan survivor skins too
     pcall(function()
         local skins = assets:FindFirstChild("Skins")
         local survSkins = skins and skins:FindFirstChild("Survivors")
@@ -830,19 +815,15 @@ local function scanSurvivorAbilityAssets(force)
     local ac, sc = 0, 0
     for _ in pairs(SURVIVOR_ANIM_IDS) do ac = ac + 1 end
     for _ in pairs(SURVIVOR_SOUND_IDS) do sc = sc + 1 end
-    print(string.format("[Vortex SurvivorAim] Loaded %d anims + %d sounds (all survivors)", ac, sc))
+    print(string.format("[Vortex SurvivorAim] Loaded %d anims + %d sounds (Guest1337/Shedletsky/Jane/TwoTimes + all)", ac, sc))
     SA_SCANNED = true
 end
 
 local function findNearestKiller()
-    local char = LP.Character
-    if not char then return nil end
-    local pf = Workspace:FindFirstChild("Players")
-    local kf = pf and pf:FindFirstChild("Killers")
+    local char = LP.Character; if not char then return nil end
+    local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
     if not kf then return nil end
-    local myHRP = char:FindFirstChild("HumanoidRootPart")
-    if not myHRP then return nil end
-
+    local myHRP = char:FindFirstChild("HumanoidRootPart"); if not myHRP then return nil end
     local best, bd = nil, math.huge
     for _, k in ipairs(kf:GetChildren()) do
         if k:IsA("Model") and k ~= char then
@@ -850,206 +831,107 @@ local function findNearestKiller()
             local hum = k:FindFirstChildOfClass("Humanoid")
             if hrp and hum and hum.Health > 0 then
                 local d = (hrp.Position - myHRP.Position).Magnitude
-                if d < bd then
-                    bd = d
-                    best = k
-                end
+                if d < bd then bd = d; best = k end
             end
         end
     end
     return best
 end
 
-local function stopCurrentAim()
-    if SA.aimConn then
-        pcall(function() SA.aimConn:Disconnect() end)
-        SA.aimConn = nil
-    end
-    local char = LP.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then
-            pcall(function() hum.AutoRotate = true end)
-        end
-    end
-end
-
 local function aimAtKiller(killer, duration)
     if IsPlayerKiller() then return end
     if not killer or not killer.Parent then return end
-
-    local char = LP.Character
-    if not char then return end
+    local char = LP.Character; if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then return end
-
     local killerHRP = killer:FindFirstChild("HumanoidRootPart")
     if not killerHRP then return end
-
-    -- Kill any previous aim session so they don't fight each other
-    stopCurrentAim()
-
     local savedAR = hum.AutoRotate
     hum.AutoRotate = false
     local startTime = tick()
     local dur = math.max(0.2, duration or SA.lockTime)
-    local released = false
-
+    local conn; local released = false
     local function release()
         if released then return end
         released = true
-        if SA.aimConn then
-            pcall(function() SA.aimConn:Disconnect() end)
-            SA.aimConn = nil
-        end
-        if hum and hum.Parent then
-            pcall(function() hum.AutoRotate = savedAR end)
-        end
+        if conn then pcall(function() conn:Disconnect() end); conn = nil end
+        if hum and hum.Parent then pcall(function() hum.AutoRotate = savedAR end) end
     end
-
-    SA.aimConn = RunService.RenderStepped:Connect(function()
-        if IsPlayerKiller() or not SA.active then
-            release()
-            return
-        end
-        if not char.Parent or not hrp.Parent or not hum.Parent then
-            release()
-            return
-        end
-        if tick() - startTime > dur then
-            release()
-            return
-        end
-
+    conn = RunService.RenderStepped:Connect(function()
+        if IsPlayerKiller() then release(); return end
+        if not char.Parent or not hrp.Parent or not hum.Parent then release(); return end
+        if tick() - startTime > dur then release(); return end
         local curKillerHRP = killer and killer.Parent and killer:FindFirstChild("HumanoidRootPart")
-        if not curKillerHRP then
-            release()
-            return
-        end
-
-        local predValue = SA.prediction or 4
-        local lead = predValue * 0.05
+        if not curKillerHRP then release(); return end
+        local lead = (SA.prediction or 4) * 0.05
         local vel = getHRPVelocity(curKillerHRP)
         local targetPos = curKillerHRP.Position + vel * lead
-
         if SA.mode == "Character" or SA.mode == "Both" then
             hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(targetPos.X, hrp.Position.Y, targetPos.Z))
         end
         if SA.mode == "Camera" or SA.mode == "Both" then
             local cam = Workspace.CurrentCamera
-            if cam then
-                cam.CFrame = CFrame.lookAt(cam.CFrame.Position, targetPos)
-            end
+            if cam then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, targetPos) end
         end
     end)
 end
 
-local function fireSurvivorAim(animLength, source)
+local function fireSurvivorAim(animLength)
     if not SA.active or IsPlayerKiller() then return end
-
-    -- Simple debounce so spammy abilities don't create chaos
-    local now = tick()
-    if now - SA.lastFire < 0.15 then return end
-    SA.lastFire = now
-
-    local killer = findNearestKiller()
-    if not killer then return end
-
+    local killer = findNearestKiller(); if not killer then return end
     local dur = math.max(0.3, (animLength or 0.5) + 0.1)
-    -- print(string.format("[Vortex SurvivorAim] Triggered by %s → aiming at %s", tostring(source or "?"), killer.Name))
-    task.spawn(function()
-        aimAtKiller(killer, dur)
-    end)
-end
-
-local function cleanupSurvivorWatcher()
-    if SA.animConn then
-        pcall(function() SA.animConn:Disconnect() end)
-        SA.animConn = nil
-    end
-    for _, c in ipairs(SA.soundConns) do
-        pcall(function() c:Disconnect() end)
-    end
-    SA.soundConns = {}
-    stopCurrentAim()
+    task.spawn(function() aimAtKiller(killer, dur) end)
 end
 
 local function attachSurvivorWatcher(char)
-    if not char or not SA.active then return end
-    if IsPlayerKiller() then return end
-
+    if not char then return end
     task.spawn(function()
-        -- Wait until character is properly parented under Survivors/Killers
         local start = tick()
-        while tick() - start < 2 do
-            if IsPlayerKiller() then return end
+        while tick() - start < 1.5 do
+            if IsPlayerKiller() then break end
             local pf = Workspace:FindFirstChild("Players")
+            local kf = pf and pf:FindFirstChild("Killers")
             local sf = pf and pf:FindFirstChild("Survivors")
-            if sf and char:IsDescendantOf(sf) then break end
+            if (kf and char:IsDescendantOf(kf)) or (sf and char:IsDescendantOf(sf)) then break end
             task.wait(0.1)
         end
-
-        if not SA.active or IsPlayerKiller() then return end
-
-        cleanupSurvivorWatcher()
-
-        -- Only scan when the feature is actually enabled
-        scanSurvivorAbilityAssets(false)
-
-        local hum = char:WaitForChild("Humanoid", 5)
-        if not hum then return end
-
-        local animator = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 3)
+        if SA.animConn then pcall(function() SA.animConn:Disconnect() end); SA.animConn = nil end
+        for _, c in ipairs(SA.soundConns) do pcall(function() c:Disconnect() end) end
+        SA.soundConns = {}
+        if IsPlayerKiller() then
+            SURVIVOR_ANIM_IDS = {}
+            SURVIVOR_SOUND_IDS = {}
+            return
+        end
+        scanSurvivorAbilityAssets(char)
+        local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
+        local animator = hum:WaitForChild("Animator", 5)
         if animator then
             SA.animConn = animator.AnimationPlayed:Connect(function(track)
                 if not SA.active or IsPlayerKiller() then return end
-                local anim = track.Animation
-                if not anim then return end
-                local id = tostring(anim.AnimationId or ""):match("%d+")
-                if id and SURVIVOR_ANIM_IDS[id] then
-                    fireSurvivorAim(track.Length, "anim:" .. id)
-                end
+                local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
+                if id and SURVIVOR_ANIM_IDS[id] then fireSurvivorAim(track.Length) end
             end)
         end
-
         local function hookSound(s)
             if not s:IsA("Sound") then return end
             local conn = s.Played:Connect(function()
                 if not SA.active or IsPlayerKiller() then return end
-                local sid = tostring(s.SoundId or ""):match("%d+")
-                if sid and SURVIVOR_SOUND_IDS[sid] then
-                    fireSurvivorAim(s.TimeLength or 0.5, "sound:" .. sid)
-                end
+                local sid = tostring(s.SoundId):match("%d+")
+                if sid and SURVIVOR_SOUND_IDS[sid] then fireSurvivorAim(s.TimeLength or 0.5) end
             end)
             table.insert(SA.soundConns, conn)
         end
-
-        for _, d in ipairs(char:GetDescendants()) do
-            if d:IsA("Sound") then
-                hookSound(d)
-            end
-        end
-        table.insert(SA.soundConns, char.DescendantAdded:Connect(function(d)
-            if d:IsA("Sound") then
-                hookSound(d)
-            end
-        end))
+        for _, d in ipairs(char:GetDescendants()) do if d:IsA("Sound") then hookSound(d) end end
+        table.insert(SA.soundConns, char.DescendantAdded:Connect(function(d) if d:IsA("Sound") then hookSound(d) end end))
     end)
 end
 
--- Only attach when character exists AND feature is on (prevents auto-running heavy code)
-if LP.Character and SA.active then
-    attachSurvivorWatcher(LP.Character)
-end
-LP.CharacterAdded:Connect(function(c)
-    task.wait(0.6)
-    if SA.active then
-        attachSurvivorWatcher(c)
-    end
-end)
+if LP.Character then attachSurvivorWatcher(LP.Character) end
+LP.CharacterAdded:Connect(function(c) task.wait(0.5); attachSurvivorWatcher(c) end)
 
--- CHANCE AIMBOT
+-- CHANCE AIMBOT (BodyGyro-based, hold-Q)
 local chance = {
     enabled = false, predMode = "Velocity", predValue = 0.5, aimBehavior = "Normal",
     holdToAim = true, aimKey = Enum.KeyCode.Q, holdingKey = false, aiming = false,
@@ -1113,7 +995,7 @@ RunService.RenderStepped:Connect(function(dt)
     chance.bodyGyro.CFrame = CFrame.lookAt(my.Position, pos)
 end)
 
--- ELLIOT AIMBOT
+-- ELLIOT AIMBOT (throw aim)
 local elliot = {
     enabled = false, conn = nil, autoRotBak = nil,
     aimType = "Camera + Character", targetMode = "Low HP",
@@ -1205,18 +1087,13 @@ AimSA:AddToggle("SA_En_T", { Text = "Enable Survivor Aim", Default = false, Call
     end
     SA.active = v
     if v then
+        SA_SCANNED = false  -- force re-scan so the correct abilities are loaded
         if LP.Character then attachSurvivorWatcher(LP.Character) end
-    else
-        cleanupSurvivorWatcher()
     end
 end })
 AimSA:AddDropdown("SA_Mode_DD", { Text = "Aim Mode", Values = {"Character", "Camera", "Both"}, Default = "Character", Multi = false, Callback = function(v) SA.mode = v end })
 AimSA:AddSlider("SA_Pred_S", { Text = "Prediction (0-10)", Default = 4, Min = 0, Max = 10, Rounding = 0, Callback = function(v) SA.prediction = v end })
 AimSA:AddSlider("SA_Lock_S", { Text = "Lock Time (s)", Default = 0.7, Min = 0.2, Max = 2, Rounding = 2, Callback = function(v) SA.lockTime = v end })
-AimSA:AddButton("Test Scan (All Survivors)", function()
-    SA_SCANNED = false
-    scanSurvivorAbilityAssets(true)
-end)
 
 local AimEll = Tabs.Aimbot:AddLeftGroupbox("Elliot (Throw)", "target")
 AimEll:AddToggle("Ell_En_T", { Text = "Enable Elliot Aimbot", Default = false, Callback = function(v)
@@ -1247,205 +1124,102 @@ AimCh:AddDropdown("Ch_Behav_DD", { Text = "Behavior", Values = {"Normal", "360"}
 AimCh:AddToggle("Ch_Hold_T", { Text = "Hold-to-Aim (Q)", Default = true, Callback = function(v) chance.holdToAim = v end })
 
 --═══════════════════════════════════════════════════════════════════
--- SILENT AIM (Jane Doe + Dusekkar) - based on working reference
+-- SILENT AIM (Jane + Dusekkar — GetMousePosition + GetCameraCF)
 --═══════════════════════════════════════════════════════════════════
-local jd = {
-    enabled = false,
-    aimbotOn = false,
-    patched = false,
-    aimOffset = -0.3,
-    prediction = 0.6,          -- matched to working reference default
-}
-
-local function jd_getKillerVelocity(hrp)
-    -- Use shared velocity tracker (already smoothed)
-    return getHRPVelocity(hrp)
-end
+local jd = { enabled = false, aimbotOn = false, patched = false, aimOffset = -0.3, prediction = 0.15 }
 
 local function jd_buildCamCF(myHRP, killerHRP, v0, g)
     local ok, result = pcall(function()
         local hum = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
         local hipH = hum and hum.HipHeight or 1.35
-        local v238 = (hipH + myHRP.Size.Y / 2) / 2
+        local v238 = (hipH + myHRP.Size.Y/2)/2
         local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
-        local vel = jd_getKillerVelocity(killerHRP)
+        local vel = getHRPVelocity(killerHRP)
         local predicted = killerHRP.Position + vel * jd.prediction
         local target = predicted + Vector3.new(0, jd.aimOffset, 0)
         local delta = target - spawnPos
         local flatV = Vector3.new(delta.X, 0, delta.Z)
-        local dx = flatV.Magnitude
-        local dy = delta.Y
+        local dx = flatV.Magnitude; local dy = delta.Y
         if dx < 0.01 then
             local d = dy >= 0 and Vector3.new(0, 1, 0) or Vector3.new(0, -1, 0)
-            local cam = Workspace.CurrentCamera
-            return CFrame.new(cam.CFrame.Position, cam.CFrame.Position + d)
+            return CFrame.new(Workspace.CurrentCamera.CFrame.Position, Workspace.CurrentCamera.CFrame.Position + d)
         end
-        local flatDir = flatV.Unit
-        local v2 = v0 * v0
-        local disc = v2 * v2 - g * (g * dx * dx + 2 * dy * v2)
-        local theta = disc < 0 and math.atan2(dy, dx) or math.atan2(v2 - math.sqrt(disc), g * dx)
-        local T = math.tan(theta)
-        local denom = 3 + T
-        local alpha = math.abs(denom) < 0.0001 and -math.pi / 2 or math.atan2(3 * T - 1, denom)
-        local cam = Workspace.CurrentCamera
-        local yawCF = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + flatDir)
+        local flatDir = flatV.Unit; local v2 = v0 * v0
+        local disc = v2*v2 - g*(g*dx*dx + 2*dy*v2)
+        local theta = disc < 0 and math.atan2(dy, dx) or math.atan2(v2 - math.sqrt(disc), g*dx)
+        local T = math.tan(theta); local denom = 3 + T
+        local alpha = math.abs(denom) < 0.0001 and -math.pi/2 or math.atan2(3*T - 1, denom)
+        local yawCF = CFrame.new(Workspace.CurrentCamera.CFrame.Position, Workspace.CurrentCamera.CFrame.Position + flatDir)
         return yawCF * CFrame.Angles(alpha, 0, 0)
     end)
     return ok and result or nil
 end
 
-local function jd_getNearestKillerHRP()
-    local char = LP.Character
-    if not char then return nil end
-    local myHRP = char:FindFirstChild("HumanoidRootPart")
-    if not myHRP then return nil end
-    local pf = Workspace:FindFirstChild("Players")
-    local kf = pf and pf:FindFirstChild("Killers")
-    if not kf then return nil end
-
-    local best, bd = nil, math.huge
-    for _, killer in ipairs(kf:GetChildren()) do
-        if killer:IsA("Model") and killer ~= char then
-            local hrp = killer:FindFirstChild("HumanoidRootPart")
-            local h = killer:FindFirstChildOfClass("Humanoid")
-            if hrp and h and h.Health > 0 then
-                local d = (hrp.Position - myHRP.Position).Magnitude
-                if d < bd then
-                    bd = d
-                    best = hrp
-                end
-            end
-        end
-    end
-    return best
-end
-
 local function jd_applyPatch()
     if jd.patched or not NetworkRF then return end
-    if not rfDispatch.installed then
-        pcall(function() rfDispatch:install(NetworkRF) end)
-    end
-
     rfDispatch:register("jd", function(reqName, ...)
         if IsPlayerKiller() then return nil end
         if not (jd.enabled and jd.aimbotOn) then return nil end
-
-        local char = LP.Character
-        local myHRP = char and char:FindFirstChild("HumanoidRootPart")
+        local char = LP.Character; local myHRP = char and char:FindFirstChild("HumanoidRootPart")
         if not myHRP then return nil end
-
-        local best = jd_getNearestKillerHRP()
+        local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+        if not kf then return nil end
+        local best, bd = nil, math.huge
+        for _, k in ipairs(kf:GetChildren()) do
+            if k ~= char then
+                local hrp = k:FindFirstChild("HumanoidRootPart"); local h = k:FindFirstChildOfClass("Humanoid")
+                if hrp and h and h.Health > 0 then
+                    local d = (hrp.Position - myHRP.Position).Magnitude
+                    if d < bd then bd = d; best = hrp end
+                end
+            end
+        end
         if not best then return nil end
-
         if reqName == "GetMousePosition" then
-            local vel = jd_getKillerVelocity(best)
+            local vel = getHRPVelocity(best)
             return best.Position + vel * jd.prediction + Vector3.new(0, jd.aimOffset, 0)
         end
-
         if reqName == "GetCameraCF" then
             local cf = jd_buildCamCF(myHRP, best, 250, 40)
             if cf then return cf end
         end
-
         return nil
     end)
-
     jd.patched = true
 end
-
 local function jd_removePatch()
     if not jd.patched then return end
-    pcall(function() rfDispatch:unregister("jd") end)
-    jd.patched = false
+    rfDispatch:unregister("jd"); jd.patched = false
 end
 
--- Dusekkar (PlasmaBeam) silent aim
-local dusekkar = {
-    enabled = false,
-    prediction = 0.12,
-    aimOffset = 0.0,
-}
-
+local dusekkar = { enabled = false, prediction = 0.15, aimOffset = 0.0 }
 if NetworkRF then
-    -- Register once; it only activates when dusekkar.enabled is true
     rfDispatch:register("plasma", function(reqName, ...)
         if IsPlayerKiller() then return nil end
         if not dusekkar.enabled then return nil end
         if reqName ~= "GetMousePosition" then return nil end
-
-        local t = GetNearestKillerHrp()
-        if not t then return nil end
+        local t = GetNearestKillerHrp(); if not t then return nil end
         local vel = getHRPVelocity(t)
         return t.Position + vel * dusekkar.prediction + Vector3.new(0, dusekkar.aimOffset, 0)
     end)
 end
 
--- UI
 local JaneL = Tabs["Silent Aim"]:AddLeftGroupbox("Jane Doe", "crosshair")
-JaneL:AddToggle("Jane_En_T", {
-    Text = "Enable Jane Silent Aim",
-    Default = false,
-    Callback = function(v)
-        if v and IsPlayerKiller() then
-            Library:Notify({Title = "Vortex", Description = "Jane disabled (you are Killer)", Time = 3})
-            pcall(function() Options.Jane_En_T:Set(false) end)
-            return
-        end
-        jd.enabled = v
-        jd.aimbotOn = v
-        if v then
-            jd_applyPatch()
-        else
-            jd_removePatch()
-        end
+JaneL:AddToggle("Jane_En_T", { Text = "Enable Jane Silent Aim", Default = false, Callback = function(v)
+    if v and IsPlayerKiller() then
+        Library:Notify({Title = "Vortex", Description = "Jane disabled (you are Killer)", Time = 3})
+        pcall(function() Options.Jane_En_T:Set(false) end); return
     end
-})
-JaneL:AddSlider("Jane_Pred_S", {
-    Text = "Prediction (s)",
-    Default = 0.6,
-    Min = 0,
-    Max = 2,
-    Rounding = 2,
-    Callback = function(v) jd.prediction = v end
-})
-JaneL:AddSlider("Jane_Off_S", {
-    Text = "Aim Offset (Y)",
-    Default = -0.3,
-    Min = -5,
-    Max = 5,
-    Rounding = 1,
-    Callback = function(v) jd.aimOffset = v end
-})
+    jd.enabled = v
+    jd.aimbotOn = v
+    if v then jd_applyPatch() else jd_removePatch() end
+end })
+JaneL:AddSlider("Jane_Pred_S", { Text = "Prediction (s)", Default = 0.15, Min = 0, Max = 2, Rounding = 2, Callback = function(v) jd.prediction = v end })
+JaneL:AddSlider("Jane_Off_S", { Text = "Aim Offset (Y)", Default = -0.3, Min = -5, Max = 5, Rounding = 1, Callback = function(v) jd.aimOffset = v end })
 
 local DuskL = Tabs["Silent Aim"]:AddRightGroupbox("Dusekkar", "zap")
-DuskL:AddToggle("Dusk_En_T", {
-    Text = "Enable PlasmaBeam Silent Aim",
-    Default = false,
-    Callback = function(v)
-        if v and IsPlayerKiller() then
-            Library:Notify({Title = "Vortex", Description = "Dusekkar disabled (you are Killer)", Time = 3})
-            pcall(function() Options.Dusk_En_T:Set(false) end)
-            return
-        end
-        dusekkar.enabled = v
-    end
-})
-DuskL:AddSlider("Dusk_Pred_S", {
-    Text = "Prediction (s)",
-    Default = 0.12,
-    Min = 0,
-    Max = 0.5,
-    Rounding = 2,
-    Callback = function(v) dusekkar.prediction = v end
-})
-DuskL:AddSlider("Dusk_Off_S", {
-    Text = "Aim Offset (Y)",
-    Default = 0.0,
-    Min = -5,
-    Max = 5,
-    Rounding = 1,
-    Callback = function(v) dusekkar.aimOffset = v end
-})
+DuskL:AddToggle("Dusk_En_T", { Text = "Enable PlasmaBeam Silent Aim", Default = false, Callback = function(v) dusekkar.enabled = v end })
+DuskL:AddSlider("Dusk_Pred_S", { Text = "Prediction (s)", Default = 0.15, Min = 0, Max = 0.5, Rounding = 2, Callback = function(v) dusekkar.prediction = v end })
 
 --═══════════════════════════════════════════════════════════════════
 -- BLOCK
@@ -2063,20 +1837,6 @@ end })
 HDTL:AddSlider("HDT_Speed_S", { Text = "Speed", Default = 40, Min = 5, Max = 200, Rounding = 0, Callback = function(v) HDT.speed = v end })
 HDTL:AddSlider("HDT_Dur_S", { Text = "Duration (s)", Default = 0.6, Min = 0.1, Max = 3, Rounding = 2, Callback = function(v) HDT.duration = v end })
 HDTL:AddSlider("HDT_Delay_S", { Text = "Delay (s)", Default = 0.05, Min = 0, Max = 0.5, Rounding = 2, Callback = function(v) HDT.delay = v end })
-HDTL:AddButton({ Text = "Test Scan (BLOCK IDs)", Func = function()
-    if IsPlayerKiller() then
-        Library:Notify({Title = "Vortex", Description = "HDT disabled (you are Killer)", Time = 3}); return
-    end
-    scanHDTBlockAssets()
-    local a, s = 0, 0
-    for _ in pairs(HDT_BLOCK_ANIM_IDS) do a = a + 1 end
-    for _ in pairs(HDT_BLOCK_SOUND_IDS) do s = s + 1 end
-    Library:Notify({
-        Title = "Vortex HDT",
-        Description = string.format("BLOCK scan: %d anims, %d sounds", a, s),
-        Time = 6,
-    })
-end })
 HDTL:AddButton({ Text = "Force Turn Now", Func = function()
     if IsPlayerKiller() then return end
     local k = HDT_NearestKiller()
@@ -2084,7 +1844,7 @@ HDTL:AddButton({ Text = "Force Turn Now", Func = function()
 end })
 
 --═══════════════════════════════════════════════════════════════════
--- VEE
+-- VEE — Stat Change + Auto Trick + SK8 Controls
 --═══════════════════════════════════════════════════════════════════
 local Vee = { AutoTrick=false, SkateControl=false, CustomStats=false, Sk8Speed=1.15, Sk8StaminaCost=1.35, Sk8TrickAirborneSpeed=1.42, Sk8BumpPower=11.9, Sk8TrickStamina=4, Sk8TrickCooldown=1, _moduleCache=nil, _behaviorModule=nil }
 local function Vee_GetBehaviorFolder()
@@ -2768,10 +2528,11 @@ task.spawn(function()
             if stabState.enabled then stabState.enabled = false; pcall(function() Options.EnableStabLerp:Set(false) end) end
             if SA.active then
                 SA.active = false
-                pcall(cleanupSurvivorWatcher)
+                if SA.animConn then pcall(function() SA.animConn:Disconnect() end); SA.animConn = nil end
+                for _, c in ipairs(SA.soundConns) do pcall(function() c:Disconnect() end) end
+                SA.soundConns = {}
                 SURVIVOR_ANIM_IDS = {}
                 SURVIVOR_SOUND_IDS = {}
-                SA_SCANNED = false
                 pcall(function() Options.SA_En_T:Set(false) end)
             end
             if chance.enabled then
@@ -2841,7 +2602,6 @@ MenuG:AddDivider()
 MenuG:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
 MenuG:AddButton("Unload", function()
     _ShuttingDown = true
-    pcall(cleanupSurvivorWatcher)
     pcall(HDT_Stop)
     pcall(VeerATStop)
     pcall(jd_removePatch)
@@ -2874,7 +2634,7 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function() _ShuttingDown = true; print("[Vortex] Unloaded") end)
 Library:Notify({
     Title = "Vortex Hub",
-    Description = "Full survivor aim restored (all survivors + skins) · prediction wired",
+    Description = "Chance + Elliot back · Silent Aim fixed (GetCameraCF)",
     Time = 5,
 })
 print("[Vortex Hub] Loaded")
