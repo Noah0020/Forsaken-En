@@ -60,31 +60,106 @@ local Window = lib:CreateWindow({
     SideBarWidth = 170,
 })
 
--- Hide default key toggle; we use a custom open button
-pcall(function() Window:SetToggleKey(Enum.KeyCode.Unknown) end)
+-- Disable WindUI default open methods (key + built-in cylinder / open UI)
+pcall(function()
+    if Window.SetToggleKey then Window:SetToggleKey(nil) end
+end)
+pcall(function()
+    if Window.ToggleKey then Window.ToggleKey = nil end
+end)
+pcall(function()
+    -- some WindUI builds use this
+    if lib.SetToggleKey then lib:SetToggleKey(nil) end
+end)
+
+-- Strip WindUI's default open / minimize / "cylinder" UI if present
+task.spawn(function()
+    local function nukeDefaultOpeners(root)
+        if not root then return end
+        for _, d in ipairs(root:GetDescendants()) do
+            local n = string.lower(d.Name or "")
+            if d:IsA("GuiObject") then
+                if n:find("openbutton") or n:find("open_btn") or n:find("togglebutton")
+                    or n:find("minimize") or n:find("windui_open") or n:find("circlebutton")
+                    or n:find("floatingbutton") or n:find("sidebarbtn") then
+                    pcall(function() d.Visible = false end)
+                    pcall(function() d:Destroy() end)
+                end
+            end
+        end
+    end
+    for _ = 1, 8 do
+        task.wait(0.25)
+        pcall(function()
+            if typeof(gethui) == "function" then nukeDefaultOpeners(gethui()) end
+        end)
+        pcall(function() nukeDefaultOpeners(CoreGui) end)
+        pcall(function() nukeDefaultOpeners(PlayerGui) end)
+        pcall(function()
+            if Window and Window.UI then nukeDefaultOpeners(Window.UI) end
+            if Window and Window.Root then nukeDefaultOpeners(Window.Root) end
+        end)
+    end
+end)
 
 local function Notify(title, content, dur)
     pcall(function() lib:Notify({ Title = title or "Vortex", Content = content or "", Duration = dur or 3 }) end)
 end
 
--- Custom floating open button (image 88539982025252)
+-- Menu open state — ONLY controlled by our button
+local MenuOpen = true
+
+local _lastForced = true
+local function SetMenuOpen(state)
+    local want = state and true or false
+    if want == MenuOpen and want == _lastForced then
+        -- still force UI in case it desynced
+    end
+    MenuOpen = want
+    _lastForced = want
+
+    local ok = false
+    if Window.SetVisible then
+        ok = pcall(function() Window:SetVisible(want) end)
+    end
+    if not ok and want and Window.Open then
+        ok = pcall(function() Window:Open() end)
+    end
+    if not ok and (not want) and Window.Close then
+        ok = pcall(function() Window:Close() end)
+    end
+    -- Last resort: WindUI Toggle (no args). Only call when we have no better API.
+    if not ok and Window.Toggle then
+        pcall(function() Window:Toggle(want) end) -- some builds accept bool
+        -- if that ignored args, don't call again — avoids double open on mobile
+    end
+end
+
+-- Custom floating open button (ONLY way to open/close)
 do
     local gui = Instance.new("ScreenGui")
     gui.Name = "VortexOpenBtn"
     gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 999
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    pcall(function() gui.Parent = CoreGui end)
+    pcall(function() if typeof(gethui)=="function" then gui.Parent = gethui() end end)
+    if not gui.Parent then pcall(function() gui.Parent = CoreGui end) end
     if not gui.Parent then gui.Parent = PlayerGui end
 
     local btn = Instance.new("ImageButton")
-    btn.Name = "Open"
-    btn.Size = UDim2.new(0, 54, 0, 54)
-    btn.Position = UDim2.new(0, 18, 0.5, -27)
+    btn.Name = "VortexHubButton"
+    btn.Size = UDim2.fromOffset(56, 56)
+    btn.Position = UDim2.new(0, 16, 0.5, -28)
     btn.BackgroundColor3 = Color3.fromRGB(18, 28, 48)
-    btn.BackgroundTransparency = 0.15
+    btn.BackgroundTransparency = 0.1
     btn.Image = "rbxassetid://88539982025252"
     btn.ScaleType = Enum.ScaleType.Fit
     btn.AutoButtonColor = true
+    btn.Active = true
+    btn.Selectable = true
+    btn.Modal = false
+    btn.ZIndex = 50
     btn.Parent = gui
 
     local corner = Instance.new("UICorner")
@@ -94,40 +169,58 @@ do
     local stroke = Instance.new("UIStroke")
     stroke.Color = Color3.fromRGB(40, 140, 255)
     stroke.Thickness = 2
-    stroke.Transparency = 0.25
+    stroke.Transparency = 0.2
     stroke.Parent = btn
 
-    local dragging, dragStart, startPos = false, nil, nil
+    -- Drag vs click: only toggle if finger/mouse barely moved
+    local pressPos = nil
+    local pressGuiPos = nil
+    local dragged = false
+    local DRAG_THRESHOLD = 12 -- pixels
+
     btn.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = btn.Position
-        end
-    end)
-    btn.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local d = input.Position - dragStart
-            btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            pressPos = input.Position
+            pressGuiPos = btn.Position
+            dragged = false
         end
     end)
 
-    local open = true
-    btn.MouseButton1Click:Connect(function()
-        open = not open
-        pcall(function()
-            if Window.Toggle then Window:Toggle()
-            elseif Window.SetVisible then Window:SetVisible(open)
-            elseif Window.Open and Window.Close then
-                if open then Window:Open() else Window:Close() end
+    btn.InputChanged:Connect(function(input)
+        if not pressPos then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - pressPos
+            if delta.Magnitude > DRAG_THRESHOLD then
+                dragged = true
+                btn.Position = UDim2.new(
+                    pressGuiPos.X.Scale, pressGuiPos.X.Offset + delta.X,
+                    pressGuiPos.Y.Scale, pressGuiPos.Y.Offset + delta.Y
+                )
             end
-        end)
+        end
     end)
+
+    local function onRelease(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+        if not pressPos then return end
+        local wasDrag = dragged
+        pressPos = nil
+        pressGuiPos = nil
+        dragged = false
+        if wasDrag then return end -- drag only, do not toggle
+        -- pure click on the button → toggle menu
+        SetMenuOpen(not MenuOpen)
+    end
+
+    btn.InputEnded:Connect(onRelease)
+
+    -- Do NOT bind MouseButton1Click / Activated (double-fires with InputEnded on some devices)
+    -- Do NOT bind UserInputService globally — that caused mobile "tap anywhere opens"
 end
 
 -- Tabs (requested order)
