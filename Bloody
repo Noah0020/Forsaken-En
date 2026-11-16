@@ -1,5 +1,5 @@
 --═══════════════════════════════════════════════════════════════════
--- Vortex Hub — Final Build (Noli auto-detect anims/sounds/namecall)
+-- Vortex Hub — Final Build (Noli removed)
 --═══════════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
@@ -53,7 +53,6 @@ local Tabs = {
     ["Block"] = Window:AddTab("Block", "shield"),
     ["Stab"] = Window:AddTab("Stab", "sword"),
     ["HDT"] = Window:AddTab("HDT", "activity"),
-    ["Noli"] = Window:AddTab("Noli", "zap"),
     ["Vee"] = Window:AddTab("Vee", "gamepad-2"),
     ["Action"] = Window:AddTab("Action", "smile"),
     ["Misc"] = Window:AddTab("Misc", "paperclip"),
@@ -644,7 +643,7 @@ local function GetNearestKillerHrp()
 end
 
 --═══════════════════════════════════════════════════════════════════
--- AIM TAB (Survivor Aim only)
+-- AIM TAB
 --═══════════════════════════════════════════════════════════════════
 local SA = { active = false, mode = "Character", prediction = 4, lockTime = 0.7, animConn = nil, soundConns = {} }
 local SURVIVOR_ABILITY_NAMES = { "SLASH", "PUNCH", "PARRY", "SACRIFICIAL DAGGER", "SAC DAGGER", "HATCHET" }
@@ -1537,323 +1536,6 @@ HDTL:AddButton({ Text = "Force Turn Now", Func = function()
 end })
 
 --═══════════════════════════════════════════════════════════════════
--- NOLI VOID RUSH AIM — AUTO-DETECT (namecall + anims + sounds)
---═══════════════════════════════════════════════════════════════════
-local NoliSettings = {
-    AIM_Enabled    = false,
-    AimDuration    = 3.5,
-    MaxRange       = 500,
-    MoveSpeed      = 80,
-    TurnSmoothness = 15,
-}
-
-local NOLI_VOIDRUSH_ANIM_IDS = {
-    ["93841120533318"] = true,
-    ["91758760621955"] = true,
-    ["85568995953372"] = true,
-}
-local NOLI_VOIDRUSH_SOUND_IDS = {}
-
-local function noliNormalizeName(s)
-    if type(s) ~= "string" then return "" end
-    return s:upper():gsub("[%s_%-]", "")
-end
-local function noliIsVoidRushName(s)
-    if type(s) ~= "string" then return false end
-    return noliNormalizeName(s):find("VOIDRUSH", 1, true) ~= nil
-end
-local function noliScanTable(data, depth)
-    if type(data) ~= "table" or depth > 3 then return end
-    for k, v in pairs(data) do
-        if type(k) == "string" and noliIsVoidRushName(k) then
-            for _, id in ipairs(extractAnimIds(v)) do
-                NOLI_VOIDRUSH_ANIM_IDS[id] = true
-                NOLI_VOIDRUSH_SOUND_IDS[id] = true
-            end
-        end
-        if type(v) == "table" then noliScanTable(v, depth + 1) end
-    end
-end
-local function noliScanConfig(mod)
-    if not mod or not mod:IsA("ModuleScript") then return end
-    local ok, data = pcall(require, mod)
-    if ok and type(data) == "table" then noliScanTable(data, 0) end
-end
-local function noliScanFolderDeep(folder, maxDepth, depth)
-    if not folder or depth > maxDepth then return end
-    for _, m in ipairs(folder:GetChildren()) do
-        if m:IsA("ModuleScript") and (m.Name == "Config" or m.Name == "Behavior") then
-            noliScanConfig(m)
-        end
-    end
-    for _, c in ipairs(folder:GetChildren()) do
-        if c:IsA("Folder") then noliScanFolderDeep(c, maxDepth, depth + 1) end
-    end
-end
-local function noliScanVoidRushAssets()
-    local assets = ReplicatedStorage:FindFirstChild("Assets")
-    if not assets then return end
-    local killers = assets:FindFirstChild("Killers")
-    local noliFolder = killers and killers:FindFirstChild("Noli")
-    if noliFolder then noliScanFolderDeep(noliFolder, 2, 0) end
-    local skins = assets:FindFirstChild("Skins")
-    local skinKillers = skins and skins:FindFirstChild("Killers")
-    local skinNoli = skinKillers and skinKillers:FindFirstChild("Noli")
-    if skinNoli then noliScanFolderDeep(skinNoli, 3, 0) end
-end
-
-local NoliAim = {
-    active = false, endTime = 0, conn = nil,
-    currentTarget = nil, animConn = nil, soundConns = {},
-    charAddedConn = nil, hooked = false, smoothDir = nil,
-    savedWalkSpeed = nil, savedAutoRotate = nil, lastRetarget = 0,
-}
-
-local function NoliGetClosestSurvivor()
-    local myChar = LP.Character
-    local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myHRP then return nil end
-    local pf = Workspace:FindFirstChild("Players")
-    local sf = pf and pf:FindFirstChild("Survivors")
-    if not sf then return nil end
-    local best, bestD = nil, NoliSettings.MaxRange
-    for _, s in ipairs(sf:GetChildren()) do
-        if s:IsA("Model") and s ~= myChar then
-            local sHRP = s:FindFirstChild("HumanoidRootPart")
-            local sHum = s:FindFirstChildOfClass("Humanoid")
-            if sHRP and sHum and sHum.Health > 0 then
-                local d = (sHRP.Position - myHRP.Position).Magnitude
-                if d < bestD then bestD = d; best = s end
-            end
-        end
-    end
-    return best
-end
-
-local function NoliAimStop()
-    if NoliAim.conn then pcall(function() NoliAim.conn:Disconnect() end); NoliAim.conn = nil end
-    NoliAim.active = false
-    NoliAim.currentTarget = nil
-    NoliAim.smoothDir = nil
-    local char = LP.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        pcall(function()
-            hum:Move(Vector3.zero, false)
-            if NoliAim.savedAutoRotate ~= nil then hum.AutoRotate = NoliAim.savedAutoRotate end
-            if NoliAim.savedWalkSpeed then hum.WalkSpeed = NoliAim.savedWalkSpeed end
-        end)
-    end
-    NoliAim.savedWalkSpeed = nil
-    NoliAim.savedAutoRotate = nil
-end
-
-local function NoliAimStep(dt)
-    if not NoliAim.active then return end
-    if tick() >= NoliAim.endTime then NoliAimStop(); return end
-    if not IsPlayerKiller() then NoliAimStop(); return end
-    local char = LP.Character; if not char then NoliAimStop(); return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum or hum.Health <= 0 then NoliAimStop(); return end
-    if tick() - NoliAim.lastRetarget > 0.2 then
-        NoliAim.lastRetarget = tick()
-        local tgt = NoliAim.currentTarget
-        local tgtHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
-        local tgtHum = tgt and tgt.Parent and tgt:FindFirstChildOfClass("Humanoid")
-        local invalid = (not tgtHRP) or (not tgtHum) or (tgtHum.Health <= 0)
-        if invalid then
-            NoliAim.currentTarget = NoliGetClosestSurvivor()
-            NoliAim.smoothDir = nil
-        else
-            local curD = (tgtHRP.Position - hrp.Position).Magnitude
-            if curD > 25 then
-                local newTgt = NoliGetClosestSurvivor()
-                if newTgt and newTgt ~= tgt then
-                    local newHRP = newTgt:FindFirstChild("HumanoidRootPart")
-                    if newHRP then
-                        local newD = (newHRP.Position - hrp.Position).Magnitude
-                        if newD < curD * 0.7 then
-                            NoliAim.currentTarget = newTgt
-                            NoliAim.smoothDir = nil
-                        end
-                    end
-                end
-            end
-        end
-    end
-    local tgt = NoliAim.currentTarget
-    local tgtHRP = tgt and tgt.Parent and tgt:FindFirstChild("HumanoidRootPart")
-    if not tgtHRP then NoliAimStop(); return end
-    hum.AutoRotate = false
-    hum.WalkSpeed = NoliSettings.MoveSpeed
-    local targetDir = tgtHRP.Position - hrp.Position
-    targetDir = Vector3.new(targetDir.X, 0, targetDir.Z)
-    if targetDir.Magnitude < 0.5 then
-        pcall(function()
-            hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(tgtHRP.Position.X, hrp.Position.Y, tgtHRP.Position.Z))
-        end)
-        return
-    end
-    targetDir = targetDir.Unit
-    if not NoliAim.smoothDir then
-        NoliAim.smoothDir = targetDir
-    else
-        local alpha = 1 - math.exp(-dt * NoliSettings.TurnSmoothness)
-        NoliAim.smoothDir = NoliAim.smoothDir:Lerp(targetDir, alpha)
-        if NoliAim.smoothDir.Magnitude > 0.01 then
-            NoliAim.smoothDir = NoliAim.smoothDir.Unit
-        end
-    end
-    pcall(function()
-        hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + NoliAim.smoothDir)
-        hum:Move(NoliAim.smoothDir, false)
-    end)
-end
-
-local function NoliAimTrigger()
-    if not NoliSettings.AIM_Enabled then return end
-    if not IsPlayerKiller() then return end
-    local char = LP.Character; if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local target = NoliGetClosestSurvivor()
-    if not target then return end
-    if NoliAim.active then
-        NoliAim.endTime = math.max(NoliAim.endTime, tick() + NoliSettings.AimDuration)
-        if target ~= NoliAim.currentTarget then
-            NoliAim.currentTarget = target
-            NoliAim.smoothDir = nil
-        end
-        return
-    end
-    NoliAim.active = true
-    NoliAim.endTime = tick() + NoliSettings.AimDuration
-    NoliAim.lastRetarget = 0
-    NoliAim.currentTarget = target
-    NoliAim.smoothDir = nil
-    if hum then
-        NoliAim.savedWalkSpeed = hum.WalkSpeed
-        NoliAim.savedAutoRotate = hum.AutoRotate
-    end
-    NoliAim.conn = RunService.RenderStepped:Connect(NoliAimStep)
-end
-
-local function NoliIsVoidRushAbility(name)
-    if type(name) ~= "string" then return false end
-    return name:lower():gsub("[%s_%-]", ""):find("voidrush", 1, true) ~= nil
-end
-
-local function NoliInstallNamecallHook()
-    if NoliAim.hooked then return end
-    if not hookmetamethod or not getnamecallmethod then return end
-    NoliAim.hooked = true
-    local ok = pcall(function()
-        local oldNamecall
-        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-            if not _ShuttingDown and getnamecallmethod() == "FireServer" then
-                local remote = getNetworkEvent()
-                if remote and self == remote then
-                    local args = {...}
-                    if args[1] == "UseActorAbility" then
-                        local ability = args[2]
-                        if type(ability) == "table" then
-                            for _, v in ipairs(ability) do
-                                if type(v) == "buffer" then
-                                    local ok2, str = pcall(buffer.tostring, v)
-                                    if ok2 and str and NoliIsVoidRushAbility(str) then
-                                        task.spawn(NoliAimTrigger); break
-                                    end
-                                elseif NoliIsVoidRushAbility(v) then
-                                    task.spawn(NoliAimTrigger); break
-                                end
-                            end
-                        elseif NoliIsVoidRushAbility(ability) then
-                            task.spawn(NoliAimTrigger)
-                        end
-                    end
-                end
-            end
-            return oldNamecall(self, ...)
-        end)
-    end)
-    if not ok then NoliAim.hooked = false end
-end
-
-local function NoliAttachWatcher(char)
-    if NoliAim.animConn then pcall(function() NoliAim.animConn:Disconnect() end); NoliAim.animConn = nil end
-    for _, c in ipairs(NoliAim.soundConns) do pcall(function() c:Disconnect() end) end
-    NoliAim.soundConns = {}
-    local hum = char:WaitForChild("Humanoid", 5); if not hum then return end
-    local animator = hum:WaitForChild("Animator", 5)
-    if animator then
-        NoliAim.animConn = animator.AnimationPlayed:Connect(function(track)
-            if not NoliSettings.AIM_Enabled then return end
-            local aid = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
-            if aid and NOLI_VOIDRUSH_ANIM_IDS[aid] then NoliAimTrigger() end
-        end)
-    end
-    local function hookSound(s)
-        if not s:IsA("Sound") then return end
-        local conn = s.Played:Connect(function()
-            if not NoliSettings.AIM_Enabled then return end
-            local sid = tostring(s.SoundId):match("%d+")
-            if sid and NOLI_VOIDRUSH_SOUND_IDS[sid] then NoliAimTrigger() end
-        end)
-        table.insert(NoliAim.soundConns, conn)
-    end
-    for _, d in ipairs(char:GetDescendants()) do if d:IsA("Sound") then hookSound(d) end end
-    table.insert(NoliAim.soundConns, char.DescendantAdded:Connect(function(d) if d:IsA("Sound") then hookSound(d) end end))
-end
-
-local function NoliAimStart()
-    pcall(noliScanVoidRushAssets)
-    pcall(NoliInstallNamecallHook)
-    if LP.Character then pcall(NoliAttachWatcher, LP.Character) end
-    if not NoliAim.charAddedConn then
-        NoliAim.charAddedConn = LP.CharacterAdded:Connect(function(c)
-            task.wait(0.5)
-            pcall(noliScanVoidRushAssets)
-            if NoliSettings.AIM_Enabled then pcall(NoliAttachWatcher, c) end
-        end)
-    end
-end
-
-local function NoliAimCleanup()
-    NoliAimStop()
-    if NoliAim.animConn then pcall(function() NoliAim.animConn:Disconnect() end); NoliAim.animConn = nil end
-    for _, c in ipairs(NoliAim.soundConns) do pcall(function() c:Disconnect() end) end
-    NoliAim.soundConns = {}
-    if NoliAim.charAddedConn then pcall(function() NoliAim.charAddedConn:Disconnect() end); NoliAim.charAddedConn = nil end
-end
-
-local NoliL = Tabs.Noli:AddLeftGroupbox("Noli Void Rush Aim", "zap")
-NoliL:AddToggle("Noli_Aim_T", {
-    Text = "Enable Void Rush Aim",
-    Default = false,
-    Callback = function(v)
-        NoliSettings.AIM_Enabled = v
-        if v then NoliAimStart() else NoliAimCleanup() end
-    end,
-})
-NoliL:AddButton("Test Scan (VOID RUSH IDs)", function()
-    noliScanVoidRushAssets()
-    local a, s = 0, 0
-    for _ in pairs(NOLI_VOIDRUSH_ANIM_IDS) do a = a + 1 end
-    for _ in pairs(NOLI_VOIDRUSH_SOUND_IDS) do s = s + 1 end
-    Library:Notify({
-        Title = "Vortex Noli",
-        Description = string.format("VOID RUSH scan: %d anims, %d sounds\n(FireServer hook: %s)", a, s, (hookmetamethod and "ACTIVE" or "unavailable")),
-        Time = 5,
-    })
-end)
-
-local NoliR = Tabs.Noli:AddRightGroupbox("Settings", "sliders")
-NoliR:AddSlider("Noli_Speed_S", { Text = "Move Speed",        Default = 80,  Min = 20,  Max = 250,  Rounding = 0, Callback = function(v) NoliSettings.MoveSpeed = v end })
-NoliR:AddSlider("Noli_Dur_S",   { Text = "Aim Duration (s)", Default = 3.5, Min = 0.5, Max = 10,   Rounding = 1, Callback = function(v) NoliSettings.AimDuration = v end })
-NoliR:AddSlider("Noli_Turn_S",  { Text = "Turn Smoothness",  Default = 15,  Min = 5,   Max = 30,   Rounding = 0, Callback = function(v) NoliSettings.TurnSmoothness = v end })
-NoliR:AddSlider("Noli_Range_S", { Text = "Max Range",        Default = 500, Min = 50,  Max = 1000, Rounding = 0, Callback = function(v) NoliSettings.MaxRange = v end })
-
---═══════════════════════════════════════════════════════════════════
 -- VEE — Stat Change + Auto Trick + SK8 Controls
 --═══════════════════════════════════════════════════════════════════
 local Vee = { AutoTrick=false, SkateControl=false, CustomStats=false, Sk8Speed=1.15, Sk8StaminaCost=1.35, Sk8TrickAirborneSpeed=1.42, Sk8BumpPower=11.9, Sk8TrickStamina=4, Sk8TrickCooldown=1, _moduleCache=nil, _behaviorModule=nil }
@@ -2040,7 +1722,6 @@ local function VeerATStop()
     VeerState.atMonitors = {}
 end
 
--- SK8 controls in Vee tab
 do
     local Sk8Player = LP
     local Sk8Workspace = Workspace
@@ -2538,7 +2219,6 @@ task.spawn(function()
                 dusk      = dusekkar.enabled,
                 veeAT     = VeerState.atRunning,
                 veeSkate  = Vee.SkateControl,
-                noliAim   = NoliSettings.AIM_Enabled,
             }
 
             if _G.AutoBlockEnabled then _G.AutoBlockEnabled = false; pcall(function() Options.AutoBlockToggle:Set(false) end) end
@@ -2583,11 +2263,6 @@ task.spawn(function()
             if snapshot.dusk then dusekkar.enabled = true; pcall(function() Options.Dusk_En_T:Set(true) end) end
             if snapshot.veeAT then Vee.AutoTrick = true; pcall(VeerATStart); pcall(function() Options.Vee_AT_T:Set(true) end) end
             if snapshot.veeSkate then Vee.SkateControl = true; pcall(Vee_SkateControl, true); pcall(function() Options.Vee_SkateControl_T:Set(true) end) end
-            if snapshot.noliAim then
-                NoliSettings.AIM_Enabled = true
-                pcall(NoliAimStart)
-                pcall(function() Options.Noli_Aim_T:Set(true) end)
-            end
 
             local restored = {}
             if snapshot.autoBlock then table.insert(restored, "AutoBlock") end
@@ -2598,7 +2273,6 @@ task.spawn(function()
             if snapshot.dusk then table.insert(restored, "Dusekkar") end
             if snapshot.veeAT then table.insert(restored, "Vee-AutoTrick") end
             if snapshot.veeSkate then table.insert(restored, "Vee-SkateControl") end
-            if snapshot.noliAim then table.insert(restored, "NoliAim") end
 
             Library:Notify({
                 Title = "Vortex",
@@ -2622,7 +2296,6 @@ MenuG:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift"
 MenuG:AddButton("Unload", function()
     _ShuttingDown = true
     pcall(HDT_Stop)
-    pcall(NoliAimCleanup)
     pcall(VeerATStop)
     pcall(jd_removePatch)
     pcall(function() for m in pairs(ESP_HL) do ES_Clear(m) end end)
@@ -2653,7 +2326,7 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function() _ShuttingDown = true; print("[Vortex] Unloaded") end)
 Library:Notify({
     Title = "Vortex Hub",
-    Description = "Noli auto-detect (anim/sound/namecall) — loaded",
+    Description = "Noli removed — clean build",
     Time = 5,
 })
 print("[Vortex Hub] Loaded")
