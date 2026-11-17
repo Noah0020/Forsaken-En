@@ -1,10 +1,7 @@
---═══════════════════════════════════════════════════════════════════
--- Perfect Hub
---═══════════════════════════════════════════════════════════════════
-local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
 local MarketplaceService = game:GetService("MarketplaceService")
-local gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name
+local gameName = "Forsaken"
+pcall(function() gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name end)
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
@@ -757,7 +754,7 @@ local function GAim_scanAnims()
     local skins = assets:FindFirstChild("Skins")
     if skins then table.insert(roots, skins:FindFirstChild("Survivors")) end
     for _, root in ipairs(roots) do
-        if not root then continue end
+        if root then
         for _, d in ipairs(root:GetDescendants()) do
             if d:IsA("ModuleScript") and d.Name == "Config" then
                 local ok, data = pcall(require, d)
@@ -775,6 +772,7 @@ local function GAim_scanAnims()
                 end
             end
         end
+        end -- if root
     end
 end
 pcall(GAim_scanAnims)
@@ -849,23 +847,24 @@ RunService.RenderStepped:Connect(function()
         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
             if track ~= GAim.lastFinished and track.IsPlaying and track.Animation then
                 local id = tostring(track.Animation.AnimationId):match("%d+")
-                if not id then continue end
-                for modeKey, idMap in pairs(GAim.animData) do
-                    local cfg = GAim.values[modeKey]
-                    if cfg and cfg.Enabled and idMap[id] then
-                        local target = GAim_target(modeKey, cfg)
-                        if target then
-                            GAim.active.IsActive = true
-                            GAim.active.Target = target
-                            GAim.active.StartTime = tick()
-                            GAim.active.Mode = modeKey
-                            GAim.active.Track = track
-                            hum.AutoRotate = false
+                if id then
+                    for modeKey, idMap in pairs(GAim.animData) do
+                        local cfg = GAim.values[modeKey]
+                        if cfg and cfg.Enabled and idMap[id] then
+                            local target = GAim_target(modeKey, cfg)
+                            if target then
+                                GAim.active.IsActive = true
+                                GAim.active.Target = target
+                                GAim.active.StartTime = tick()
+                                GAim.active.Mode = modeKey
+                                GAim.active.Track = track
+                                hum.AutoRotate = false
+                            end
+                            break
                         end
-                        break
                     end
-                end
-                if GAim.active.IsActive then break end
+                    if GAim.active.IsActive then break end
+                end -- if id
             end
         end
         return
@@ -915,17 +914,19 @@ AimSA:AddToggle("SA_En_T", { Text = "Enable Aimbot", Default = false, Callback =
 end })
 AimSA:AddDropdown("PickAimbots", {
     Text = "Pick Aimbots", Values = {"Guest1337","Shedlekey","TwoTime","Chance","Pizza","JaneDoe"},
-    Default = {}, Multi = true, Callback = function(sel)
+    Default = "", Multi = true, Callback = function(sel)
         for k, cfg in pairs(GAim.values) do cfg.Enabled = false end
         if type(sel) == "table" then
             for _, name in pairs(sel) do
-                if GAim.values[name] then GAim.values[name].Enabled = true end
+                if type(name)=="string" and GAim.values[name] then GAim.values[name].Enabled = true end
             end
+        elseif type(sel) == "string" and GAim.values[sel] then
+            GAim.values[sel].Enabled = true
         end
     end,
 })
 AimSA:AddDropdown("AimlockMode", {
-    Text = "Aimlock Mode", Values = {"Character Lock","Char + Cam Lock"}, Default = 1,
+    Text = "Aimlock Mode", Values = {"Character Lock","Char + Cam Lock"}, Default = "Character Lock",
     Callback = function(v) GAim.mode = v end,
 })
 AimSA:AddSlider("AimDist_S", { Text = "Distance", Default = 50, Min = 1, Max = 50, Rounding = 0, Callback = function(v)
@@ -950,7 +951,10 @@ addDurPred("Two Time", "TwoTime", 0.9, 0)
 addDurPred("Chance", "Chance", 1.5, 3)
 addDurPred("Pizza", "Pizza", 1.2, 0)
 addDurPred("Jane Doe", "JaneDoe", 1.1, 0)
-AimExtra:AddButton("Rescan Anims", function() pcall(GAim_scanAnims); Library:Notify({Title="Perfect", Description="Anims rescanned", Time=2}) end })
+AimExtra:AddButton("Rescan Anims", function()
+    pcall(GAim_scanAnims)
+    Library:Notify({Title="Perfect", Description="Anims rescanned", Time=2})
+end)
 
 --═══════════════════════════════════════════════════════════════════
 -- SILENT AIM (GuestingHub Crystal + Plasma exact style)
@@ -1484,11 +1488,14 @@ function HDT_Trigger()
         if character and character.Parent then character.PrimaryPart = primaryPart end
     end)
 end
--- Hook into auto block fire
-local _oldFireBlock = FireBlockBuffer
-FireBlockBuffer = function()
-    _oldFireBlock()
-    if HDT.enabled then pcall(HDT_Trigger) end
+-- Hook into auto block fire (HDT on block)
+do
+    local _oldFireBlock = FireBlockBuffer
+    FireBlockBuffer = function(...)
+        local r = _oldFireBlock(...)
+        if HDT.enabled then pcall(HDT_Trigger) end
+        return r
+    end
 end
 
 local function HDT_Start() end
