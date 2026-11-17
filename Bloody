@@ -585,46 +585,288 @@ safe("ESP", function()
     right:AddLabel("Survivor Color"):AddColorPicker("ESP_SCol",{Default=S.SurvColor,Title="Survivor",Callback=function(c) S.SurvColor=c end})
 end)
 
+--═══════════════════════════════════════════════════════════════════
+-- GENERATOR — Auto-solves Flow / Connect / Gear / Lock minigames
+--═══════════════════════════════════════════════════════════════════
 safe("Generator", function()
-    local MS={Enabled=false,Generation=0,Installed=false,Delay=1}
-    local function install()
-        if MS.Installed then return true end
-        local ok,err=pcall(function()
-            local folder=ReplicatedStorage.Systems.Player.Game.Minigames
-            local mod=require(folder.ConnectClientMinigame.ConnectInput)
-            local old=mod.new
-            mod.new=function(board,renderer,callbacks)
-                local object=old(board,renderer,callbacks)
-                local token=MS.Generation
-                task.spawn(function()
-                    while object and not object.Ended and not MS.Enabled do task.wait(0.05) end
-                    if not (object and not object.Ended and MS.Enabled and token==MS.Generation) then return end
-                    task.wait(MS.Delay)
-                    if board.Blobs then
-                        for blob in pairs(board.Blobs) do
-                            if not MS.Enabled then return end
-                            if not board:GetLink(blob) then
-                                local mate=board:GetMate(blob)
-                                if mate then board:Connect(blob,mate); renderer:Render(); task.wait(MS.Delay) end
-                            end
+    local Config = {
+        StartDelay   = 1.5,
+        ActionDelay  = 0.05,  -- Flow: delay per cell
+        ConnectDelay = 1.0,   -- Connect: delay per pair
+        GearDelay    = 0.03,  -- Gear: delay per turn
+    }
+
+    local MinigameSolver = {
+        Enabled = false,
+        ManualEnabled = false,
+        AutoEnabled = false,
+        Generation = 0,
+        LockBoard = nil,
+        Installed = false,
+    }
+
+    local MinigameFolder = ReplicatedStorage.Systems.Player.Game.Minigames
+    local FlowBoardModule, LockBoardModule
+    local FlowInputModule, GearInputModule, LockInputModule, ConnectInputModule
+
+    local function solverDelay()        return math.max(0, Config.ActionDelay  or 0.05) end
+    local function connectSolverDelay() return math.max(0, Config.ConnectDelay or 1)    end
+    local function solverIsEnabled()    return MinigameSolver.ManualEnabled or MinigameSolver.AutoEnabled end
+    local function stillSolving(token, object)
+        return solverIsEnabled() and object and not object.Ended
+    end
+
+    local function waitForSolver(object)
+        while object and not object.Ended and not solverIsEnabled() do
+            task.wait(0.05)
+        end
+        if not (object and not object.Ended and solverIsEnabled()) then return false end
+        local started = os.clock()
+        while object and not object.Ended and solverIsEnabled() and os.clock() - started < Config.StartDelay do
+            task.wait(0.05)
+        end
+        return object and not object.Ended and solverIsEnabled()
+    end
+
+    -- Finds non-overlapping Flow paths (shortest disjoint paths are enough).
+    local function solveFlowBoard(board)
+        local size, pairMap = board.Size, board.Pairs
+        local occupied, answer = {}, {}
+        local directions = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} }
+        local endpointOwner = {}
+
+        for color, pair in pairs(pairMap) do
+            endpointOwner[pair[1]], endpointOwner[pair[2]] = color, color
+        end
+
+        local remaining = {}
+        for color in pairs(pairMap) do table.insert(remaining, color) end
+
+        local function candidates(color, limit)
+            local pair = pairMap[color]
+            local from, target = pair[1], pair[2]
+            local results, path, seen = {}, {from}, {[from] = true}
+
+            local function distance(cell)
+                local r, c   = FlowBoardModule.ToRowCol(size, cell)
+                local tr, tc = FlowBoardModule.ToRowCol(size, target)
+                return math.abs(r - tr) + math.abs(c - tc)
+            end
+
+            local function walk(cell)
+                if #results >= limit then return end
+                if cell == target then
+                    table.insert(results, table.clone(path))
+                    return
+                end
+                local row, col = FlowBoardModule.ToRowCol(size, cell)
+                local nextCells = {}
+                for _, d in ipairs(directions) do
+                    local nr, nc = row + d[1], col + d[2]
+                    if nr >= 1 and nr <= size and nc >= 1 and nc <= size then
+                        local n = FlowBoardModule.ToIndex(size, nr, nc)
+                        local owner = endpointOwner[n]
+                        if not seen[n] and not occupied[n]
+                            and (not owner or (owner == color and n == target)) then
+                            table.insert(nextCells, n)
                         end
                     end
-                    if MS.Enabled and board.IsSolved and board:IsSolved() then
-                        object:__finish()
-                        if callbacks and callbacks.OnSolved then callbacks.OnSolved() end
-                    end
-                end)
-                return object
+                end
+                table.sort(nextCells, function(a, b) return distance(a) < distance(b) end)
+                for _, n in ipairs(nextCells) do
+                    seen[n] = true; table.insert(path, n)
+                    walk(n)
+                    path[#path] = nil; seen[n] = nil
+                    if #results >= limit then break end
+                end
             end
-            MS.Installed=true
-        end)
-        if not ok then warn("[Gen] "..tostring(err)) end
-        return MS.Installed
+
+            walk(from)
+            table.sort(results, function(a, b) return #a < #b end)
+            return results
+        end
+
+        local function search(colors)
+            if #colors == 0 then return true end
+            local bestIndex, bestPaths
+            for i, color in ipairs(colors) do
+                local list = candidates(color, 300)
+                if #list == 0 then return false end
+                if not bestPaths or #list < #bestPaths then
+                    bestIndex, bestPaths = i, list
+                end
+            end
+
+            local color = colors[bestIndex]
+            local nextColors = table.clone(colors)
+            table.remove(nextColors, bestIndex)
+            for _, path in ipairs(bestPaths) do
+                for _, cell in ipairs(path) do occupied[cell] = true end
+                answer[color] = path
+                if search(nextColors) then return true end
+                answer[color] = nil
+                for _, cell in ipairs(path) do occupied[cell] = nil end
+            end
+            return false
+        end
+
+        return search(remaining) and answer or nil
     end
-    local left=Tabs.Generator:AddLeftGroupbox("Auto Solver","zap")
-    left:AddToggle("GenSolver_T",{Text="Enable Auto Solver",Default=false,Callback=function(v)
-        MS.Enabled=v; if v then MS.Generation = MS.Generation + 1; install() end
-    end})
+
+    local function installMinigameHooks()
+        if MinigameSolver.Installed then return end
+        local ok, err = pcall(function()
+            FlowBoardModule     = require(ReplicatedStorage.Modules.Minigames.FlowBoard)
+            LockBoardModule     = require(ReplicatedStorage.Modules.Minigames.LockBoard)
+            FlowInputModule     = require(MinigameFolder.FlowClientMinigame.FlowInput)
+            GearInputModule     = require(MinigameFolder.GearClientMinigame.GearInput)
+            LockInputModule     = require(MinigameFolder.LockClientMinigame.LockInput)
+            ConnectInputModule  = require(MinigameFolder.ConnectClientMinigame.ConnectInput)
+        end)
+        if not ok then
+            warn("[Perfect Gen] module require failed: " .. tostring(err))
+            return
+        end
+        MinigameSolver.Installed = true
+
+        local oldLockBoardNew = LockBoardModule.new
+        LockBoardModule.new = function(...)
+            local board = oldLockBoardNew(...)
+            MinigameSolver.LockBoard = board
+            return board
+        end
+
+        local oldFlowNew = FlowInputModule.new
+        FlowInputModule.new = function(board, renderer, callbacks)
+            local object = oldFlowNew(board, renderer, callbacks)
+            local token = MinigameSolver.Generation
+            task.spawn(function()
+                if not waitForSolver(object) then return end
+                task.wait(solverDelay())
+                local paths = solveFlowBoard(board)
+                if not paths then
+                    warn('[Perfect Gen] Flow solution was not found')
+                    return
+                end
+                for color, path in pairs(paths) do
+                    if not stillSolving(token, object) then return end
+                    local drawing = board:Begin(path[1])
+                    renderer:Render()
+                    task.wait(solverDelay())
+                    for index = 2, #path do
+                        if not stillSolving(token, object) then return end
+                        board:Step(drawing, path[index], 0)
+                        renderer:Render()
+                        task.wait(solverDelay())
+                    end
+                    board:Release(drawing, true)
+                    renderer:Render()
+                    task.wait(solverDelay())
+                end
+                if stillSolving(token, object) and board:IsSolved() then
+                    object:__finish()
+                    callbacks.OnSolved()
+                end
+            end)
+            return object
+        end
+
+        local oldConnectNew = ConnectInputModule.new
+        ConnectInputModule.new = function(board, renderer, callbacks)
+            local object = oldConnectNew(board, renderer, callbacks)
+            local token = MinigameSolver.Generation
+            task.spawn(function()
+                if not waitForSolver(object) then return end
+                task.wait(connectSolverDelay())
+                for blob in pairs(board.Blobs) do
+                    if not stillSolving(token, object) then return end
+                    if not board:GetLink(blob) then
+                        local mate = board:GetMate(blob)
+                        if mate then
+                            board:Connect(blob, mate)
+                            renderer:Render()
+                            task.wait(connectSolverDelay())
+                        end
+                    end
+                end
+                if stillSolving(token, object) and board:IsSolved() then
+                    object:__finish()
+                    callbacks.OnSolved()
+                end
+            end)
+            return object
+        end
+
+        local oldGearNew = GearInputModule.new
+        GearInputModule.new = function(getCenter, callbacks, enabled)
+            local object = oldGearNew(getCenter, callbacks, enabled)
+            local token = MinigameSolver.Generation
+            task.spawn(function()
+                if not waitForSolver(object) then return end
+                task.wait(math.max(0.55, solverDelay()))
+                for _ = 1, 100 do
+                    if not stillSolving(token, object) then return end
+                    callbacks.OnTurn(90)
+                    task.wait(math.max(0, Config.GearDelay or 0.03))
+                end
+            end)
+            return object
+        end
+
+        local oldLockNew = LockInputModule.new
+        LockInputModule.new = function(ui, callbacks)
+            local object = oldLockNew(ui, callbacks)
+            local board  = MinigameSolver.LockBoard
+            local token  = MinigameSolver.Generation
+            task.spawn(function()
+                if not waitForSolver(object) then return end
+                while stillSolving(token, object) and board and not board:IsBroken() do
+                    local now = workspace:GetServerTimeNow()
+                    if board:IsOnTarget(board:AngleAt(now)) then
+                        callbacks.OnPress()
+                        task.wait(math.max(0.08, solverDelay()))
+                    else
+                        RunService.Heartbeat:Wait()
+                    end
+                end
+            end)
+            return object
+        end
+    end
+
+    pcall(installMinigameHooks)
+
+    local left = Tabs.Generator:AddLeftGroupbox("Auto Solver", "zap")
+    left:AddToggle("GenSolver_T", {
+        Text = "Enable Auto Solver", Default = false,
+        Callback = function(v)
+            MinigameSolver.ManualEnabled = v
+            MinigameSolver.Enabled = v
+            MinigameSolver.Generation = MinigameSolver.Generation + 1
+        end,
+    })
+    left:AddSlider("Gen_StartDelay", {
+        Text = "Start Delay (sec)", Default = 1.5, Min = 0, Max = 5, Rounding = 2,
+        Callback = function(v) Config.StartDelay = v end,
+    })
+    left:AddSlider("Gen_FlowSpeed", {
+        Text = "Flow Cell Speed (ms)", Default = 50, Min = 0, Max = 250, Rounding = 0,
+        Callback = function(v) Config.ActionDelay = v / 1000 end,
+    })
+
+    local right = Tabs.Generator:AddRightGroupbox("Minigame Timings", "settings")
+    right:AddSlider("Gen_ConnectDelay", {
+        Text = "Connect Pair Delay (ms)", Default = 1000, Min = 100, Max = 3000, Rounding = 0,
+        Callback = function(v) Config.ConnectDelay = v / 1000 end,
+    })
+    right:AddSlider("Gen_GearDelay", {
+        Text = "Gear Turn Speed (ms)", Default = 30, Min = 0, Max = 150, Rounding = 0,
+        Callback = function(v) Config.GearDelay = v / 1000 end,
+    })
+    right:AddLabel({
+        Text = "Solves Flow, Connect, Gear, and Lock minigames. Hooks install on load; toggle any time.",
+        DoesWrap = true,
+    })
 end)
 
 safe("Player", function()
@@ -1617,63 +1859,240 @@ safe("HDT", function()
     })
 end)
 
+--═══════════════════════════════════════════════════════════════════
+-- STAB — Auto Backstab 4.7 (Teleport / Lerp / PrimaryPart)
+--═══════════════════════════════════════════════════════════════════
 safe("Stab", function()
-    local IDS = { ["100725497418533"] = true, ["89448354637442"] = true }
-    local st = { enabled = false, behindStuds = 4, lerpDuration = 0.4, cooldown = 0.6, last = 0 }
-    local function doStab()
-        if not st.enabled or IsPlayerKiller() then return end
-        local now = tick()
-        if now - st.last < st.cooldown then return end
-        st.last = now
-        local char = LP.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local killer = GetNearestKillerModel(40)
-        local kr = killer and killer:FindFirstChild("HumanoidRootPart")
-        if not hrp or not kr then return end
-        local dur = math.max(0.1, st.lerpDuration)
-        local start = tick()
-        while tick() - start < dur do
-            if not hrp.Parent or not kr.Parent then break end
-            local alpha = math.clamp((tick() - start) / dur, 0, 1)
-            hrp.CFrame = hrp.CFrame:Lerp(kr.CFrame * CFrame.new(0, 0, st.behindStuds), alpha)
-            RunService.RenderStepped:Wait()
+    -- Backstab state (local, no globals leaking)
+    local SB = {
+        enabled = false,
+        method = "Teleport",          -- Teleport | Lerp | PrimaryPart
+        normalRange = 2,              -- NormalStab Range
+        crouchRange = 3,              -- CrouchStab Range
+        duration = 0.5,               -- Duration (All)
+        delay = 0.05,                 -- Delay (All)
+        speed = 100,                  -- Lerp / PrimaryPart Speed
+        primaryMethod = "Character",  -- Character | Root
+        pivotTo = false,              -- PivotTo (PrimaryPart)
+        tpBack = false,               -- Teleport Back (Teleport)
+        instantTP = false,            -- Instant TP Hitbox (Teleport)
+        tpBypassDelay = 0.1,          -- TP Bypass Delay (Teleport)
+        bypassX = 0,                  -- Bypass Strength X
+        bypassY = 2000,               -- Bypass Strength Y
+        bypassZ = 0,                  -- Bypass Strength Z
+        partTransparency = 1,         -- Part Transparency
+    }
+
+    -- Animation IDs straight from Backstab 4.7
+    local stabAnimIds = {
+        ["106086955212611"] = true,
+        ["100725497418533"] = true,
+    }
+    local crouchStabAnimIds = {
+        ["89448354637442"]  = true,
+        ["107640065977686"] = true,
+    }
+
+    local function nearestKillerHRP()
+        local model = GetNearestKillerModel(math.huge)
+        return model and model:FindFirstChild("HumanoidRootPart")
+    end
+
+    -- Teleport method
+    local function teleportStab(range)
+        task.wait(SB.delay)
+        local killerHRP = nearestKillerHRP()
+        if not killerHRP then return end
+        local char = LP.Character or LP.CharacterAdded:Wait()
+        local hrp  = char:WaitForChild("HumanoidRootPart")
+        local originalCF = hrp.CFrame
+        if SB.instantTP then
+            hrp.CFrame = hrp.CFrame + Vector3.new(SB.bypassX, SB.bypassY, SB.bypassZ)
         end
-        if hrp.Parent and kr.Parent then
-            hrp.CFrame = kr.CFrame * CFrame.new(0, 0, st.behindStuds)
+        task.wait(SB.tpBypassDelay)
+        local endTime = tick() + SB.duration
+        while tick() < endTime do
+            if not (killerHRP and killerHRP.Parent) then break end
+            hrp.CFrame = killerHRP.CFrame * CFrame.new(0, 0, range)
+            task.wait()
+        end
+        if SB.tpBack then
+            hrp.CFrame = originalCF
         end
     end
-    task.spawn(function()
-        while not _ShuttingDown do
-            task.wait(0.5)
-            local char = LP.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local anim = hum and hum:FindFirstChildOfClass("Animator")
-            if anim and not char:GetAttribute("PerfectStabHooked") then
-                char:SetAttribute("PerfectStabHooked", true)
-                anim.AnimationPlayed:Connect(function(track)
-                    if not st.enabled or IsPlayerKiller() then return end
-                    local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
-                    if id and IDS[id] then task.spawn(doStab) end
-                end)
+
+    -- Lerp method
+    local function lerpStab(range)
+        task.wait(SB.delay)
+        local killerHRP = nearestKillerHRP()
+        if not killerHRP then return end
+        local char = LP.Character or LP.CharacterAdded:Wait()
+        local hrp  = char:WaitForChild("HumanoidRootPart")
+        local startTime = tick()
+        while true do
+            local elapsed = tick() - startTime
+            if SB.duration <= elapsed or not (killerHRP and killerHRP.Parent) then break end
+            local dt = task.wait()
+            local targetPos = killerHRP.Position - killerHRP.CFrame.LookVector * range
+            local mag = (targetPos - hrp.Position).Magnitude
+            if mag > 0 then
+                local step = SB.speed * dt / mag
+                local alpha = math.min(step, 1)
+                local newPos = hrp.Position:Lerp(targetPos, alpha)
+                hrp.CFrame = CFrame.new(newPos, newPos + killerHRP.CFrame.LookVector)
             end
         end
-    end)
+    end
+
+    -- PrimaryPart method
+    local function primaryPartStab(range)
+        local killerHRP = nearestKillerHRP()
+        if not killerHRP then return end
+        local char = LP.Character or LP.CharacterAdded:Wait()
+        local hrp  = char:WaitForChild("HumanoidRootPart")
+        local target = (SB.primaryMethod == "Character") and char or hrp
+        local part = Instance.new("Part")
+        part.Name = "broom"
+        part.Size = Vector3.new(1, 1, 1)
+        part.Transparency = SB.partTransparency
+        part.Anchored = true
+        part.CanCollide = false
+        part.Parent = target
+        task.wait(SB.delay)
+        local originalPrimary = char.PrimaryPart
+        char.PrimaryPart = part
+        local startTime = tick()
+        while tick() - startTime < SB.duration do
+            killerHRP = nearestKillerHRP()
+            if not killerHRP then break end
+            hrp.AssemblyLinearVelocity  = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            hrp.Velocity                = Vector3.zero
+            hrp.RotVelocity             = Vector3.zero
+            local targetCF = killerHRP.CFrame * CFrame.new(0, 0, range)
+            part.CFrame = part.CFrame:Lerp(targetCF, math.clamp(SB.speed * 0.016666666666667, 0, 1))
+            if SB.pivotTo then
+                target:PivotTo(part.CFrame)
+            end
+            task.wait()
+        end
+        char.PrimaryPart = originalPrimary
+        part:Destroy()
+    end
+
+    -- Dispatcher
+    local function triggerStab(range)
+        if not SB.enabled or IsPlayerKiller() then return end
+        if SB.method == "Teleport" then
+            task.spawn(teleportStab, range)
+        elseif SB.method == "Lerp" then
+            task.spawn(lerpStab, range)
+        elseif SB.method == "PrimaryPart" then
+            task.spawn(primaryPartStab, range)
+        end
+    end
+
+    -- Animation hook
+    local function hookCharacter(character)
+        if not character then return end
+        local hum = character:WaitForChild("Humanoid", 10)
+        if not hum then return end
+        local animator = hum:WaitForChild("Animator", 5)
+        if not animator then return end
+        animator.AnimationPlayed:Connect(function(track)
+            local anim = track.Animation
+            if not anim then return end
+            local id = anim.AnimationId:match("%d+")
+            if not id then return end
+            if stabAnimIds[id] then
+                triggerStab(SB.normalRange)
+            elseif crouchStabAnimIds[id] then
+                triggerStab(SB.crouchRange)
+            end
+        end)
+    end
+    if LP.Character then task.spawn(hookCharacter, LP.Character) end
+    LP.CharacterAdded:Connect(function(c) task.spawn(hookCharacter, c) end)
+
+    -- GUI
     local left = Tabs.Stab:AddLeftGroupbox("Auto Stab", "sword")
     left:AddToggle("Stab_Enable", {
-        Text = "Enable Auto Stab Lerp", Default = false,
+        Text = "Enable Auto Stab", Default = false,
         Callback = function(v)
-            if v and IsPlayerKiller() then pcall(function() Toggles.Stab_Enable:SetValue(false) end); return end
-            st.enabled = v
+            if v and IsPlayerKiller() then
+                pcall(function() Toggles.Stab_Enable:SetValue(false) end)
+                return
+            end
+            SB.enabled = v
         end,
     })
-    local right = Tabs.Stab:AddRightGroupbox("Settings", "sliders")
-    right:AddSlider("StabBehind", {
-        Text = "Behind Studs", Default = 4, Min = 1, Max = 12, Rounding = 1,
-        Callback = function(v) st.behindStuds = v end,
+    left:AddDropdown("Stab_Method", {
+        Text = "Method",
+        Values = { "Teleport", "Lerp", "PrimaryPart" },
+        Default = "Teleport",
+        Callback = function(v) SB.method = v end,
     })
-    right:AddSlider("StabDur", {
-        Text = "Lerp Duration", Default = 0.4, Min = 0.1, Max = 1.5, Rounding = 2,
-        Callback = function(v) st.lerpDuration = v end,
+    left:AddSlider("Stab_NormalR", {
+        Text = "NormalStab Range", Default = 2, Min = 1, Max = 10, Rounding = 1,
+        Callback = function(v) SB.normalRange = v end,
+    })
+    left:AddSlider("Stab_CrouchR", {
+        Text = "CrouchStab Range", Default = 3, Min = 1, Max = 10, Rounding = 1,
+        Callback = function(v) SB.crouchRange = v end,
+    })
+    left:AddSlider("Stab_Duration", {
+        Text = "Duration", Default = 0.5, Min = 0.1, Max = 2, Rounding = 2,
+        Callback = function(v) SB.duration = v end,
+    })
+    left:AddSlider("Stab_Delay", {
+        Text = "Delay", Default = 0.05, Min = 0, Max = 1, Rounding = 2,
+        Callback = function(v) SB.delay = v end,
+    })
+
+    local right1 = Tabs.Stab:AddRightGroupbox("Movement", "activity")
+    right1:AddSlider("Stab_Speed", {
+        Text = "Lerp / PrimaryPart Speed", Default = 100, Min = 10, Max = 500, Rounding = 0,
+        Callback = function(v) SB.speed = v end,
+    })
+    right1:AddDropdown("Stab_PrimaryMethod", {
+        Text = "PrimaryPart Method",
+        Values = { "Character", "Root" },
+        Default = "Character",
+        Callback = function(v) SB.primaryMethod = v end,
+    })
+    right1:AddToggle("Stab_PivotTo", {
+        Text = "PivotTo (PrimaryPart)", Default = false,
+        Callback = function(v) SB.pivotTo = v end,
+    })
+    right1:AddSlider("Stab_PartTrans", {
+        Text = "Part Transparency", Default = 1, Min = 0, Max = 1, Rounding = 2,
+        Callback = function(v) SB.partTransparency = v end,
+    })
+
+    local right2 = Tabs.Stab:AddRightGroupbox("Teleport", "crosshair")
+    right2:AddToggle("Stab_TPBack", {
+        Text = "Teleport Back", Default = false,
+        Callback = function(v) SB.tpBack = v end,
+    })
+    right2:AddToggle("Stab_InstantTP", {
+        Text = "Instant TP Hitbox", Default = false,
+        Callback = function(v) SB.instantTP = v end,
+    })
+    right2:AddSlider("Stab_TPDelay", {
+        Text = "TP Bypass Delay", Default = 0.1, Min = 0, Max = 1, Rounding = 2,
+        Callback = function(v) SB.tpBypassDelay = v end,
+    })
+    right2:AddSlider("Stab_BypassX", {
+        Text = "Bypass Strength X", Default = 0, Min = -5000, Max = 5000, Rounding = 0,
+        Callback = function(v) SB.bypassX = v end,
+    })
+    right2:AddSlider("Stab_BypassY", {
+        Text = "Bypass Strength Y", Default = 2000, Min = -5000, Max = 5000, Rounding = 0,
+        Callback = function(v) SB.bypassY = v end,
+    })
+    right2:AddSlider("Stab_BypassZ", {
+        Text = "Bypass Strength Z", Default = 0, Min = -5000, Max = 5000, Rounding = 0,
+        Callback = function(v) SB.bypassZ = v end,
     })
 end)
 
