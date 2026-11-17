@@ -15,7 +15,9 @@ local Debris = game:GetService("Debris")
 local Lighting = game:GetService("Lighting")
 local CoreGui = game:GetService("CoreGui")
 local ContextActionService = game:GetService("ContextActionService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local MarketplaceService = game:GetService("MarketplaceService")
+local Stats = game:GetService("Stats")
 
 local gameName = "Forsaken"
 pcall(function() gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name end)
@@ -74,6 +76,7 @@ local Tabs = {
     ["Stab"] = Window:AddTab("Stab", "sword"),
     ["HDT"] = Window:AddTab("HDT", "activity"),
     ["Vee"] = Window:AddTab("Vee", "gamepad-2"),
+    ["Killer"] = Window:AddTab("Killer", "swords"),
     ["Misc"] = Window:AddTab("Misc", "wrench"),
     ["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
@@ -123,10 +126,15 @@ local function getNetworkEvent()
     end)
     return NetworkEvent
 end
+local HDT = { enabled = false, duration = 0.35, speed = 12, delay = 0.05, behind = 3, busy = false }
+local HDT_Trigger
+
 local function FireBlockBuffer()
     if IsPlayerKiller() then return end
     local remote = getNetworkEvent(); if not remote then return end
     pcall(function() remote:FireServer("UseActorAbility", { buffer.fromstring("\3\5\0\0\0Block") }) end)
+    -- HDT_Trigger from FireBlock
+    if HDT and HDT.enabled then pcall(function() HDT_Trigger() end) end
 end
 
 local rfDispatch = { hooks={}, installed=false, originalCallback=nil }
@@ -503,47 +511,74 @@ RunService.RenderStepped:Connect(function()
 end)
 do
     local left = Tabs.Aimbot:AddLeftGroupbox("Aimbot", "crosshair")
-    left:AddToggle("Aim_Enable", { Text="Enable Aimbot", Default=false, Callback=function(v)
-        if v and IsPlayerKiller() then
-            Library:Notify({Title="Perfect", Description="Aim disabled on Killer", Time=3})
-            pcall(function() Toggles.Aim_Enable:SetValue(false) end); return
-        end
-        GAim.enabled=v
-    end })
+    left:AddToggle("Aim_Enable", {
+        Text = "Enable Aimbot", Default = false,
+        Callback = function(v)
+            if v and IsPlayerKiller() then
+                Library:Notify({ Title = "Perfect", Description = "Aim disabled on Killer", Time = 3 })
+                pcall(function() Toggles.Aim_Enable:SetValue(false) end)
+                return
+            end
+            GAim.enabled = v
+        end,
+    })
     left:AddDropdown("Aim_Pick", {
-        Text="Pick Aimbots", Values={"Guest1337","Shedlekey","TwoTime","Chance","Pizza","JaneDoe"},
-        Default=1, Multi=true, Callback=function(sel)
-            for k,cfg in pairs(GAim.values) do cfg.Enabled=false end
-            if type(sel)=="table" then
-                for name,on in pairs(sel) do
-                    if on==true and GAim.values[name] then GAim.values[name].Enabled=true end
-                    if type(on)=="string" and GAim.values[on] then GAim.values[on].Enabled=true end
+        Text = "Pick Aimbots",
+        Values = { "Guest1337", "Shedlekey", "TwoTime", "Chance", "Pizza", "JaneDoe" },
+        Default = 1,
+        Multi = true,
+        Callback = function(sel)
+            for k, cfg in pairs(GAim.values) do cfg.Enabled = false end
+            if type(sel) == "table" then
+                for name, on in pairs(sel) do
+                    if on == true and GAim.values[name] then GAim.values[name].Enabled = true end
+                    if type(on) == "string" and GAim.values[on] then GAim.values[on].Enabled = true end
                 end
-            elseif type(sel)=="string" and GAim.values[sel] then GAim.values[sel].Enabled=true end
+            elseif type(sel) == "string" and GAim.values[sel] then
+                GAim.values[sel].Enabled = true
+            end
         end,
     })
     left:AddDropdown("Aim_Mode", {
-        Text="Aimlock Mode", Values={"Character Lock","Char + Cam Lock"}, Default=1,
-        Callback=function(v) GAim.mode=v end,
+        Text = "Aimlock Mode",
+        Values = { "Character Lock", "Char + Cam Lock" },
+        Default = 1,
+        Callback = function(v) GAim.mode = v end,
     })
-    left:AddSlider("Aim_Dist", { Text="Distance", Default=50, Min=1, Max=50, Rounding=0, Callback=function(v)
-        for _,k in ipairs({"Guest1337","Shedlekey","TwoTime","Pizza","JaneDoe"}) do
-            if GAim.values[k] then GAim.values[k].Distance=v end
-        end
-    end })
-    local right = Tabs.Aimbot:AddRightGroupbox("Durations", "sliders")
-    local function addDur(key, label, def)
-        right:AddInput(key.."_Dur", { Text=label.." Duration", Default=tostring(def), Numeric=true, Callback=function(a)
-            GAim.values[key].LockDuration=math.clamp(tonumber(a) or def, 0.1, 3)
-        end })
+    left:AddSlider("Aim_Dist", {
+        Text = "Distance", Default = 50, Min = 1, Max = 50, Rounding = 0,
+        Callback = function(v)
+            for _, k in ipairs({ "Guest1337", "Shedlekey", "TwoTime", "Pizza", "JaneDoe" }) do
+                if GAim.values[k] then GAim.values[k].Distance = v end
+            end
+        end,
+    })
+    left:AddButton({
+        Text = "Rescan Anims",
+        Func = function()
+            pcall(GAim_scanAnims)
+            Library:Notify({ Title = "Perfect", Description = "Anims rescanned", Time = 2 })
+        end,
+    })
+
+    -- Guesting-style per survivor: Duration + Prediction
+    local function addSurvivorBox(tabSide, key, title, defDur, defPred)
+        local box = tabSide:AddGroupbox and tabSide:AddGroupbox({ Side = "Right", Name = title }) or Tabs.Aimbot:AddRightGroupbox(title, "sliders")
+        box:AddSlider(key .. "_DurS", {
+            Text = "Duration", Default = defDur, Min = 0.1, Max = 3, Rounding = 2,
+            Callback = function(v) GAim.values[key].LockDuration = v end,
+        })
+        box:AddSlider(key .. "_PredS", {
+            Text = "Prediction", Default = defPred, Min = 0, Max = 15, Rounding = 1,
+            Callback = function(v) GAim.values[key].Prediction = v end,
+        })
     end
-    addDur("Guest1337","Guest1337",1.3); addDur("Shedlekey","Shedletsky",1.2)
-    addDur("TwoTime","TwoTime",0.9); addDur("Chance","Chance",1.5)
-    addDur("Pizza","Pizza",1.2); addDur("JaneDoe","JaneDoe",1.1)
-    right:AddButton({ Text="Rescan Anims", Func=function()
-        pcall(GAim_scanAnims)
-        Library:Notify({Title="Perfect", Description="Anims rescanned", Time=2})
-    end })
+    addSurvivorBox(Tabs.Aimbot, "Guest1337", "Guest 1337", 1.3, 0)
+    addSurvivorBox(Tabs.Aimbot, "Shedlekey", "Shedletsky", 1.2, 0)
+    addSurvivorBox(Tabs.Aimbot, "TwoTime", "Two Time", 0.9, 0)
+    addSurvivorBox(Tabs.Aimbot, "Chance", "Chance", 1.5, 3)
+    addSurvivorBox(Tabs.Aimbot, "Pizza", "Pizza", 1.2, 0.5)
+    addSurvivorBox(Tabs.Aimbot, "JaneDoe", "Jane Doe", 1.1, 0)
 end
 
 -- SILENT AIM
@@ -661,8 +696,6 @@ local function getAbilityName(killer)
     return nil
 end
 
-local HDT = { enabled=false, duration=0.3 }
-local function HDT_Trigger() end
 
 local function createSpatialOverlapBox(killerChar, size, onHit)
     if IsPlayerKiller() or not killerChar or killerChar==LP.Character then return end
@@ -900,55 +933,237 @@ do
 end
 
 -- HDT
-function HDT_Trigger()
-    if not HDT.enabled or IsPlayerKiller() then return end
+-- HDT: body turn + walk/drag toward killer (Guesting + Cursedsaken style)
+HDT_Trigger = function()
+    if not HDT.enabled or IsPlayerKiller() or HDT.busy then return end
     task.spawn(function()
-        local character=LP.Character; local killer=GetNearestKillerModel(math.huge)
-        if not character or not killer then return end
-        local humanoidRootPart=character:FindFirstChild("HumanoidRootPart")
-        local primaryPart=character.PrimaryPart or humanoidRootPart
-        if not humanoidRootPart then return end
-        local kHRP=killer:FindFirstChild("HumanoidRootPart"); if not kHRP then return end
-        local part2=Instance.new("Part"); part2.Size=Vector3.new(2,2,2); part2.Transparency=1
-        part2.CanCollide=false; part2.Anchored=true; part2.CFrame=humanoidRootPart.CFrame; part2.Parent=character
-        character.PrimaryPart=part2
-        local start=os.clock(); local dur=HDT.duration or 0.3
-        while os.clock()-start<dur and HDT.enabled do
-            local k=GetNearestKillerModel(math.huge)
-            local kr=k and k:FindFirstChild("HumanoidRootPart")
-            if kr then
-                local rotation=humanoidRootPart.CFrame.Rotation
-                part2.CFrame=CFrame.new((kr.CFrame*CFrame.new(0,0,-3)).Position)*rotation
-                humanoidRootPart.AssemblyLinearVelocity=Vector3.zero
+        HDT.busy = true
+        if HDT.delay and HDT.delay > 0 then task.wait(HDT.delay) end
+        if not HDT.enabled or IsPlayerKiller() then HDT.busy = false; return end
+
+        local character = LP.Character
+        local killer = GetNearestKillerModel(math.huge)
+        if not character or not killer then HDT.busy = false; return end
+
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        local hum = character:FindFirstChildOfClass("Humanoid")
+        local primaryPart = character.PrimaryPart or hrp
+        if not hrp or not hum then HDT.busy = false; return end
+
+        local kHRP = killer:FindFirstChild("HumanoidRootPart")
+        if not kHRP then HDT.busy = false; return end
+
+        -- Face killer
+        local lookPos = Vector3.new(kHRP.Position.X, hrp.Position.Y, kHRP.Position.Z)
+        hrp.CFrame = CFrame.lookAt(hrp.Position, lookPos)
+
+        -- Guesting PrimaryPart drag
+        local part2 = Instance.new("Part")
+        part2.Size = Vector3.new(2, 2, 2)
+        part2.Transparency = 1
+        part2.CanCollide = false
+        part2.Anchored = true
+        part2.CFrame = hrp.CFrame
+        part2.Parent = character
+        character.PrimaryPart = part2
+
+        local start = os.clock()
+        local dur = math.max(0.05, HDT.duration or 0.3)
+        local behind = HDT.behind or 3
+
+        while os.clock() - start < dur and HDT.enabled and not IsPlayerKiller() do
+            local k = GetNearestKillerModel(math.huge)
+            local kr = k and k:FindFirstChild("HumanoidRootPart")
+            if kr and hrp.Parent then
+                local targetPos = (kr.CFrame * CFrame.new(0, 0, -behind)).Position
+                -- face + drag
+                local flat = Vector3.new(kr.Position.X, hrp.Position.Y, kr.Position.Z)
+                local rot = CFrame.lookAt(hrp.Position, flat).Rotation
+                part2.CFrame = CFrame.new(targetPos) * rot
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                -- also nudge character root toward target
+                local to = (targetPos - hrp.Position)
+                if to.Magnitude > 0.5 then
+                    hum:Move(to.Unit * (HDT.speed or 12), false)
+                end
             end
             RunService.PreRender:Wait()
         end
+
         if part2 and part2.Parent then part2:Destroy() end
-        if character and character.Parent then character.PrimaryPart=primaryPart end
+        if character and character.Parent then character.PrimaryPart = primaryPart end
+        if hum then hum:Move(Vector3.zero, false) end
+        HDT.busy = false
     end)
 end
+
 do
-    local left = Tabs.HDT:AddLeftGroupbox("Hitbox Drag", "activity")
-    left:AddToggle("HDT_Enable", {Text="Enable HDT", Default=false, Callback=function(v)
-        if v and IsPlayerKiller() then
-            Library:Notify({Title="Perfect", Description="HDT disabled on Killer", Time=3})
-            pcall(function() Toggles.HDT_Enable:SetValue(false) end); return
-        end
-        HDT.enabled=v
-    end })
-    left:AddInput("HDT_Dur", {Text="Duration To Drag", Default="0.3", Numeric=true, Callback=function(a) HDT.duration=tonumber(a) or 0.3 end })
-    left:AddButton({Text="Test HDT", Func=function() HDT_Trigger() end })
-    left:AddLabel({Text="Drags primary part toward killer when Auto Block hits.", DoesWrap=true})
+    local left = Tabs.HDT:AddLeftGroupbox("Hitbox Dragging Tech", "activity")
+    left:AddToggle("HDT_Enable", {
+        Text = "Enable HDT", Default = false,
+        Callback = function(v)
+            if v and IsPlayerKiller() then
+                Library:Notify({ Title = "Perfect", Description = "HDT disabled on Killer", Time = 3 })
+                pcall(function() Toggles.HDT_Enable:SetValue(false) end)
+                return
+            end
+            HDT.enabled = v
+        end,
+    })
+    left:AddSlider("HDT_DurS", {
+        Text = "Drag Duration", Default = 0.35, Min = 0.05, Max = 2, Rounding = 2,
+        Callback = function(v) HDT.duration = v end,
+    })
+    left:AddSlider("HDT_DelayS", {
+        Text = "Start Delay", Default = 0.05, Min = 0, Max = 1, Rounding = 2,
+        Callback = function(v) HDT.delay = v end,
+    })
+    left:AddSlider("HDT_SpeedS", {
+        Text = "Drag Speed", Default = 12, Min = 5, Max = 30, Rounding = 0,
+        Callback = function(v) HDT.speed = v end,
+    })
+    left:AddSlider("HDT_BehindS", {
+        Text = "Behind Studs", Default = 3, Min = 1, Max = 8, Rounding = 1,
+        Callback = function(v) HDT.behind = v end,
+    })
+    left:AddButton({ Text = "Test HDT", Func = function() HDT_Trigger() end })
+    left:AddLabel({
+        Text = "Turns body + drags toward killer when Auto Block fires. Use Test to verify.",
+        DoesWrap = true,
+    })
 end
 
--- VEE minimal
+-- VEE (Cursedsaken-style options)
+local VeeState = {
+    autoTrick = false,
+    skateControl = false,
+    customStats = false,
+    autoFarm = false,
+    sk8Speed = 1.15,
+    sk8TrickAir = 1.42,
+    sk8Bump = 11.9,
+    sk8TrickStam = 4,
+    sk8Cooldown = 1,
+    _trickThread = nil,
+    _farmThread = nil,
+}
+local function Vee_Set(key, val)
+    pcall(function()
+        local mod = require(ReplicatedStorage.Assets.Survivors.Veeronica.Behavior)
+        mod[key] = val
+    end)
+    if getgc then
+        pcall(function()
+            for _, t in pairs(getgc(true)) do
+                if type(t) == "table" and (rawget(t, "DisplayName") == "Veeronica" or rawget(t, key) ~= nil) then
+                    if rawget(t, "DisplayName") == "Veeronica" or rawget(t, "Sk8TurnControl") ~= nil or rawget(t, "Sk8Speed") ~= nil then
+                        t[key] = val
+                    end
+                end
+            end
+        end)
+    end
+end
+local function Vee_ApplyStats()
+    if not VeeState.customStats then
+        Vee_Set("Sk8Speed", 1.15); Vee_Set("Sk8SpeedExhaust", 1.15)
+        Vee_Set("Sk8TrickAirborneSpeed", 1.42)
+        Vee_Set("Sk8BumpPower", 11.9); Vee_Set("Sk8BumpChargedPower", 15)
+        Vee_Set("Sk8TrickStamina", 10); Vee_Set("Sk8TrickStaminaNerfed", 4)
+        Vee_Set("Sk8TrickCooldown", 1)
+        return
+    end
+    Vee_Set("Sk8Speed", VeeState.sk8Speed); Vee_Set("Sk8SpeedExhaust", VeeState.sk8Speed)
+    Vee_Set("Sk8TrickAirborneSpeed", VeeState.sk8TrickAir)
+    Vee_Set("Sk8BumpPower", VeeState.sk8Bump); Vee_Set("Sk8BumpChargedPower", VeeState.sk8Bump)
+    Vee_Set("Sk8TrickStamina", VeeState.sk8TrickStam); Vee_Set("Sk8TrickStaminaNerfed", VeeState.sk8TrickStam)
+    Vee_Set("Sk8TrickCooldown", VeeState.sk8Cooldown)
+end
+local function Vee_DoTrickInput()
+    if not UserInputService.TouchEnabled or UserInputService.MouseEnabled then
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+        task.wait(0.05)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+    else
+        pcall(function()
+            local main = LP.PlayerGui:FindFirstChild("MainUI")
+            local btn = main and main:FindFirstChild("SprintingButton")
+            if btn and getconnections then
+                for _, c in pairs(getconnections(btn.MouseButton1Down)) do pcall(function() c:Fire() end) end
+                task.wait(0.05)
+                for _, c in pairs(getconnections(btn.MouseButton1Up)) do pcall(function() c:Fire() end) end
+            end
+        end)
+    end
+end
+local function Vee_StartAutoTrick()
+    if VeeState._trickThread then pcall(task.cancel, VeeState._trickThread); VeeState._trickThread = nil end
+    if not VeeState.autoTrick then return end
+    VeeState._trickThread = task.spawn(function()
+        while VeeState.autoTrick and not _ShuttingDown do
+            pcall(Vee_DoTrickInput)
+            task.wait(0.35)
+        end
+    end)
+end
+local function Vee_StartAutoFarm()
+    if VeeState._farmThread then pcall(task.cancel, VeeState._farmThread); VeeState._farmThread = nil end
+    if not VeeState.autoFarm then return end
+    VeeState._farmThread = task.spawn(function()
+        while VeeState.autoFarm and not _ShuttingDown do
+            pcall(function()
+                local re = getNetworkEvent()
+                if re then re:FireServer(LP.Name .. "SkateTrick", {}) end
+            end)
+            task.wait(0.5)
+        end
+    end)
+end
+
 do
-    local left = Tabs.Vee:AddLeftGroupbox("Vee / Sk8", "gamepad-2")
-    left:AddToggle("Vee_Skate", {Text="Skate Control", Default=false, Callback=function(v)
-        local val=v and 6.5 or 0.65
-        pcall(function() require(ReplicatedStorage.Assets.Survivors.Veeronica.Behavior).Sk8TurnControl=val end)
-    end })
-    left:AddLabel({Text="Skate Control boosts turn rate while skating.", DoesWrap=true})
+    local left = Tabs.Vee:AddLeftGroupbox("Vee Controls", "gamepad-2")
+    left:AddToggle("Vee_AutoTrick", {
+        Text = "Auto Trick", Default = false,
+        Callback = function(v) VeeState.autoTrick = v; Vee_StartAutoTrick() end,
+    })
+    left:AddToggle("Vee_Skate", {
+        Text = "Skate Control", Default = false,
+        Callback = function(v)
+            VeeState.skateControl = v
+            Vee_Set("Sk8TurnControl", v and 6.5 or 0.65)
+        end,
+    })
+    left:AddToggle("Vee_AutoFarm", {
+        Text = "Auto Farm Sk8", Default = false,
+        Callback = function(v) VeeState.autoFarm = v; Vee_StartAutoFarm() end,
+    })
+    left:AddToggle("Vee_CustomStats", {
+        Text = "Enable Custom Stats", Default = false,
+        Callback = function(v) VeeState.customStats = v; Vee_ApplyStats() end,
+    })
+
+    local right = Tabs.Vee:AddRightGroupbox("Sk8 Stats", "sliders")
+    right:AddSlider("Vee_Speed", {
+        Text = "Skate Speed", Default = 1.15, Min = 1, Max = 10, Rounding = 2,
+        Callback = function(v) VeeState.sk8Speed = v; if VeeState.customStats then Vee_ApplyStats() end end,
+    })
+    right:AddSlider("Vee_TrickAir", {
+        Text = "Trick Boost Speed", Default = 1.42, Min = 1, Max = 15, Rounding = 2,
+        Callback = function(v) VeeState.sk8TrickAir = v; if VeeState.customStats then Vee_ApplyStats() end end,
+    })
+    right:AddSlider("Vee_Bump", {
+        Text = "Bump Power", Default = 11.9, Min = 1, Max = 30, Rounding = 1,
+        Callback = function(v) VeeState.sk8Bump = v; if VeeState.customStats then Vee_ApplyStats() end end,
+    })
+    right:AddSlider("Vee_TrickStam", {
+        Text = "Trick Stamina Cost", Default = 4, Min = 0, Max = 20, Rounding = 1,
+        Callback = function(v) VeeState.sk8TrickStam = v; if VeeState.customStats then Vee_ApplyStats() end end,
+    })
+    right:AddSlider("Vee_Cooldown", {
+        Text = "Trick Cooldown", Default = 1, Min = 0, Max = 5, Rounding = 2,
+        Callback = function(v) VeeState.sk8Cooldown = v; if VeeState.customStats then Vee_ApplyStats() end end,
+    })
+    right:AddButton({ Text = "Force Reapply Stats", Func = function() Vee_ApplyStats(); Library:Notify({Title="Perfect", Description="Vee stats reapplied", Time=2}) end })
 end
 
 -- MISC
@@ -1010,6 +1225,342 @@ task.spawn(function()
         wasKiller=now
     end
 end)
+
+
+--═══════════════════════════════════════════════════════════════════
+-- JANE DOE INSTANT CHARGE (Catsaken style)
+--═══════════════════════════════════════════════════════════════════
+local JaneInstant = { enabled = false }
+local function Jane_ApplyInstant(on)
+    pcall(function()
+        if getgc then
+            for _, v in pairs(getgc(true)) do
+                if type(v) == "table" and rawget(v, "Crystal") then
+                    local c = rawget(v, "Crystal")
+                    if type(c) == "table" then
+                        if on then
+                            if c._PerfectMax == nil then c._PerfectMax = c.MaxChargeTime end
+                            if c._PerfectMin == nil then c._PerfectMin = c.MinChargeTime end
+                            if c._PerfectCh == nil then c._PerfectCh = c.ChannelTime end
+                            rawset(c, "MinChargeTime", 0)
+                            rawset(c, "MaxChargeTime", 0.05)
+                            if c.ChannelTime ~= nil then rawset(c, "ChannelTime", 0) end
+                        else
+                            if c._PerfectMax ~= nil then rawset(c, "MaxChargeTime", c._PerfectMax) end
+                            if c._PerfectMin ~= nil then rawset(c, "MinChargeTime", c._PerfectMin) end
+                            if c._PerfectCh ~= nil then rawset(c, "ChannelTime", c._PerfectCh) end
+                        end
+                    end
+                end
+            end
+        end
+        -- also Behavior module if present
+        local ok, mod = pcall(function()
+            return require(ReplicatedStorage.Assets.Survivors.JaneDoe.Behavior)
+        end)
+        if ok and mod and mod.Abilities and mod.Abilities.Crystal and mod.Abilities.Crystal.Callback then
+            -- already patched path in Silent Aim; force config on ability tables via getgc is enough
+        end
+    end)
+end
+task.spawn(function()
+    while not _ShuttingDown do
+        if JaneInstant.enabled then Jane_ApplyInstant(true) end
+        task.wait(1.5)
+    end
+end)
+
+--═══════════════════════════════════════════════════════════════════
+-- AZURE AUTO QTE / DISARM (Catsaken)
+--═══════════════════════════════════════════════════════════════════
+local AzureQTEState = { autoDisarm = false, infiniteAttempts = false, hooked = false }
+local function Azure_InstallQTE()
+    if AzureQTEState.hooked then return true end
+    local ok, AzureQTE = pcall(function()
+        return require(ReplicatedStorage.Assets.Killers.Azure.Config.cl_WorkaroundModules.cl_ConstructQTE)
+    end)
+    if not ok or type(AzureQTE) ~= "table" or type(AzureQTE.new) ~= "function" then
+        warn("[Perfect] Azure QTE module not found")
+        return false
+    end
+    if not hookfunction then
+        warn("[Perfect] hookfunction missing for Azure QTE")
+        return false
+    end
+    local oldNew = AzureQTE.new
+    local hooked = hookfunction(AzureQTE.new, function(self, vine, ...)
+        local qte = oldNew(self, vine, ...)
+        task.spawn(function()
+            if AzureQTEState.infiniteAttempts and qte then
+                pcall(function() qte.FailedAttempts = -math.huge end)
+            end
+            if AzureQTEState.autoDisarm and qte then
+                task.wait(1.2)
+                pcall(function()
+                    qte.Progress = 100
+                    if qte.Destroy then qte:Destroy() end
+                end)
+                pcall(function()
+                    Library:Notify({ Title = "Perfect", Description = "Azure QTE auto-cleared", Time = 3 })
+                end)
+            end
+        end)
+        return qte
+    end)
+    AzureQTEState.hooked = true
+    return true
+end
+
+--═══════════════════════════════════════════════════════════════════
+-- AUTO PUNCH (Guest after block / near killer)
+--═══════════════════════════════════════════════════════════════════
+local AutoPunch = {
+    enabled = false,
+    afterBlock = true,
+    range = 15,
+    delay = 0.05,
+    last = 0,
+}
+local function FireAbility(name)
+    local remote = getNetworkEvent()
+    if not remote then return end
+    -- try Catsaken-style string first, then buffer style
+    local ok = pcall(function()
+        remote:FireServer("UseActorAbility", name)
+    end)
+    if not ok then
+        pcall(function()
+            remote:FireServer("UseActorAbility", { buffer.fromstring(string.pack("<Bi4", 3, #name) .. name) })
+        end)
+    end
+end
+local function DoPunch()
+    if IsPlayerKiller() then return end
+    local now = tick()
+    if now - AutoPunch.last < 0.35 then return end
+    AutoPunch.last = now
+    if AutoPunch.delay > 0 then task.wait(AutoPunch.delay) end
+    FireAbility("Punch")
+end
+-- punch after successful block
+do
+    local _oldFB = FireBlockBuffer
+    FireBlockBuffer = function(...)
+        local r = _oldFB(...)
+        if AutoPunch.enabled and AutoPunch.afterBlock then
+            task.spawn(function()
+                task.wait(0.15)
+                DoPunch()
+            end)
+        end
+        return r
+    end
+end
+-- proximity auto punch loop
+task.spawn(function()
+    while not _ShuttingDown do
+        task.wait(0.2)
+        if AutoPunch.enabled and not AutoPunch.afterBlock and not IsPlayerKiller() then
+            local k = GetNearestKillerModel(AutoPunch.range)
+            if k then
+                DoPunch()
+            end
+        end
+    end
+end)
+
+--═══════════════════════════════════════════════════════════════════
+-- HITBOX EXPANDER (Catsaken velocity lag-comp during attack anims)
+--═══════════════════════════════════════════════════════════════════
+local HitboxExp = {
+    enabled = false,
+    range = 60,
+    -- common M1 / attack anim id fragments; also any playing attack-like track under 75%
+}
+local ATTACK_ANIM_HINTS = {
+    "Slash", "Stab", "Punch", "Tag", "M1", "Swing", "Attack", "Carving", "Eviscerate",
+}
+local function HitboxExp_IsAttacking(hum)
+    if not hum then return false end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if not animator then return false end
+    for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+        if track.IsPlaying and track.Animation and track.Length > 0 then
+            if (track.TimePosition / track.Length) < 0.75 then
+                local name = tostring(track.Animation.Name or "")
+                local id = tostring(track.Animation.AnimationId or "")
+                for _, h in ipairs(ATTACK_ANIM_HINTS) do
+                    if name:lower():find(h:lower(), 1, true) then return true end
+                end
+                -- if character is killer, treat any short combat track as attack
+                if IsPlayerKiller() then return true end
+            end
+        end
+    end
+    return false
+end
+local function HitboxExp_NearestTarget(myHRP, maxDist)
+    local best, bd = nil, maxDist
+    local function scan(list)
+        for _, obj in ipairs(list) do
+            if obj:IsA("Model") and obj ~= LP.Character then
+                local r = obj:FindFirstChild("HumanoidRootPart")
+                local h = obj:FindFirstChildOfClass("Humanoid")
+                if r and h and h.Health > 0 then
+                    local d = (r.Position - myHRP.Position).Magnitude
+                    if d < bd then bd = d; best = obj end
+                end
+            end
+        end
+    end
+    local pf = Workspace:FindFirstChild("Players")
+    if pf then
+        local sf = pf:FindFirstChild("Survivors")
+        local kf = pf:FindFirstChild("Killers")
+        if IsPlayerKiller() and sf then scan(sf:GetChildren())
+        elseif kf then scan(kf:GetChildren()) end
+    end
+    return best
+end
+task.spawn(function()
+    local rng = Random.new()
+    while not _ShuttingDown do
+        RunService.RenderStepped:Wait()
+        if not HitboxExp.enabled then
+            task.wait(0.1)
+        else
+            local char = LP.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not hrp or not hum or not HitboxExp_IsAttacking(hum) then
+                task.wait(0.05)
+            else
+                local target = HitboxExp_NearestTarget(hrp, HitboxExp.range)
+                if target then
+                    local thrp = target:FindFirstChild("HumanoidRootPart")
+                    if thrp then
+                        local ping = 0.08
+                        pcall(function()
+                            ping = tonumber(Stats.PerformanceStats.Ping:GetValue()) / 1000
+                        end)
+                        if ping < 0.03 then ping = 0.05 end
+                        local offset = Vector3.new(rng:NextNumber(-1.5, 1.5), 0, rng:NextNumber(-1.5, 1.5))
+                        local predicted = thrp.Position + offset + (thrp.AssemblyLinearVelocity * (ping * 1.25))
+                        local needed = (predicted - hrp.Position) / math.max(ping * 2, 0.05)
+                        local old = hrp.AssemblyLinearVelocity
+                        hrp.AssemblyLinearVelocity = needed
+                        RunService.RenderStepped:Wait()
+                        if hrp.Parent then hrp.AssemblyLinearVelocity = old end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- UI for new features
+do
+    -- Silent Aim: Jane instant charge
+    local sa = Tabs["Silent Aim"]:AddLeftGroupbox("Jane Charge", "zap")
+    sa:AddToggle("JaneInstant_T", {
+        Text = "Jane Doe Instant Charge",
+        Default = false,
+        Callback = function(v)
+            JaneInstant.enabled = v
+            Jane_ApplyInstant(v)
+            Library:Notify({
+                Title = "Perfect",
+                Description = v and "Crystal charge near-instant" or "Crystal charge restored",
+                Time = 2,
+            })
+        end,
+    })
+    sa:AddLabel({ Text = "Sets Crystal Min/Max charge time very low (Catsaken method).", DoesWrap = true })
+
+    -- Azure QTE on Misc or Generator
+    local az = Tabs.Misc:AddRightGroupbox("Azure QTE", "swords")
+    az:AddToggle("AzureQTE_T", {
+        Text = "Auto Disarm Minigame",
+        Default = false,
+        Callback = function(v)
+            AzureQTEState.autoDisarm = v
+            if v then Azure_InstallQTE() end
+        end,
+    })
+    az:AddToggle("AzureInf_T", {
+        Text = "Infinite Disarm Attempts",
+        Default = false,
+        Callback = function(v)
+            AzureQTEState.infiniteAttempts = v
+            if v then Azure_InstallQTE() end
+        end,
+    })
+    az:AddButton({
+        Text = "Install Azure Hook Now",
+        Func = function()
+            if Azure_InstallQTE() then
+                Library:Notify({ Title = "Perfect", Description = "Azure QTE hooked", Time = 3 })
+            else
+                Library:Notify({ Title = "Perfect", Description = "Azure module/hook unavailable", Time = 3 })
+            end
+        end,
+    })
+
+    -- Auto Punch on Block or Stab
+    local ap = Tabs.Block:AddLeftGroupbox("Auto Punch", "swords")
+    ap:AddToggle("AutoPunch_T", {
+        Text = "Enable Auto Punch",
+        Default = false,
+        Callback = function(v)
+            if v and IsPlayerKiller() then
+                Library:Notify({ Title = "Perfect", Description = "Auto Punch is for survivors (Guest)", Time = 3 })
+                pcall(function() Toggles.AutoPunch_T:SetValue(false) end)
+                return
+            end
+            AutoPunch.enabled = v
+        end,
+    })
+    ap:AddToggle("AutoPunchAfterBlock_T", {
+        Text = "Punch After Block",
+        Default = true,
+        Callback = function(v) AutoPunch.afterBlock = v end,
+    })
+    ap:AddSlider("AutoPunchRange_S", {
+        Text = "Proximity Range", Default = 15, Min = 5, Max = 40, Rounding = 0,
+        Callback = function(v) AutoPunch.range = v end,
+    })
+    ap:AddSlider("AutoPunchDelay_S", {
+        Text = "Punch Delay", Default = 0.05, Min = 0, Max = 0.5, Rounding = 2,
+        Callback = function(v) AutoPunch.delay = v end,
+    })
+    ap:AddButton({ Text = "Force Punch", Func = function() DoPunch() end })
+
+    -- Hitbox Expander on Killer tab
+    local hx = Tabs.Killer:AddLeftGroupbox("Hitbox Expander", "expand")
+    hx:AddToggle("HitboxExp_T", {
+        Text = "Enable Hitbox Expander",
+        Default = false,
+        Callback = function(v)
+            HitboxExp.enabled = v
+            if v then
+                Library:Notify({
+                    Title = "Perfect",
+                    Description = "Rage feature — looks very blatant to others",
+                    Time = 4,
+                })
+            end
+        end,
+    })
+    hx:AddSlider("HitboxExpRange_S", {
+        Text = "Range", Default = 60, Min = 30, Max = 200, Rounding = 0,
+        Callback = function(v) HitboxExp.range = v end,
+    })
+    hx:AddLabel({
+        Text = "During attack anims, lag-comps velocity toward nearest target (Catsaken method).",
+        DoesWrap = true,
+    })
+end
+
 
 -- UI SETTINGS (Example.lua)
 do
