@@ -89,7 +89,7 @@ local Tabs = {
     Aimbot = Window:AddTab("Aimbot", "crosshair"),
     Silent = Window:AddTab("Silent Aim", "target"),
     Block = Window:AddTab("Block", "shield"),
-    Facing = Window:AddTab("Facing Check", "scan-eye"),
+    Range = Window:AddTab("Range Check", "scan-eye"),
     Stab = Window:AddTab("Stab", "sword"),
     HDT = Window:AddTab("HDT", "activity"),
     Killer = Window:AddTab("Killer", "swords"),
@@ -199,7 +199,7 @@ local HDT_Trigger
 
 local function OnSuccessfulBlock(killer)
     FireBlock()
-    if HDT.enabled and HDT_Trigger then pcall(HDT_Trigger, killer) end
+    -- HDT only fires from local Block animation (see HDT section)
 end
 
 local function GetNearestKillerModel(maxDist)
@@ -244,38 +244,205 @@ local function GetNearestSurvivorModel(maxDist)
     return best
 end
 
--- Facing state (own tab — Nerg style)
-local Facing = {
-    enabled = false,
+-- Range gate: Circle (Nerg cone/circle) OR Hitbox (A1 spatial)
+local RangeGate = {
+    mode = "Circle", -- "Circle" | "Hitbox"
+    -- Circle
     circleRange = 18,
     visionRange = 13.5,
     visionAngle = 85,
-    showRange = false,
-    facingDot = -0.1, -- Guesting style optional
+    showVisual = true,
+    -- Hitbox
+    width = 5,
+    height = 6,
+    length = 8,
+    offset = -1,
+    duration = 0.5,
+    transparency = 0.5,
+    color = Color3.fromRGB(40, 200, 90),
 }
 
-local function IsFacingTarget(fromHRP, toHRP, maxAngle)
-    if not fromHRP or not toHRP then return false end
-    local look = Vector3.new(fromHRP.CFrame.LookVector.X, 0, fromHRP.CFrame.LookVector.Z)
-    local to = Vector3.new(toHRP.Position.X - fromHRP.Position.X, 0, toHRP.Position.Z - fromHRP.Position.Z)
-    if look.Magnitude < 0.01 or to.Magnitude < 0.01 then return false end
-    local dot = look.Unit:Dot(to.Unit)
-    local ang = math.deg(math.acos(math.clamp(dot, -1, 1)))
-    return ang <= (maxAngle or Facing.visionAngle)
+local VisFolder = Instance.new("Folder")
+VisFolder.Name = "Perfect_RangeVis"
+VisFolder.Parent = Workspace
+
+local function clearVis()
+    for _, c in ipairs(VisFolder:GetChildren()) do
+        pcall(function() c:Destroy() end)
+    end
 end
 
-local function PassesFacing(killer)
-    if not Facing.enabled then return true end
+local function placeLine(a, b, col, trans, thick)
+    local mag = (b - a).Magnitude
+    if mag < 0.05 then return end
+    local p = Instance.new("Part")
+    p.Anchored = true
+    p.CanCollide = false
+    p.CanTouch = false
+    p.CanQuery = false
+    p.CastShadow = false
+    p.Material = Enum.Material.Neon
+    p.Color = col
+    p.Transparency = trans or 0.15
+    p.Size = Vector3.new(thick or 0.12, thick or 0.12, mag)
+    p.CFrame = CFrame.lookAt((a + b) * 0.5, b)
+    p.Parent = VisFolder
+    Debris:AddItem(p, 0.08)
+end
+
+local RAD_SEGMENTS = 32
+local radLUT = {}
+for m = 0, RAD_SEGMENTS do
+    radLUT[m] = Vector2.new(math.cos(m / RAD_SEGMENTS * 2 * math.pi), math.sin(m / RAD_SEGMENTS * 2 * math.pi))
+end
+
+local function evalCircle(killer)
     local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     local kr = killer and killer:FindFirstChild("HumanoidRootPart")
-    if not my or not kr then return false end
-    local dist = (kr.Position - my.Position).Magnitude
-    if dist > Facing.circleRange then return false end
-    -- Nerg: killer facing us within vision angle, or close vision range
-    if IsFacingTarget(kr, my, Facing.visionAngle) then return true end
-    if dist <= Facing.visionRange then return true end
-    return false
+    if not my or not kr then return false, false, 0 end
+    local kpos = kr.Position
+    local mpos = my.Position
+    local flat = Vector3.new(kpos.X - mpos.X, 0, kpos.Z - mpos.Z)
+    local flatDist = flat.Magnitude
+    local dy = math.abs(kpos.Y - mpos.Y)
+    local circleRadius = math.max(RangeGate.circleRange, RangeGate.visionRange + 1)
+    local coneRadius = RangeGate.visionRange
+    local inCircle = (flatDist <= circleRadius) and (dy <= 15)
+    local lookFlat = Vector3.new(kr.CFrame.LookVector.X, 0, kr.CFrame.LookVector.Z)
+    if lookFlat.Magnitude < 0.01 then lookFlat = Vector3.new(0, 0, -1) else lookFlat = lookFlat.Unit end
+    local toMe = Vector3.new(mpos.X - kpos.X, 0, mpos.Z - kpos.Z)
+    local frontDot = 0
+    if toMe.Magnitude > 0.01 then frontDot = lookFlat:Dot(toMe.Unit) end
+    local cosHalf = math.cos(math.rad(math.clamp(RangeGate.visionAngle, 15, 180) * 0.5))
+    local inCone = (flatDist <= coneRadius) and (frontDot >= cosHalf)
+    return inCircle, inCone, flatDist, lookFlat, kpos, circleRadius, coneRadius
 end
+
+local function drawCircleVisual(killer)
+    if not RangeGate.showVisual or RangeGate.mode ~= "Circle" then return end
+    local inCircle, inCone, _, lookFlat, kpos, circleRadius, coneRadius = evalCircle(killer)
+    if not kpos then return end
+    local cy = Vector3.new(kpos.X, kpos.Y - 2.5, kpos.Z)
+    local rColor = inCircle and Color3.fromRGB(255, 80, 80) or Color3.fromRGB(160, 80, 220)
+    local rTrans = inCircle and 0.08 or 0.25
+    for m = 0, RAD_SEGMENTS - 1 do
+        local a = radLUT[m]
+        local b = radLUT[m + 1]
+        placeLine(
+            cy + Vector3.new(a.X, 0, a.Y) * circleRadius,
+            cy + Vector3.new(b.X, 0, b.Y) * circleRadius,
+            rColor, rTrans, 0.12
+        )
+    end
+    -- cone wings
+    local half = math.rad(math.clamp(RangeGate.visionAngle, 15, 180) * 0.5)
+    local function rotY(v, a)
+        local c, s = math.cos(a), math.sin(a)
+        return Vector3.new(v.X * c - v.Z * s, 0, v.X * s + v.Z * c)
+    end
+    if lookFlat then
+        local cColor = inCone and Color3.fromRGB(80, 255, 120) or Color3.fromRGB(160, 80, 220)
+        local wingL = rotY(lookFlat, half) * coneRadius
+        local wingR = rotY(lookFlat, -half) * coneRadius
+        placeLine(cy, cy + wingL, cColor, 0.1, 0.12)
+        placeLine(cy, cy + wingR, cColor, 0.1, 0.12)
+        placeLine(cy + wingL, cy + wingR, cColor, 0.2, 0.1)
+    end
+end
+
+local function createHitboxPart(killer)
+    local root = killer and killer:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    local Part = Instance.new("Part")
+    Part.Name = "Perfect_Hitbox"
+    Part.Anchored = true
+    Part.CanCollide = false
+    Part.CanTouch = false
+    Part.CanQuery = true
+    Part.CastShadow = false
+    Part.Material = Enum.Material.ForceField
+    Part.Color = RangeGate.color
+    Part.Transparency = RangeGate.showVisual and RangeGate.transparency or 1
+    Part.Size = Vector3.new(RangeGate.width, RangeGate.height, RangeGate.length)
+    Part.CFrame = root.CFrame * CFrame.new(0, 0, RangeGate.offset)
+    Part.Parent = VisFolder
+    if RangeGate.showVisual then
+        local sb = Instance.new("SelectionBox")
+        sb.Adornee = Part
+        sb.Color3 = RangeGate.color
+        sb.LineThickness = 0.03
+        sb.Transparency = 0.1
+        sb.Parent = Part
+    end
+    return Part, root
+end
+
+-- Returns true if player is inside gate for this killer
+local function PassesRangeGate(killer)
+    local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not my or not killer then return false end
+    if RangeGate.mode == "Circle" then
+        local inCircle, inCone = evalCircle(killer)
+        drawCircleVisual(killer)
+        -- Nerg-like: in circle AND (in cone OR very close vision)
+        if inCircle and inCone then return true end
+        local kr = killer:FindFirstChild("HumanoidRootPart")
+        if kr and (kr.Position - my.Position).Magnitude <= RangeGate.visionRange then
+            return inCircle
+        end
+        return false
+    end
+    -- Hitbox mode: spatial overlap (checked by caller with live part)
+    return true -- actual overlap done in runHitboxCheck
+end
+
+local function runHitboxCheck(killer, onHit)
+    local myChar = LP.Character
+    if not myChar or not killer then return end
+    local root = killer:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local op = OverlapParams.new()
+    op.FilterType = Enum.RaycastFilterType.Exclude
+    op.FilterDescendantsInstances = { killer }
+    task.spawn(function()
+        local elapsed = 0
+        local dur = math.max(0.1, RangeGate.duration)
+        while killer.Parent and root.Parent and elapsed < dur and not _ShuttingDown do
+            if IsPlayerKiller() then return end
+            local Part = Instance.new("Part")
+            Part.Name = "Perfect_Hitbox"
+            Part.Anchored = true
+            Part.CanCollide = false
+            Part.CanTouch = false
+            Part.CanQuery = true
+            Part.CastShadow = false
+            Part.Material = Enum.Material.ForceField
+            Part.Color = RangeGate.color
+            Part.Transparency = RangeGate.showVisual and RangeGate.transparency or 1
+            Part.Size = Vector3.new(RangeGate.width, RangeGate.height, RangeGate.length)
+            Part.CFrame = root.CFrame * CFrame.new(0, 0, RangeGate.offset)
+            Part.Parent = VisFolder
+            if RangeGate.showVisual then
+                local sb = Instance.new("SelectionBox")
+                sb.Adornee = Part
+                sb.Color3 = RangeGate.color
+                sb.LineThickness = 0.03
+                sb.Transparency = 0.15
+                sb.Parent = Part
+            end
+            Debris:AddItem(Part, 0.06)
+            for _, v in ipairs(Workspace:GetPartsInPart(Part, op)) do
+                local hum = v.Parent and v.Parent:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 and Players:GetPlayerFromCharacter(hum.Parent) == LP then
+                    if onHit then onHit() end
+                    return
+                end
+            end
+            elapsed = elapsed + RunService.Heartbeat:Wait()
+        end
+    end)
+end
+
 
 safe("Main", function()
     local left = Tabs.Main:AddLeftGroupbox("Player", "user")
@@ -895,27 +1062,15 @@ print("[Perfect Hub] Aim/Silent OK")
 -- AUTO PUNCH — Guesting FirePunch
 --═══════════════════════════════════════════════════════════════════
 safe("Auto Block", function()
-    _G.HitboxWidth = 5
-    _G.HitboxHeight = 6
-    _G.HitboxLength = 8
-    _G.HitboxOffset = -1
-    _G.HitboxColor = Color3.fromRGB(40, 200, 90)
-    _G.ShowHitboxVisual = true
-    _G.HitboxTransparency = 0.5
-    _G.HitboxDuration = 0.5
-    _G.BlockDelay = 0
     _G.AutoBlockEnabled = false
-    _G.ShowOutline = true
-    _G.OutlineThickness = 0.01
+    _G.BlockDelay = 0
 
-    -- Exclusive method: "SoundAnim" | "A1"
-    -- A1 shape: "Hitbox" | "Circle"
+    -- Exclusive detect method: "SoundAnim" | "A1"
+    -- BOTH methods still go through RangeGate (Circle or Hitbox)
     local AB = {
-        method = "SoundAnim", -- or "A1"
-        a1Shape = "Hitbox",   -- or "Circle"
+        method = "SoundAnim",
         blockCooldown = 0.35,
         lastBlock = 0,
-        circleRadius = 10,
     }
 
     _G.BlockAbilityNames = {
@@ -997,9 +1152,8 @@ safe("Auto Block", function()
         return (tick() - AB.lastBlock) >= AB.blockCooldown
     end
 
-    local function doBlockAndPunch(killer)
+    local function fireBlockSuccess(killer)
         if not canBlockNow() then return end
-        if not PassesFacing(killer) then return end
         AB.lastBlock = tick()
         OnSuccessfulBlock(killer)
         if AutoPunch.enabled and AutoPunch.afterBlock then
@@ -1011,70 +1165,51 @@ safe("Auto Block", function()
         end
     end
 
-    local function createA1Box(killerChar, onHit)
-        if IsPlayerKiller() or not killerChar or killerChar == LP.Character then return end
-        local root = killerChar:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-        local op = OverlapParams.new()
-        op.FilterType = Enum.RaycastFilterType.Exclude
-        op.FilterDescendantsInstances = { killerChar }
-        task.spawn(function()
-            local elapsed = 0
-            while killerChar.Parent and root.Parent and elapsed < _G.HitboxDuration do
-                if IsPlayerKiller() then return end
-                local Part = Instance.new("Part")
-                Part.Name = "Perfect_BlockBox"
-                Part.Transparency = _G.ShowHitboxVisual and _G.HitboxTransparency or 1
-                Part.CanCollide = false; Part.CanTouch = false; Part.CanQuery = false
-                Part.CastShadow = false; Part.Anchored = true
-                Part.Color = _G.HitboxColor; Part.Material = Enum.Material.ForceField
-                if AB.a1Shape == "Circle" then
-                    local r = AB.circleRadius
-                    Part.Shape = Enum.PartType.Cylinder
-                    Part.Size = Vector3.new(2, r * 2, r * 2) -- cylinder along X; rotate
-                    Part.CFrame = root.CFrame * CFrame.Angles(0, 0, math.rad(90)) * CFrame.new(0, 0, 0)
-                else
-                    Part.Size = Vector3.new(_G.HitboxWidth, _G.HitboxHeight, _G.HitboxLength)
-                    Part.CFrame = root.CFrame * CFrame.new(0, 0, _G.HitboxOffset)
-                end
-                Part.Parent = Workspace
-                if _G.ShowOutline and _G.ShowHitboxVisual then
-                    local sb = Instance.new("SelectionBox")
-                    sb.Adornee = Part; sb.Color3 = _G.HitboxColor
-                    sb.LineThickness = _G.OutlineThickness; sb.Transparency = 0.1
-                    sb.Visible = true; sb.Parent = Part
-                end
-                Debris:AddItem(Part, 0.05)
-                for _, v in ipairs(Workspace:GetPartsInPart(Part, op)) do
-                    local hum = v.Parent and v.Parent:FindFirstChildOfClass("Humanoid")
-                    if hum and hum.Health > 0 and Players:GetPlayerFromCharacter(hum.Parent) == LP then
-                        if _G.BlockDelay > 0 then task.wait(_G.BlockDelay) end
-                        if onHit then onHit() end
-                        return
-                    end
-                end
-                elapsed = elapsed + RunService.Heartbeat:Wait()
-            end
-        end)
-    end
-
+    -- Core: both SoundAnim and A1 funnel into RangeGate
     local lastTrigger = 0
     local function triggerFromKiller(killer)
         if not _G.AutoBlockEnabled or IsPlayerKiller() then return end
         if not killer or killer == LP.Character or not killer.Parent then return end
-        if not PassesFacing(killer) then return end
         local now = tick()
         if now - lastTrigger < 0.03 then return end
         lastTrigger = now
 
-        if AB.method == "A1" then
-            createA1Box(killer, function() doBlockAndPunch(killer) end)
+        local function attempt()
+            if _G.BlockDelay and _G.BlockDelay > 0 then task.wait(_G.BlockDelay) end
+            if not _G.AutoBlockEnabled or IsPlayerKiller() then return end
+            fireBlockSuccess(killer)
+        end
+
+        if RangeGate.mode == "Hitbox" then
+            -- live spatial hitbox (shows while checking)
+            runHitboxCheck(killer, attempt)
         else
-            -- Sound+Anim path: already validated by detector; fire after delay
-            if _G.BlockDelay > 0 then task.wait(_G.BlockDelay) end
-            doBlockAndPunch(killer)
+            -- Circle / cone gate + visual
+            if PassesRangeGate(killer) then
+                attempt()
+            else
+                -- still draw visual so user sees why it failed
+                drawCircleVisual(killer)
+            end
         end
     end
+
+    -- Continuous visual when enabled (circle mode)
+    task.spawn(function()
+        while not _ShuttingDown do
+            task.wait(0.05)
+            if _G.AutoBlockEnabled and RangeGate.showVisual and RangeGate.mode == "Circle" and not IsPlayerKiller() then
+                local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+                if kf then
+                    for _, k in ipairs(kf:GetChildren()) do
+                        if k:IsA("Model") and k ~= LP.Character then
+                            drawCircleVisual(k)
+                        end
+                    end
+                end
+            end
+        end
+    end)
 
     -- Ability attribute poll
     local AB_poll = {
@@ -1158,7 +1293,6 @@ safe("Auto Block", function()
         local animator = hum and hum:FindFirstChildOfClass("Animator")
         if animator then
             animator.AnimationPlayed:Connect(function(track)
-                -- Sound+Anim method only uses anim sensor
                 if not _G.AutoBlockEnabled or AB.method ~= "SoundAnim" or IsPlayerKiller() then return end
                 local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
                 if id and BLOCK_ANIM_IDS[id] then triggerFromKiller(killer) end
@@ -1175,6 +1309,9 @@ safe("Auto Block", function()
         for _, d in ipairs(killer:GetDescendants()) do hookSound(d) end
         killer.DescendantAdded:Connect(function(d) hookSound(d) end)
     end
+
+    -- A1 method: poll nearest killer and run hitbox/circle continuously while attack attrs tick
+    -- (uses same triggerFromKiller path)
 
     task.spawn(function()
         while not _ShuttingDown do
@@ -1213,26 +1350,17 @@ safe("Auto Block", function()
                 return
             end
             _G.AutoBlockEnabled = v
-            if v then EnableAutoBlock() end
+            if v then EnableAutoBlock()
+            else clearVis() end
         end,
     })
     left:AddDropdown("AB_Method", {
-        Text = "Detection Method",
+        Text = "Detect Method",
         Values = { "Sound + Anim", "A1 Method" },
         Default = 1,
         Callback = function(v)
             if v == "A1 Method" then AB.method = "A1" else AB.method = "SoundAnim" end
         end,
-    })
-    left:AddDropdown("AB_A1Shape", {
-        Text = "A1 Shape (A1 only)",
-        Values = { "Hitbox", "Circle" },
-        Default = 1,
-        Callback = function(v) AB.a1Shape = v end,
-    })
-    left:AddSlider("AB_CircleR", {
-        Text = "Circle Radius", Default = 10, Min = 3, Max = 25, Rounding = 1,
-        Callback = function(v) AB.circleRadius = v end,
     })
     left:AddSlider("AB_Cooldown", {
         Text = "Block Cooldown", Default = 0.35, Min = 0, Max = 1.5, Rounding = 2,
@@ -1242,7 +1370,10 @@ safe("Auto Block", function()
         Text = "Block Delay", Default = 0, Min = 0, Max = 1, Rounding = 2,
         Callback = function(v) _G.BlockDelay = v end,
     })
-    left:AddLabel({ Text = "Pick ONE method: Sound+Anim OR A1. Facing gates live in Facing Check tab.", DoesWrap = true })
+    left:AddLabel({
+        Text = "Both methods use Range Check tab (Circle or Hitbox) before firing Block.",
+        DoesWrap = true,
+    })
 
     local punch = Tabs.Block:AddLeftGroupbox("Auto Punch", "swords")
     punch:AddToggle("AutoPunch_T", {
@@ -1264,74 +1395,83 @@ safe("Auto Block", function()
         Callback = function(v) AutoPunch.delay = v end,
     })
     punch:AddButton({ Text = "Force Punch", Func = function() FirePunch() end })
-
-    local right = Tabs.Block:AddRightGroupbox("A1 Hitbox Settings", "sliders")
-    right:AddToggle("ShowBox_T", {
-        Text = "Show Box", Default = true,
-        Callback = function(v) _G.ShowHitboxVisual = v end,
-    })
-    right:AddSlider("HitboxTransparency", {
-        Text = "Transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 2,
-        Callback = function(v) _G.HitboxTransparency = v end,
-    })
-    right:AddLabel("Hitbox Color"):AddColorPicker("HitboxColor", {
-        Default = _G.HitboxColor, Title = "Hitbox Color",
-        Callback = function(c) _G.HitboxColor = c end,
-    })
-    right:AddSlider("HitboxWidth", {
-        Text = "Width (X)", Default = 5, Min = 1, Max = 30, Rounding = 0,
-        Callback = function(v) _G.HitboxWidth = v end,
-    })
-    right:AddSlider("HitboxHeight", {
-        Text = "Height (Y)", Default = 6, Min = 1, Max = 30, Rounding = 0,
-        Callback = function(v) _G.HitboxHeight = v end,
-    })
-    right:AddSlider("HitboxLength", {
-        Text = "Length (Z)", Default = 8, Min = 1, Max = 30, Rounding = 0,
-        Callback = function(v) _G.HitboxLength = v end,
-    })
-    right:AddSlider("HitboxOffset", {
-        Text = "Offset (Z)", Default = -1, Min = -10, Max = 0, Rounding = 0,
-        Callback = function(v) _G.HitboxOffset = v end,
-    })
-    right:AddSlider("HitboxDuration", {
-        Text = "Duration", Default = 0.5, Min = 0.1, Max = 5, Rounding = 2,
-        Callback = function(v) _G.HitboxDuration = v end,
-    })
 end)
 
 --═══════════════════════════════════════════════════════════════════
--- FACING CHECK TAB (Nerg-style)
+-- RANGE CHECK TAB (Circle + Hitbox — Nerg-style gate + visual)
 --═══════════════════════════════════════════════════════════════════
-safe("Facing Check", function()
-    local left = Tabs.Facing:AddLeftGroupbox("Facing Gates", "scan-eye")
-    left:AddToggle("Facing_Enable", {
-        Text = "Enable Facing Check", Default = false,
-        Callback = function(v) Facing.enabled = v end,
+safe("Range Check", function()
+    local left = Tabs.Range:AddLeftGroupbox("Range Mode", "scan-eye")
+    left:AddDropdown("Range_Mode", {
+        Text = "Check Mode",
+        Values = { "Circle", "Hitbox" },
+        Default = 1,
+        Callback = function(v)
+            RangeGate.mode = v
+            clearVis()
+        end,
     })
-    left:AddSlider("Facing_Circle", {
-        Text = "Circle Range", Default = 18, Min = 5, Max = 40, Rounding = 1,
-        Callback = function(v) Facing.circleRange = v end,
-    })
-    left:AddSlider("Facing_VisionR", {
-        Text = "Vision Range", Default = 13.5, Min = 3, Max = 30, Rounding = 1,
-        Callback = function(v) Facing.visionRange = v end,
-    })
-    left:AddSlider("Facing_Angle", {
-        Text = "Vision Angle", Default = 85, Min = 20, Max = 180, Rounding = 0,
-        Callback = function(v) Facing.visionAngle = v end,
+    left:AddToggle("Range_Show", {
+        Text = "Show Visual", Default = true,
+        Callback = function(v) RangeGate.showVisual = v; if not v then clearVis() end end,
     })
     left:AddLabel({
-        Text = "When on: only block if killer is within Circle Range AND (facing you within Vision Angle OR within Vision Range).",
+        Text = "Circle = Nerg ring + vision cone. Hitbox = spatial box on killer. Both auto-block systems use this.",
         DoesWrap = true,
+    })
+
+    local circ = Tabs.Range:AddLeftGroupbox("Circle Settings", "circle")
+    circ:AddSlider("Range_CircleR", {
+        Text = "Circle Range", Default = 18, Min = 5, Max = 40, Rounding = 1,
+        Callback = function(v) RangeGate.circleRange = v end,
+    })
+    circ:AddSlider("Range_VisionR", {
+        Text = "Vision Range", Default = 13.5, Min = 3, Max = 30, Rounding = 1,
+        Callback = function(v) RangeGate.visionRange = v end,
+    })
+    circ:AddSlider("Range_Angle", {
+        Text = "Vision Angle", Default = 85, Min = 15, Max = 180, Rounding = 0,
+        Callback = function(v) RangeGate.visionAngle = v end,
+    })
+
+    local box = Tabs.Range:AddRightGroupbox("Hitbox Settings", "box")
+    box:AddSlider("Range_W", {
+        Text = "Width (X)", Default = 5, Min = 1, Max = 30, Rounding = 0,
+        Callback = function(v) RangeGate.width = v end,
+    })
+    box:AddSlider("Range_H", {
+        Text = "Height (Y)", Default = 6, Min = 1, Max = 30, Rounding = 0,
+        Callback = function(v) RangeGate.height = v end,
+    })
+    box:AddSlider("Range_L", {
+        Text = "Length (Z)", Default = 8, Min = 1, Max = 30, Rounding = 0,
+        Callback = function(v) RangeGate.length = v end,
+    })
+    box:AddSlider("Range_Off", {
+        Text = "Offset (Z)", Default = -1, Min = -10, Max = 5, Rounding = 0,
+        Callback = function(v) RangeGate.offset = v end,
+    })
+    box:AddSlider("Range_Dur", {
+        Text = "Duration", Default = 0.5, Min = 0.1, Max = 3, Rounding = 2,
+        Callback = function(v) RangeGate.duration = v end,
+    })
+    box:AddSlider("Range_Trans", {
+        Text = "Transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 2,
+        Callback = function(v) RangeGate.transparency = v end,
+    })
+    box:AddLabel("Hitbox Color"):AddColorPicker("Range_Col", {
+        Default = RangeGate.color, Title = "Hitbox Color",
+        Callback = function(c) RangeGate.color = c end,
+    })
+    box:AddButton({
+        Text = "Preview Hitbox on nearest",
+        Func = function()
+            local k = GetNearestKillerModel(80)
+            if k then runHitboxCheck(k, function() end) end
+        end,
     })
 end)
 
-print("[Perfect Hub] Block/Facing OK")
-
---═══════════════════════════════════════════════════════════════════
--- HDT (Nerg BodyVelocity pull style)
---═══════════════════════════════════════════════════════════════════
 safe("HDT", function()
     local hdtConn, hdtBv, hdtHum = nil, nil, nil
     local function stopHDT()
@@ -1352,14 +1492,13 @@ safe("HDT", function()
             local c = LP.Character
             local hrp = c and c:FindFirstChild("HumanoidRootPart")
             local hum = c and c:FindFirstChildOfClass("Humanoid")
-            local tr = (killerModel and killerModel:FindFirstChild("HumanoidRootPart"))
-                or (GetNearestKillerModel(math.huge) and GetNearestKillerModel(math.huge):FindFirstChild("HumanoidRootPart"))
+            local k = killerModel or GetNearestKillerModel(math.huge)
+            local tr = k and k:FindFirstChild("HumanoidRootPart")
             if not (hrp and hum and tr) or hum.Health <= 0 then return end
             stopHDT()
             HDT.busy = true
             hdtHum = hum
             hum.AutoRotate = false
-            -- face killer
             local flat = Vector3.new(tr.Position.X, hrp.Position.Y, tr.Position.Z)
             hrp.CFrame = CFrame.lookAt(hrp.Position, flat)
             local bv = Instance.new("BodyVelocity")
@@ -1369,32 +1508,80 @@ safe("HDT", function()
             bv.Parent = hrp
             Debris:AddItem(bv, (HDT.duration or 0.8) + 0.4)
             hdtBv = bv
-            local start = os.clock()
+            local startT = os.clock()
             local dur = math.max(0.05, HDT.duration or 0.8)
             local spd = HDT.speed or 12
             hdtConn = RunService.Heartbeat:Connect(function()
-                if not HDT.enabled or IsPlayerKiller() or os.clock() - start >= dur then
+                if not HDT.enabled or IsPlayerKiller() or os.clock() - startT >= dur then
                     stopHDT()
                     return
                 end
-                local k = GetNearestKillerModel(math.huge)
-                local kr = k and k:FindFirstChild("HumanoidRootPart")
+                local kk = GetNearestKillerModel(math.huge)
+                local kr = kk and kk:FindFirstChild("HumanoidRootPart")
                 if not (hrp.Parent and kr and bv.Parent) then
                     stopHDT()
                     return
                 end
-                local to = (kr.Position - hrp.Position)
-                to = Vector3.new(to.X, 0, to.Z)
+                local to = Vector3.new(kr.Position.X - hrp.Position.X, 0, kr.Position.Z - hrp.Position.Z)
                 if to.Magnitude > 0.5 then
                     bv.Velocity = to.Unit * spd
-                    local lookPos = Vector3.new(kr.Position.X, hrp.Position.Y, kr.Position.Z)
-                    hrp.CFrame = CFrame.lookAt(hrp.Position, lookPos)
+                    hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(kr.Position.X, hrp.Position.Y, kr.Position.Z))
                 else
                     bv.Velocity = Vector3.zero
                 end
             end)
         end)
     end
+
+    -- ONLY when local Block animation plays
+    local BLOCK_ANIM_NAME_HINTS = { "block", "Block", "parry", "Parry" }
+    local LOCAL_BLOCK_IDS = {} -- filled from Guest configs
+    pcall(function()
+        local assets = ReplicatedStorage:FindFirstChild("Assets")
+        local surv = assets and assets:FindFirstChild("Survivors")
+        local guest = surv and surv:FindFirstChild("Guest1337")
+        local cfg = guest and guest:FindFirstChild("Config")
+        if cfg then
+            local ok, mod = pcall(require, cfg)
+            if ok and type(mod) == "table" and type(mod.Animations) == "table" then
+                for k, v in pairs(mod.Animations) do
+                    local kl = tostring(k):lower()
+                    if kl:find("block") or kl:find("parry") then
+                        for _, id in ipairs(extractAnimIds(v)) do LOCAL_BLOCK_IDS[id] = true end
+                    end
+                end
+            end
+        end
+    end)
+
+    local function onLocalAnim(track)
+        if not HDT.enabled or IsPlayerKiller() then return end
+        local anim = track.Animation
+        if not anim then return end
+        local id = tostring(anim.AnimationId):match("%d+")
+        local name = tostring(anim.Name or ""):lower()
+        local isBlock = (id and LOCAL_BLOCK_IDS[id]) or false
+        if not isBlock then
+            for _, h in ipairs(BLOCK_ANIM_NAME_HINTS) do
+                if name:find(h:lower(), 1, true) then isBlock = true; break end
+            end
+        end
+        if isBlock then
+            local k = GetNearestKillerModel(math.huge)
+            HDT_Trigger(k)
+        end
+    end
+
+    local function hookLocalChar(char)
+        if not char then return end
+        local hum = char:WaitForChild("Humanoid", 5)
+        if not hum then return end
+        local animator = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 3)
+        if not animator then return end
+        animator.AnimationPlayed:Connect(onLocalAnim)
+    end
+    if LP.Character then task.spawn(hookLocalChar, LP.Character) end
+    LP.CharacterAdded:Connect(function(c) task.spawn(hookLocalChar, c) end)
 
     local left = Tabs.HDT:AddLeftGroupbox("Hitbox Dragging Tech", "activity")
     left:AddToggle("HDT_Enable", {
@@ -1422,12 +1609,12 @@ safe("HDT", function()
     })
     left:AddButton({
         Text = "Test HDT",
-        Func = function()
-            local k = GetNearestKillerModel(math.huge)
-            HDT_Trigger(k)
-        end,
+        Func = function() HDT_Trigger(GetNearestKillerModel(math.huge)) end,
     })
-    left:AddLabel({ Text = "BodyVelocity pull toward killer when Auto Block succeeds.", DoesWrap = true })
+    left:AddLabel({
+        Text = "Only fires when YOUR Block animation plays (not on detect alone).",
+        DoesWrap = true,
+    })
 end)
 
 safe("Stab", function()
