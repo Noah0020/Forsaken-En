@@ -173,7 +173,7 @@ local NormalBox = {
     length = 7.5,
     offset = -1.4,
     duration = 1.2,
-    transparency = 0.45,
+    transparency = 0.3,
     color = Color3.fromRGB(220, 40, 50),
     showVisual = true,
 }
@@ -186,7 +186,7 @@ local StackBox = {
     maxLife = 0.50,      -- hard lifetime
     speed = 90,          -- how fast chain extends toward player
     showVisual = true,
-    fillT = 0.4,
+    fillT = 0.25,
     color = Color3.fromRGB(255, 90, 100),
     validColor = Color3.fromRGB(40, 255, 110),
 }
@@ -215,16 +215,25 @@ local function normalSpatialBox(killer, onHit)
             part.CastShadow = false
             part.Material = Enum.Material.ForceField
             part.Color = NormalBox.color
-            part.Transparency = NormalBox.showVisual and NormalBox.transparency or 1
+            local showN = NormalBox.showVisual and FacingMode == "Normal"
+            part.Transparency = showN and NormalBox.transparency or 1
             part.Size = Vector3.new(NormalBox.width, NormalBox.height, NormalBox.length)
             part.CFrame = root.CFrame * CFrame.new(0, 0, NormalBox.offset)
             part.Parent = Workspace
-            if NormalBox.showVisual then
+            if showN then
                 local sb = Instance.new("SelectionBox")
                 sb.Adornee = part
                 sb.Color3 = NormalBox.color
-                sb.LineThickness = 0.03
+                sb.LineThickness = 0.05
                 sb.Parent = part
+                local hl = Instance.new("Highlight")
+                hl.Adornee = part
+                hl.FillColor = NormalBox.color
+                hl.OutlineColor = NormalBox.color
+                hl.FillTransparency = 0.5
+                hl.OutlineTransparency = 0.15
+                hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                hl.Parent = part
             end
             Debris:AddItem(part, 0.05)
             for _, v in ipairs(Workspace:GetPartsInPart(part, op)) do
@@ -268,15 +277,37 @@ local function clearStack()
     Stack.parts = {}
 end
 
+local function applyStackVisual(p, color)
+    local show = StackBox.showVisual and FacingMode == "Advanced"
+    p.Color = color
+    p.Material = Enum.Material.Neon
+    p.Transparency = show and StackBox.fillT or 1
+    local sb = p:FindFirstChildOfClass("SelectionBox")
+    if sb then
+        sb.Color3 = color
+        sb.Visible = show
+        sb.LineThickness = 0.08
+        sb.Transparency = show and 0 or 1
+    end
+    local hl = p:FindFirstChildOfClass("Highlight")
+    if hl then
+        hl.Enabled = show
+        hl.FillColor = color
+        hl.OutlineColor = color
+        hl.FillTransparency = show and 0.45 or 1
+        hl.OutlineTransparency = show and 0.1 or 1
+    end
+end
+
 local function makeStackPart()
     local p = Instance.new("Part")
     p.Name = "StackBox"
     p.Anchored = true
     p.CanCollide = false
     p.CanTouch = false
-    p.CanQuery = false
+    p.CanQuery = true
     p.CastShadow = false
-    p.Material = Enum.Material.ForceField
+    p.Material = Enum.Material.Neon
     p.Color = StackBox.color
     p.Transparency = StackBox.showVisual and StackBox.fillT or 1
     p.Size = StackBox.size
@@ -284,13 +315,24 @@ local function makeStackPart()
     local sb = Instance.new("SelectionBox")
     sb.Adornee = p
     sb.Color3 = StackBox.color
-    sb.LineThickness = 0.05
+    sb.LineThickness = 0.08
+    sb.Transparency = 0
     sb.Parent = p
+    local hl = Instance.new("Highlight")
+    hl.Adornee = p
+    hl.FillColor = StackBox.color
+    hl.OutlineColor = StackBox.color
+    hl.FillTransparency = 0.45
+    hl.OutlineTransparency = 0.1
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = p
+    applyStackVisual(p, StackBox.color)
     return p
 end
 
-local function startStack(killer)
-    if FacingMode ~= "Advanced" or not AB.enabled then return end
+local function startStack(killer, force)
+    if FacingMode ~= "Advanced" and not force then return end
+    if not force and not AB.enabled then return end
     if IsPlayerKiller() or not killer then return end
     local kr = killer:FindFirstChild("HumanoidRootPart")
     local pr = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
@@ -376,9 +418,7 @@ RunService.Heartbeat:Connect(function(dt)
             pos = pos + Vector3.new(0, (i - 1) * 0.05, 0)
             p.Size = StackBox.size
             p.CFrame = CFrame.lookAt(pos, pos + blend)
-            p.Transparency = StackBox.showVisual and StackBox.fillT or 1
-            local sb = p:FindFirstChildOfClass("SelectionBox")
-            if sb then sb.Visible = StackBox.showVisual end
+            applyStackVisual(p, StackBox.color)
 
             local op = OverlapParams.new()
             op.FilterType = Enum.RaycastFilterType.Exclude
@@ -405,9 +445,7 @@ RunService.Heartbeat:Connect(function(dt)
     if playerTouched then
         Stack.reached = true
         for _, p in ipairs(Stack.parts) do
-            p.Color = StackBox.validColor
-            local sb = p:FindFirstChildOfClass("SelectionBox")
-            if sb then sb.Color3 = StackBox.validColor end
+            applyStackVisual(p, StackBox.validColor)
         end
         if AB.enabled then
             local now = tick()
@@ -565,12 +603,8 @@ do
         Default = true,
         Callback = function(v)
             StackBox.showVisual = v
-            if not v then
-                for _, p in ipairs(Stack.parts) do
-                    p.Transparency = 1
-                    local sb = p:FindFirstChildOfClass("SelectionBox")
-                    if sb then sb.Visible = false end
-                end
+            for _, p in ipairs(Stack.parts) do
+                applyStackVisual(p, p.Color)
             end
         end,
     })
@@ -601,7 +635,8 @@ do
             if k then
                 FacingMode = "Advanced"
                 pcall(function() Options.FaceMode:SetValue("Advanced") end)
-                startStack(k)
+                StackBox.showVisual = true
+                startStack(k, true)
             end
         end,
     })
@@ -609,28 +644,31 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- AIMBOT — Guesting ActiveLock (animation-based)
+-- AIMBOT — Guesting ActiveLock via AnimationPlayed (reliable)
 --═══════════════════════════════════════════════════════════════════
 do
-    getgenv().AimbotValues = getgenv().AimbotValues or {
-        Guest1337 = { Enabled = false, Distance = 50, LockDuration = 1.3, Prediction = 0 },
-        Shedlekey = { Enabled = false, Distance = 29, LockDuration = 1.2, Prediction = 0 },
-        TwoTime = { Enabled = false, Distance = 29, LockDuration = 0.9, Prediction = 0 },
+    getgenv().AimbotValues = {
+        Guest1337 = { Enabled = true, Distance = 50, LockDuration = 1.3, Prediction = 0 },
+        Shedlekey = { Enabled = true, Distance = 29, LockDuration = 1.2, Prediction = 0 },
+        TwoTime = { Enabled = true, Distance = 29, LockDuration = 0.9, Prediction = 0 },
         Chance = { Enabled = false, Distance = 80, LockDuration = 1.5, Prediction = 3 },
         JaneDoe = { Enabled = false, Distance = 50, LockDuration = 1.1, Prediction = 0 },
     }
+
+    -- known + loaded ids
     getgenv().AnimationData = {
         Guest1337 = {},
         Shedlekey = {},
         TwoTime = {
             ["100725497418533"] = true,
             ["89448354637442"] = true,
+            ["106086955212611"] = true,
+            ["107640065977686"] = true,
         },
         Chance = {},
         JaneDoe = {},
     }
 
-    -- load animation ids from survivor configs
     pcall(function()
         local assets = ReplicatedStorage:FindFirstChild("Assets")
         if not assets then return end
@@ -656,6 +694,8 @@ do
                             add("Shedlekey", a.Slash)
                             add("JaneDoe", a.Axe)
                             add("Chance", a.AimGun)
+                            add("Chance", a.Shoot)
+                            add("Chance", a.Gun)
                         end
                     end
                 end
@@ -668,65 +708,100 @@ do
     getgenv().GlobalAimbotToggle = false
     getgenv().GlobalAimlockMode = "Character Lock"
 
-    local function pickTarget(mode, cfg)
-        return GetNearestKiller(cfg.Distance or 50)
+    local function startLock(modeKey, track)
+        if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then return end
+        local cfg = getgenv().AimbotValues[modeKey]
+        if not cfg or not cfg.Enabled then return end
+        if getgenv().ActiveLock.IsActive then return end
+        if track and track == getgenv().LastFinishedTrack then return end
+        local target = GetNearestKiller(cfg.Distance or 50)
+        if not target then return end
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        getgenv().ActiveLock.IsActive = true
+        getgenv().ActiveLock.Target = target
+        getgenv().ActiveLock.StartTime = tick()
+        getgenv().ActiveLock.Mode = modeKey
+        getgenv().ActiveLock.Track = track
+        if hum then hum.AutoRotate = false end
     end
 
-    RunService.RenderStepped:Connect(function()
-        if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then
-            if getgenv().ActiveLock.IsActive then
-                getgenv().ActiveLock.IsActive = false
-                getgenv().ActiveLock.Target = nil
-                local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-                if hum then hum.AutoRotate = true end
+    local function onAnimPlayed(track)
+        if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then return end
+        if not track or not track.Animation then return end
+        local id = tostring(track.Animation.AnimationId):match("%d+")
+        if not id then return end
+        for modeKey, idMap in pairs(getgenv().AnimationData) do
+            local cfg = getgenv().AimbotValues[modeKey]
+            if cfg and cfg.Enabled and idMap[id] then
+                startLock(modeKey, track)
+                return
             end
-            return
         end
-        local character = LP.Character
-        if not character then return end
-        local hrp = character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if not hrp or not humanoid then return end
+    end
 
-        if not getgenv().ActiveLock.IsActive then
-            local animator = humanoid:FindFirstChildOfClass("Animator")
+    local animConns = {}
+    local function hookCharacter(char)
+        for _, c in ipairs(animConns) do pcall(function() c:Disconnect() end) end
+        animConns = {}
+        task.spawn(function()
+            local hum = char:WaitForChild("Humanoid", 8)
+            if not hum then return end
+            local animator = hum:FindFirstChildOfClass("Animator")
+            if not animator then
+                animator = hum:WaitForChild("Animator", 5)
+            end
             if not animator then return end
-            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                if track ~= getgenv().LastFinishedTrack and track.IsPlaying and track.Animation then
-                    local id = tostring(track.Animation.AnimationId):match("%d+")
-                    if id then
-                        for modeKey, idMap in pairs(getgenv().AnimationData) do
-                            local cfg = getgenv().AimbotValues[modeKey]
-                            if cfg and cfg.Enabled and idMap[id] then
-                                local target = pickTarget(modeKey, cfg)
-                                if target then
-                                    getgenv().ActiveLock.IsActive = true
-                                    getgenv().ActiveLock.Target = target
-                                    getgenv().ActiveLock.StartTime = tick()
-                                    getgenv().ActiveLock.Mode = modeKey
-                                    getgenv().ActiveLock.Track = track
-                                    humanoid.AutoRotate = false
-                                end
-                                break
-                            end
-                        end
+            table.insert(animConns, animator.AnimationPlayed:Connect(onAnimPlayed))
+            -- also poll lightly as backup (some skins skip AnimationPlayed)
+            table.insert(animConns, RunService.Heartbeat:Connect(function()
+                if not getgenv().GlobalAimbotToggle or getgenv().ActiveLock.IsActive then return end
+                if IsPlayerKiller() then return end
+                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                    if track.IsPlaying and track.Animation then
+                        onAnimPlayed(track)
                         if getgenv().ActiveLock.IsActive then break end
                     end
                 end
-            end
+            end))
+        end)
+    end
+    if LP.Character then hookCharacter(LP.Character) end
+    LP.CharacterAdded:Connect(hookCharacter)
+
+    RunService.RenderStepped:Connect(function()
+        if not getgenv().ActiveLock.IsActive then return end
+        if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then
+            getgenv().ActiveLock.IsActive = false
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.AutoRotate = true end
             return
         end
-
+        local character = LP.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not hrp or not humanoid then
+            getgenv().ActiveLock.IsActive = false
+            return
+        end
         local mode = getgenv().ActiveLock.Mode
         local cfg = getgenv().AimbotValues[mode]
         if not cfg then
             getgenv().ActiveLock.IsActive = false
+            humanoid.AutoRotate = true
             return
         end
         local elapsed = tick() - getgenv().ActiveLock.StartTime
-        local tHRP = getgenv().ActiveLock.Target and getgenv().ActiveLock.Target:FindFirstChild("HumanoidRootPart")
-        local tHum = getgenv().ActiveLock.Target and getgenv().ActiveLock.Target:FindFirstChildOfClass("Humanoid")
-        if elapsed > (cfg.LockDuration or 1) or not tHRP or (tHum and tHum.Health <= 0) then
+        local target = getgenv().ActiveLock.Target
+        local tHRP = target and target:FindFirstChild("HumanoidRootPart")
+        local tHum = target and target:FindFirstChildOfClass("Humanoid")
+        -- refresh target if lost
+        if not tHRP or (tHum and tHum.Health <= 0) then
+            target = GetNearestKiller(cfg.Distance or 50)
+            getgenv().ActiveLock.Target = target
+            tHRP = target and target:FindFirstChild("HumanoidRootPart")
+            tHum = target and target:FindFirstChildOfClass("Humanoid")
+        end
+        if elapsed > (cfg.LockDuration or 1) or not tHRP then
             getgenv().LastFinishedTrack = getgenv().ActiveLock.Track
             getgenv().ActiveLock.IsActive = false
             getgenv().ActiveLock.Target = nil
@@ -736,20 +811,16 @@ do
         end
         local position = tHRP.Position
         local pred = cfg.Prediction or 0
-        if pred > 0 and tHum and tHum.MoveDirection.Magnitude > 0 then
+        if pred > 0 and tHum and tHum.MoveDirection.Magnitude > 0.05 then
             position = position + tHum.MoveDirection.Unit * pred
         end
         local lookAt = Vector3.new(position.X, hrp.Position.Y, position.Z)
         local cframe = CFrame.lookAt(hrp.Position, lookAt)
-        if (tHRP.Position - hrp.Position).Magnitude < 6 then
-            hrp.CFrame = cframe
-        else
-            hrp.CFrame = hrp.CFrame:Lerp(cframe, 0.65)
-        end
+        hrp.CFrame = hrp.CFrame:Lerp(cframe, 0.85)
         if getgenv().GlobalAimlockMode == "Char + Cam Lock" then
             local cam = Workspace.CurrentCamera
             if cam then
-                cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, position), 0.75)
+                cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, position), 0.8)
             end
         end
     end)
@@ -764,20 +835,27 @@ do
                 return
             end
             getgenv().GlobalAimbotToggle = v
+            if not v then
+                getgenv().ActiveLock.IsActive = false
+                local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+                if hum then hum.AutoRotate = true end
+            end
         end,
     })
     left:AddDropdown("Aim_Pick", {
         Text = "Pick Aimbots",
         Values = { "Guest1337", "Shedlekey", "TwoTime", "Chance", "JaneDoe" },
-        Default = 1,
+        Default = { "Guest1337", "Shedlekey", "TwoTime" },
         Multi = true,
         Callback = function(sel)
             for k, cfg in pairs(getgenv().AimbotValues) do cfg.Enabled = false end
             if type(sel) == "table" then
-                for name, on in pairs(sel) do
-                    local key = (on == true) and name or (type(on) == "string" and on or nil)
-                    if key and getgenv().AimbotValues[key] then
-                        getgenv().AimbotValues[key].Enabled = true
+                -- handle both list and map forms
+                for k, v in pairs(sel) do
+                    if v == true and type(k) == "string" and getgenv().AimbotValues[k] then
+                        getgenv().AimbotValues[k].Enabled = true
+                    elseif type(v) == "string" and getgenv().AimbotValues[v] then
+                        getgenv().AimbotValues[v].Enabled = true
                     end
                 end
             end
@@ -789,6 +867,7 @@ do
         Default = 1,
         Callback = function(v) getgenv().GlobalAimlockMode = v end,
     })
+    left:AddLabel("Locks when your ability animation plays (Guesting style).", true)
 
     local function addSurv(key, title, dd, dp)
         local box = Tabs.Aimbot:AddRightGroupbox(title)
@@ -808,7 +887,6 @@ do
     addSurv("JaneDoe", "Jane Doe", 1.1, 0)
 end
 
---═══════════════════════════════════════════════════════════════════
 -- TWO TIME BACKSTAB
 --═══════════════════════════════════════════════════════════════════
 do
