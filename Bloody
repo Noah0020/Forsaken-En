@@ -29,16 +29,24 @@ if not table.clone then
     end
 end
 
-local obsidianRepo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/3674d51ec8ca046a3b21b2bb17317eee12ecac89/"
-local Library = (function()
+local OBSIDIAN_URLS = {
+    "https://raw.githubusercontent.com/deividcomsono/Obsidian/3674d51ec8ca046a3b21b2bb17317eee12ecac89/",
+    "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/",
+}
+local obsidianRepo = OBSIDIAN_URLS[1]
+local Library = nil
+for _, base in ipairs(OBSIDIAN_URLS) do
     local ok, lib = pcall(function()
-        return loadstring(game:HttpGet(obsidianRepo .. "Library.lua"))()
+        return loadstring(game:HttpGet(base .. "Library.lua"))()
     end)
-    if ok and type(lib) == "table" then return lib end
-    return nil
-end)()
+    if ok and type(lib) == "table" and type(lib.CreateWindow) == "function" then
+        Library = lib
+        obsidianRepo = base
+        break
+    end
+end
 if not Library then
-    warn("[Nos Hub] Obsidian failed — abort")
+    warn("[Nos Hub] Obsidian failed to load — abort")
     return
 end
 
@@ -46,8 +54,8 @@ local ThemeManager, SaveManager
 pcall(function() ThemeManager = loadstring(game:HttpGet(obsidianRepo .. "addons/ThemeManager.lua"))() end)
 pcall(function() SaveManager = loadstring(game:HttpGet(obsidianRepo .. "addons/SaveManager.lua"))() end)
 
-local Options = Library.Options
-local Toggles = Library.Toggles
+local Options = Library.Options or {}
+local Toggles = Library.Toggles or {}
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 Library.ShowCustomCursor = true
@@ -61,20 +69,41 @@ pcall(function()
     end
 end)
 
-local Window = Library:CreateWindow({
-    Title = "Nos Hub",
-    Footer = tostring(LP.Name) .. " | " .. tostring(gameName),
-    Icon = 131786483064769,
-    Size = UDim2.fromOffset(740, 580),
-    NotifySide = "Right",
-    ShowCustomCursor = true,
-    Center = true,
-    AutoShow = true,
-    Resizable = true,
-    ShowMobileButtons = true,
-    MobileButtonsSide = "Left",
-    ToggleKeybind = Enum.KeyCode.RightShift,
-})
+local Window
+do
+    local ok, win = pcall(function()
+        return Library:CreateWindow({
+            Title = "Nos Hub",
+            Footer = tostring(LP.Name) .. " | " .. tostring(gameName),
+            Icon = 131786483064769,
+            Size = UDim2.fromOffset(740, 580),
+            NotifySide = "Right",
+            ShowCustomCursor = true,
+            Center = true,
+            AutoShow = true,
+            Resizable = true,
+            ShowMobileButtons = true,
+            MobileButtonsSide = "Left",
+            ToggleKeybind = Enum.KeyCode.RightShift,
+        })
+    end)
+    if not ok or not win then
+        -- minimal fallback without icon / mobile
+        ok, win = pcall(function()
+            return Library:CreateWindow({
+                Title = "Nos Hub",
+                Footer = tostring(LP.Name),
+                Center = true,
+                AutoShow = true,
+            })
+        end)
+    end
+    if not ok or not win then
+        warn("[Nos Hub] CreateWindow failed: " .. tostring(win))
+        return
+    end
+    Window = win
+end
 
 local Tabs = {
     Main = Window:AddTab("Main", "user"),
@@ -496,7 +525,7 @@ local AdvBox = {
     PredDist = 35,
     ShowSmall = true,
     ShowGiant = false,
-    FillTrans = 0.72,
+    FillTrans = 0.55,
     OutlineThick = 0.06,
     Colors = {
         Out = Color3.fromRGB(255, 55, 55),
@@ -568,7 +597,8 @@ do
     local function syncCount()
         local want = math.clamp(math.floor(AdvBox.BoxCount), 1, 12)
         while #Active < want do
-            table.insert(Active, { Part = makePart("AdvBox_" .. (#Active+1)), Pos = Vector3.zero, Active = false, Age = 0 })
+            local idx = #Active + 1
+            table.insert(Active, { Part = makePart("AdvBox_" .. idx), Pos = Vector3.zero, Active = false, Age = 0, Index = idx })
         end
         while #Active > want do
             local o = table.remove(Active)
@@ -674,6 +704,8 @@ do
         local dest = clampIn(target, bCF, bSize, sSize)
         local anyGreen = false
         syncCount()
+        -- Idle spawn positions in front of killer (used when player is outside giant)
+        local spawnBase = kr.Position + kr.CFrame.LookVector * AdvBox.SpawnForward
         for _, o in ipairs(Active) do
             if o.Active then
                 o.Age = o.Age + dt
@@ -682,24 +714,32 @@ do
                     o.Part.Transparency = 1
                 else
                     if inGiant then
+                        -- Only follow player while they are inside the giant box
                         local step = math.min(AdvBox.PredSpeed * dt, AdvBox.PredDist)
                         local diff = dest - o.Pos
                         if diff.Magnitude > 0.001 then
                             o.Pos = o.Pos + diff.Unit * math.min(diff.Magnitude, step)
                         end
+                        o.Pos = clampIn(o.Pos, bCF, bSize, sSize)
+                    else
+                        -- Outside giant: ignore player, stay in front of killer
+                        local lane = (o.Index - (#Active + 1) / 2) * AdvBox.LaneSpacing
+                        local lanePos = spawnBase + bCF.RightVector * lane
+                        o.Pos = clampIn(lanePos, bCF, bSize, sSize)
                     end
-                    o.Pos = clampIn(o.Pos, bCF, bSize, sSize)
                     local cf = boxCF(o.Pos, bCF)
                     local col
                     if not inGiant then
-                        col = AdvBox.Colors.Out
+                        col = AdvBox.Colors.Out -- red: player outside giant
                     elseif inside(target, cf, sSize) then
-                        col = AdvBox.Colors.Valid
+                        col = AdvBox.Colors.Valid -- green: touching player
                         anyGreen = true
                     else
-                        col = AdvBox.Colors.Invalid
+                        col = AdvBox.Colors.Invalid -- yellow: inside giant, not on player
                     end
+                    -- Always draw small box visuals when active
                     style(o.Part, sSize, cf, col)
+                    o.Part.Transparency = AdvBox.ShowSmall and AdvBox.FillTrans or 1
                 end
             end
         end
@@ -1557,18 +1597,12 @@ safe("Two Time", function()
     })
 end)
 
--- Aimbot compact
 safe("Aimbot", function()
-    getgenv().AnimationData = {
-        Guest1337={}, Shedlekey={},
-        TwoTime={["100725497418533"]=true,["89448354637442"]=true},
-        Chsafe("Aimbot", function()
-    -- Guesting Hub style ActiveLock aim
     getgenv().AimbotValues = getgenv().AimbotValues or {
         Guest1337 = { Enabled = false, Distance = 50, LockDuration = 1.3, Prediction = 0 },
         Shedlekey = { Enabled = false, Distance = 29, LockDuration = 1.2, Prediction = 0 },
         TwoTime = { Enabled = false, Distance = 29, LockDuration = 0.9, Prediction = 0 },
-        Chance = { Enabled = false, LockDuration = 1.5, Prediction = 3, FreezeChar = false },
+        Chance = { Enabled = false, LockDuration = 1.5, Prediction = 3 },
         Pizza = { Enabled = false, Distance = 50, LockDuration = 1.2, Prediction = 0 },
         JaneDoe = { Enabled = false, Distance = 50, LockDuration = 1.1, Prediction = 0 },
     }
@@ -1581,33 +1615,30 @@ safe("Aimbot", function()
         JaneDoe = {},
     }
     pcall(function()
-        local folders = {}
         local assets = ReplicatedStorage:FindFirstChild("Assets")
-        if assets then
-            table.insert(folders, assets:FindFirstChild("Survivors"))
-            local skins = assets:FindFirstChild("Skins")
-            if skins then table.insert(folders, skins:FindFirstChild("Survivors")) end
-        end
+        if not assets then return end
+        local folders = { assets:FindFirstChild("Survivors") }
+        local skins = assets:FindFirstChild("Skins")
+        if skins then table.insert(folders, skins:FindFirstChild("Survivors")) end
         for _, folder in ipairs(folders) do
             if folder then
-                for _, d in ipairs(folder:GetDescendants()) do
-                    if d:IsA("ModuleScript") and d.Name == "Config" then
-                        local ok, result = pcall(require, d)
-                        if ok and type(result) == "table" and type(result.Animations) == "table" then
-                            local a = result.Animations
-                            local function add(key, val)
-                                if not val then return end
-                                local id = tostring(val):match("%d+")
-                                if id and getgenv().AnimationData[key] then
-                                    getgenv().AnimationData[key][id] = true
-                                end
+            for _, d in ipairs(folder:GetDescendants()) do
+                if d:IsA("ModuleScript") and d.Name == "Config" then
+                    local ok, result = pcall(require, d)
+                    if ok and type(result) == "table" and type(result.Animations) == "table" then
+                        local a = result.Animations
+                        local function add(key, val)
+                            if not val then return end
+                            local id = tostring(val):match("%d+")
+                            if id and getgenv().AnimationData[key] then
+                                getgenv().AnimationData[key][id] = true
                             end
-                            add("Guest1337", a.Punch)
-                            add("Guest1337", a.ParryPunch)
-                            add("Shedlekey", a.Slash)
-                            add("JaneDoe", a.Axe)
-                            add("Chance", a.AimGun)
                         end
+                        add("Guest1337", a.Punch)
+                        add("Guest1337", a.ParryPunch)
+                        add("Shedlekey", a.Slash)
+                        add("JaneDoe", a.Axe)
+                        add("Chance", a.AimGun)
                     end
                 end
             end
@@ -1617,9 +1648,8 @@ safe("Aimbot", function()
     getgenv().ActiveLock = { IsActive = false, Target = nil, StartTime = 0, Mode = "", Track = nil }
     getgenv().LastFinishedTrack = nil
     getgenv().GlobalAimbotToggle = false
-    getgenv().SelectedAimbots = getgenv().SelectedAimbots or {}
+    getgenv().SelectedAimbots = {}
     getgenv().GlobalAimlockMode = "Character Lock"
-    getgenv().Camera = Workspace.CurrentCamera
 
     local function pickTarget(mode, cfg)
         if mode == "Pizza" then return GetNearestSurvivorModel(cfg.Distance or 50) end
@@ -1628,7 +1658,6 @@ safe("Aimbot", function()
     end
 
     RunService.RenderStepped:Connect(function()
-        getgenv().Camera = Workspace.CurrentCamera
         if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then
             if getgenv().ActiveLock.IsActive then
                 getgenv().ActiveLock.IsActive = false
@@ -1675,10 +1704,7 @@ safe("Aimbot", function()
 
         local mode = getgenv().ActiveLock.Mode
         local cfg = getgenv().AimbotValues[mode]
-        if not cfg then
-            getgenv().ActiveLock.IsActive = false
-            return
-        end
+        if not cfg then getgenv().ActiveLock.IsActive = false; return end
         local elapsed = tick() - getgenv().ActiveLock.StartTime
         local tHRP = getgenv().ActiveLock.Target and getgenv().ActiveLock.Target:FindFirstChild("HumanoidRootPart")
         local tHum = getgenv().ActiveLock.Target and getgenv().ActiveLock.Target:FindFirstChildOfClass("Humanoid")
@@ -1698,24 +1724,18 @@ safe("Aimbot", function()
         local lookAt = Vector3.new(position.X, humanoidRootPart.Position.Y, position.Z)
         local cframe = CFrame.lookAt(humanoidRootPart.Position, lookAt)
         local function applyChar()
-            if mode == "Chance" then
-                humanoidRootPart.CFrame = cframe
-            elseif (tHRP.Position - humanoidRootPart.Position).Magnitude < 6 then
+            if mode == "Chance" or (tHRP.Position - humanoidRootPart.Position).Magnitude < 6 then
                 humanoidRootPart.CFrame = cframe
             else
                 humanoidRootPart.CFrame = humanoidRootPart.CFrame:Lerp(cframe, 0.65)
             end
         end
-        local aimMode = getgenv().GlobalAimlockMode or "Character Lock"
-        if aimMode == "Char + Cam Lock" then
-            applyChar()
-            local cam = getgenv().Camera
+        applyChar()
+        if getgenv().GlobalAimlockMode == "Char + Cam Lock" then
+            local cam = Workspace.CurrentCamera
             if cam then
-                local camCF = CFrame.lookAt(cam.CFrame.Position, position)
-                cam.CFrame = cam.CFrame:Lerp(camCF, 0.75)
+                cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, position), 0.75)
             end
-        else
-            applyChar()
         end
     end)
 
@@ -1739,7 +1759,7 @@ safe("Aimbot", function()
             getgenv().SelectedAimbots = {}
             if type(sel) == "table" then
                 for name, on in pairs(sel) do
-                    local key = (on == true) and name or (type(on) == "string" and on)
+                    local key = (on == true) and name or (type(on) == "string" and on or nil)
                     if key and getgenv().AimbotValues[key] then
                         getgenv().AimbotValues[key].Enabled = true
                         table.insert(getgenv().SelectedAimbots, key)
@@ -1754,7 +1774,6 @@ safe("Aimbot", function()
         Default = 1,
         Callback = function(v) getgenv().GlobalAimlockMode = v end,
     })
-
     local function addSurv(key, title, dd, dp)
         local box = Tabs.Aimbot:AddRightGroupbox(title, "sliders")
         box:AddSlider(key .. "_DurS", {
@@ -1774,113 +1793,60 @@ safe("Aimbot", function()
 end)
 
 safe("Silent Aim", function()
-    -- Guesting Crystal / Dusekkar silent via RemoteFunction OnClientInvoke
     local Silent = {
-        crystal = false,
-        crystalPred = 2.5,
-        crystalY = 1.5,
-        dusk = false,
-        duskPred = 0.5,
-        hooked = false,
+        crystal = false, crystalPred = 2.5, crystalY = 1.5,
+        dusk = false, duskPred = 0.5, hooked = false,
     }
     local function install()
         if Silent.hooked then return true end
         local rf = getRF()
         if not rf then return false end
-        local ok = false
-        if typeof(getcallbackvalue) == "function" and typeof(hookfunction) == "function" then
-            ok = pcall(function()
-                local old = getcallbackvalue(rf, "OnClientInvoke")
-                hookfunction(old or function() end, function(...)
-                    local args = { ... }
-                    local name = args[1]
-                    if name == "GetCameraCF" and Silent.crystal and not IsPlayerKiller() then
-                        local killer = GetNearestKillerModel(math.huge)
-                        local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-                        local cam = Workspace.CurrentCamera
-                        if killer and my and cam then
-                            local hrp = killer:FindFirstChild("HumanoidRootPart")
-                            local hum = killer:FindFirstChildOfClass("Humanoid")
-                            if hrp then
-                                local pos = hrp.Position
-                                if hum and hum.MoveDirection.Magnitude > 0.15 then
-                                    pos = pos + hum.MoveDirection * Silent.crystalPred
-                                end
-                                local dir = (pos - my.Position + Vector3.new(0, Silent.crystalY, 0)).Unit
-                                local cf = CFrame.lookAt(Vector3.zero, dir)
-                                return CFrame.new(cam.CFrame.Position) * cf.Rotation
+        pcall(function()
+            local old = rf.OnClientInvoke
+            rf.OnClientInvoke = function(name, ...)
+                if name == "GetCameraCF" and Silent.crystal and not IsPlayerKiller() then
+                    local killer = GetNearestKillerModel(math.huge)
+                    local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                    local cam = Workspace.CurrentCamera
+                    if killer and my and cam then
+                        local hrp = killer:FindFirstChild("HumanoidRootPart")
+                        local hum = killer:FindFirstChildOfClass("Humanoid")
+                        if hrp then
+                            local pos = hrp.Position
+                            if hum and hum.MoveDirection.Magnitude > 0.15 then
+                                pos = pos + hum.MoveDirection * Silent.crystalPred
+                            end
+                            local dir = (pos - my.Position + Vector3.new(0, Silent.crystalY, 0))
+                            if dir.Magnitude > 0.01 then
+                                return CFrame.new(cam.CFrame.Position) * CFrame.lookAt(Vector3.zero, dir.Unit).Rotation
                             end
                         end
                     end
-                    if name == "GetMousePosition" and Silent.dusk and not IsPlayerKiller() then
-                        local killer = GetNearestKillerModel(math.huge)
-                        if killer then
-                            local hrp = killer:FindFirstChild("HumanoidRootPart")
-                            local hum = killer:FindFirstChildOfClass("Humanoid")
-                            if hrp then
-                                local pos = hrp.Position
-                                if hum and hum.MoveDirection.Magnitude > 0.05 then
-                                    pos = pos + hum.MoveDirection * Silent.duskPred
-                                end
-                                return pos
-                            end
-                        end
-                    end
-                    if old then return old(...) end
-                end)
-            end)
-        end
-        if not ok then
-            -- fallback property assign
-            pcall(function()
-                local old = rf.OnClientInvoke
-                rf.OnClientInvoke = function(name, ...)
-                    if name == "GetCameraCF" and Silent.crystal and not IsPlayerKiller() then
-                        local killer = GetNearestKillerModel(math.huge)
-                        local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-                        local cam = Workspace.CurrentCamera
-                        if killer and my and cam then
-                            local hrp = killer:FindFirstChild("HumanoidRootPart")
-                            local hum = killer:FindFirstChildOfClass("Humanoid")
-                            if hrp then
-                                local pos = hrp.Position
-                                if hum and hum.MoveDirection.Magnitude > 0.15 then
-                                    pos = pos + hum.MoveDirection * Silent.crystalPred
-                                end
-                                local dir = (pos - my.Position + Vector3.new(0, Silent.crystalY, 0)).Unit
-                                return CFrame.new(cam.CFrame.Position) * CFrame.lookAt(Vector3.zero, dir).Rotation
-                            end
-                        end
-                    end
-                    if name == "GetMousePosition" and Silent.dusk and not IsPlayerKiller() then
-                        local killer = GetNearestKillerModel(math.huge)
-                        if killer then
-                            local hrp = killer:FindFirstChild("HumanoidRootPart")
-                            local hum = killer:FindFirstChildOfClass("Humanoid")
-                            if hrp then
-                                local pos = hrp.Position
-                                if hum and hum.MoveDirection.Magnitude > 0.05 then
-                                    pos = pos + hum.MoveDirection * Silent.duskPred
-                                end
-                                return pos
-                            end
-                        end
-                    end
-                    if old then return old(name, ...) end
                 end
-            end)
-        end
+                if name == "GetMousePosition" and Silent.dusk and not IsPlayerKiller() then
+                    local killer = GetNearestKillerModel(math.huge)
+                    if killer then
+                        local hrp = killer:FindFirstChild("HumanoidRootPart")
+                        local hum = killer:FindFirstChildOfClass("Humanoid")
+                        if hrp then
+                            local pos = hrp.Position
+                            if hum and hum.MoveDirection.Magnitude > 0.05 then
+                                pos = pos + hum.MoveDirection * Silent.duskPred
+                            end
+                            return pos
+                        end
+                    end
+                end
+                if old then return old(name, ...) end
+            end
+        end)
         Silent.hooked = true
         return true
     end
-
     local left = Tabs.Silent:AddLeftGroupbox("Crystal Pinch", "crosshair")
     left:AddToggle("Crystal_T", {
         Text = "Crystal Pinch Silent Aim", Default = false,
-        Callback = function(v)
-            Silent.crystal = v
-            if v then install() end
-        end,
+        Callback = function(v) Silent.crystal = v; if v then install() end end,
     })
     left:AddSlider("CrystalPred_S", {
         Text = "Prediction", Default = 2.5, Min = 0, Max = 10, Rounding = 1,
@@ -1890,14 +1856,10 @@ safe("Silent Aim", function()
         Text = "Y Offset", Default = 1.5, Min = -2, Max = 5, Rounding = 1,
         Callback = function(v) Silent.crystalY = v end,
     })
-
     local right = Tabs.Silent:AddRightGroupbox("Dusekkar", "zap")
     right:AddToggle("Plasma_T", {
         Text = "Dusekkar Silent Aim", Default = false,
-        Callback = function(v)
-            Silent.dusk = v
-            if v then install() end
-        end,
+        Callback = function(v) Silent.dusk = v; if v then install() end end,
     })
     right:AddSlider("PlasmaPred_S", {
         Text = "Prediction", Default = 0.5, Min = 0, Max = 5, Rounding = 1,
@@ -1906,7 +1868,6 @@ safe("Silent Aim", function()
 end)
 
 safe("HDT", function()
-    -- Guesting style hitbox dragging (PrimaryPart broom toward killer)
     local left = Tabs.HDT:AddLeftGroupbox("Hitbox Dragging Tech", "activity")
     left:AddToggle("HDT_Enable", {
         Text = "Enable HDT", Default = false,
@@ -1929,22 +1890,6 @@ safe("HDT", function()
     left:AddLabel({
         Text = "Runs when Auto Block fires (Guesting PrimaryPart style).",
         DoesWrap = true,
-    })
-end)
-
-     Callback = function(v)
-            if not v then return end
-            task.spawn(function()
-                while Toggles.Vee_AutoTrick and Toggles.Vee_AutoTrick.Value and not _ShuttingDown do
-                    pcall(function()
-                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
-                        task.wait(0.05)
-                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
-                    end)
-                    task.wait(0.35)
-                end
-            end)
-        end,
     })
 end)
 
