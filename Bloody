@@ -1,6 +1,6 @@
 --[[
   Nos Hub — clean Obsidian build
-  Auto Gen · Auto Block · Box Facing · Aim · Backstab · ESP · Stamina
+  Auto Gen · Auto Block · Stacking Box Facing · Guesting Aim · Backstab · ESP · Stamina
 ]]
 
 local Players = game:GetService("Players")
@@ -28,7 +28,7 @@ if not table.clone then
 end
 
 --═══════════════════════════════════════════════════════════════════
--- OBSIDIAN (matches official Example.lua)
+-- OBSIDIAN (official Example.lua pattern) + red scheme
 --═══════════════════════════════════════════════════════════════════
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
@@ -42,6 +42,16 @@ Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 Library.ShowCustomCursor = true
 
+pcall(function()
+    if type(Library.Scheme) == "table" then
+        Library.Scheme.AccentColor = Color3.fromRGB(220, 40, 50)
+        Library.Scheme.FontColor = Color3.fromRGB(255, 240, 240)
+        Library.Scheme.MainColor = Color3.fromRGB(28, 10, 12)
+        Library.Scheme.BackgroundColor = Color3.fromRGB(16, 6, 8)
+        Library.Scheme.OutlineColor = Color3.fromRGB(120, 25, 30)
+    end
+end)
+
 local Window = Library:CreateWindow({
     Title = "Nos Hub",
     Footer = tostring(LP.Name) .. " | " .. tostring(gameName),
@@ -51,7 +61,7 @@ local Window = Library:CreateWindow({
     Center = true,
     AutoShow = true,
     Resizable = true,
-    Size = UDim2.fromOffset(700, 520),
+    Size = UDim2.fromOffset(700, 540),
 })
 
 local Tabs = {
@@ -70,7 +80,7 @@ Library:Notify({ Title = "Nos Hub", Description = "UI loaded", Time = 3 })
 print("[Nos Hub] UI OK")
 
 --═══════════════════════════════════════════════════════════════════
--- CORE HELPERS
+-- CORE
 --═══════════════════════════════════════════════════════════════════
 local KILLER_NAMES = {
     ["Slasher"] = true, ["Jason"] = true, ["c00lkidd"] = true, ["CoolKid"] = true,
@@ -85,8 +95,7 @@ local function IsPlayerKiller()
     local pf = Workspace:FindFirstChild("Players")
     local kf = pf and pf:FindFirstChild("Killers")
     if kf and c:IsDescendantOf(kf) then return true end
-    local name = c:GetAttribute("CharacterName") or c.Name
-    return KILLER_NAMES[name] == true
+    return KILLER_NAMES[c:GetAttribute("CharacterName") or c.Name] == true
 end
 
 local RemoteEvent
@@ -139,47 +148,54 @@ local function GetNearestKiller(maxDist)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- MAIN TAB
+-- MAIN
 --═══════════════════════════════════════════════════════════════════
 do
     local left = Tabs.Main:AddLeftGroupbox("Info")
     left:AddLabel("User: " .. LP.Name)
-    left:AddLabel("Nos Hub · clean Obsidian build")
+    left:AddLabel("Nos Hub · red Obsidian build")
     left:AddLabel("Toggle menu: RightShift")
 end
 
 --═══════════════════════════════════════════════════════════════════
--- AUTO BLOCK + NORMAL HITBOX
+-- FACING STATE (shared by Block + Facing UI)
 --═══════════════════════════════════════════════════════════════════
+local FacingMode = "None" -- None | Normal | Advanced
 local AB = {
     enabled = false,
     delay = 0,
+    last = 0,
+}
+-- Normal hitbox settings (visuals live in Facing tab)
+local NormalBox = {
     width = 4.5,
     height = 6,
     length = 7.5,
     offset = -1.4,
     duration = 1.2,
-    transparency = 0.5,
+    transparency = 0.45,
     color = Color3.fromRGB(220, 40, 50),
     showVisual = true,
-    last = 0,
 }
 
-local abilityNames = {
-    "PERFORATING", "LACERATE", "EVISCERATE", "CARVING SLASH",
-    "STAB", "TAG", "SLASH", "ENRAGED SLASH",
+local StackBox = {
+    count = 4,
+    size = Vector3.new(3.2, 4.5, 3.2),
+    maxReach = 18,       -- max distance from killer front to try stacking
+    extendTime = 0.30,   -- must reach player within this or stack dies
+    maxLife = 0.50,      -- hard lifetime
+    speed = 90,          -- how fast chain extends toward player
+    showVisual = true,
+    fillT = 0.4,
+    color = Color3.fromRGB(255, 90, 100),
+    validColor = Color3.fromRGB(40, 255, 110),
 }
 
-local function shouldBlock(name)
-    if type(name) ~= "string" then return false end
-    local u = string.upper(name)
-    for _, bn in ipairs(abilityNames) do
-        if string.find(u, bn, 1, true) then return true end
-    end
-    return false
-end
-
-local function spatialBox(killer, onHit)
+--═══════════════════════════════════════════════════════════════════
+-- NORMAL SPATIAL HITBOX (only when FacingMode == "Normal")
+--═══════════════════════════════════════════════════════════════════
+local function normalSpatialBox(killer, onHit)
+    if FacingMode ~= "Normal" then return end
     if IsPlayerKiller() or not killer or killer == LP.Character then return end
     local root = killer:FindFirstChild("HumanoidRootPart")
     if not root then return end
@@ -188,25 +204,25 @@ local function spatialBox(killer, onHit)
     op.FilterDescendantsInstances = { killer }
     task.spawn(function()
         local elapsed = 0
-        while killer.Parent and root.Parent and elapsed < AB.duration do
-            if IsPlayerKiller() or not AB.enabled then return end
+        while killer.Parent and root.Parent and elapsed < NormalBox.duration do
+            if IsPlayerKiller() or not AB.enabled or FacingMode ~= "Normal" then return end
             local part = Instance.new("Part")
-            part.Name = "Nos_Hitbox"
+            part.Name = "Nos_NormalHitbox"
             part.Anchored = true
             part.CanCollide = false
             part.CanTouch = false
             part.CanQuery = false
             part.CastShadow = false
             part.Material = Enum.Material.ForceField
-            part.Color = AB.color
-            part.Transparency = AB.showVisual and AB.transparency or 1
-            part.Size = Vector3.new(AB.width, AB.height, AB.length)
-            part.CFrame = root.CFrame * CFrame.new(0, 0, AB.offset)
+            part.Color = NormalBox.color
+            part.Transparency = NormalBox.showVisual and NormalBox.transparency or 1
+            part.Size = Vector3.new(NormalBox.width, NormalBox.height, NormalBox.length)
+            part.CFrame = root.CFrame * CFrame.new(0, 0, NormalBox.offset)
             part.Parent = Workspace
-            if AB.showVisual then
+            if NormalBox.showVisual then
                 local sb = Instance.new("SelectionBox")
                 sb.Adornee = part
-                sb.Color3 = AB.color
+                sb.Color3 = NormalBox.color
                 sb.LineThickness = 0.03
                 sb.Parent = part
             end
@@ -224,20 +240,217 @@ local function spatialBox(killer, onHit)
     end)
 end
 
--- Adv box facing (defined below) can request block
-local AdvBox = nil
+--═══════════════════════════════════════════════════════════════════
+-- ADVANCED STACK BOXES
+-- spawn in front of killer → chain/stack toward player
+-- touch player = block
+-- fail to reach in extendTime OR killer body overlaps stack = disappear
+-- hard maxLife
+--═══════════════════════════════════════════════════════════════════
+local Stack = {
+    active = false,
+    parts = {},
+    started = 0,
+    reached = false,
+    killer = nil,
+    folder = Instance.new("Folder"),
+}
+Stack.folder.Name = "Nos_StackBoxes"
+Stack.folder.Parent = Workspace
 
+local function clearStack()
+    Stack.active = false
+    Stack.reached = false
+    Stack.killer = nil
+    for _, p in ipairs(Stack.parts) do
+        pcall(function() p:Destroy() end)
+    end
+    Stack.parts = {}
+end
+
+local function makeStackPart()
+    local p = Instance.new("Part")
+    p.Name = "StackBox"
+    p.Anchored = true
+    p.CanCollide = false
+    p.CanTouch = false
+    p.CanQuery = false
+    p.CastShadow = false
+    p.Material = Enum.Material.ForceField
+    p.Color = StackBox.color
+    p.Transparency = StackBox.showVisual and StackBox.fillT or 1
+    p.Size = StackBox.size
+    p.Parent = Stack.folder
+    local sb = Instance.new("SelectionBox")
+    sb.Adornee = p
+    sb.Color3 = StackBox.color
+    sb.LineThickness = 0.05
+    sb.Parent = p
+    return p
+end
+
+local function startStack(killer)
+    if FacingMode ~= "Advanced" or not AB.enabled then return end
+    if IsPlayerKiller() or not killer then return end
+    local kr = killer:FindFirstChild("HumanoidRootPart")
+    local pr = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not kr or not pr then return end
+
+    -- only start if player is within reach
+    local front = kr.Position + kr.CFrame.LookVector * 3
+    if (pr.Position - front).Magnitude > StackBox.maxReach then return end
+
+    clearStack()
+    Stack.active = true
+    Stack.started = os.clock()
+    Stack.reached = false
+    Stack.killer = killer
+
+    local n = math.clamp(math.floor(StackBox.count), 1, 12)
+    for i = 1, n do
+        local p = makeStackPart()
+        -- start stacked tight in front of killer
+        local t = (i - 0.5) / n
+        p.CFrame = CFrame.new(front + kr.CFrame.LookVector * (t * 1.5))
+        table.insert(Stack.parts, p)
+    end
+end
+
+RunService.Heartbeat:Connect(function(dt)
+    if not Stack.active or FacingMode ~= "Advanced" then
+        if #Stack.parts > 0 and not Stack.active then
+            -- nothing
+        end
+        if FacingMode ~= "Advanced" then
+            clearStack()
+        end
+        return
+    end
+
+    local killer = Stack.killer
+    local kr = killer and killer:FindFirstChild("HumanoidRootPart")
+    local pr = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    local age = os.clock() - Stack.started
+
+    if not kr or not pr or not killer.Parent then
+        clearStack()
+        return
+    end
+
+    -- hard lifetime
+    if age >= StackBox.maxLife then
+        clearStack()
+        return
+    end
+
+    -- failed to reach player in time
+    if not Stack.reached and age >= StackBox.extendTime then
+        clearStack()
+        return
+    end
+
+    local origin = kr.Position + kr.CFrame.LookVector * 2.5
+    local goal = pr.Position
+    local toPlayer = goal - origin
+    local dist = toPlayer.Magnitude
+    if dist < 0.05 then dist = 0.05 end
+    local dir = toPlayer / dist
+
+    -- keep chain relatively in front of killer (prefer look direction blend)
+    local look = kr.CFrame.LookVector
+    local blend = (look + dir).Unit
+    if blend.Magnitude < 0.01 then blend = dir end
+
+    local n = #Stack.parts
+    local step = math.min(dist, StackBox.maxReach) / math.max(n, 1)
+    local extend = math.clamp(age / math.max(StackBox.extendTime, 0.05), 0, 1)
+    local travel = math.min(dist, StackBox.maxReach) * extend
+
+    local killerTouched = false
+    local playerTouched = false
+
+    for i, p in ipairs(Stack.parts) do
+        if p.Parent then
+            local along = math.min((i - 0.5) / n * travel, travel)
+            local pos = origin + blend * along
+            pos = pos + Vector3.new(0, (i - 1) * 0.05, 0)
+            p.Size = StackBox.size
+            p.CFrame = CFrame.lookAt(pos, pos + blend)
+            p.Transparency = StackBox.showVisual and StackBox.fillT or 1
+            local sb = p:FindFirstChildOfClass("SelectionBox")
+            if sb then sb.Visible = StackBox.showVisual end
+
+            local op = OverlapParams.new()
+            op.FilterType = Enum.RaycastFilterType.Exclude
+            op.FilterDescendantsInstances = { LP.Character }
+            for _, hit in ipairs(Workspace:GetPartsInPart(p, op)) do
+                local model = hit:FindFirstAncestorOfClass("Model")
+                if model == killer then
+                    killerTouched = true
+                end
+            end
+
+            local op2 = OverlapParams.new()
+            op2.FilterType = Enum.RaycastFilterType.Exclude
+            op2.FilterDescendantsInstances = { killer }
+            for _, hit in ipairs(Workspace:GetPartsInPart(p, op2)) do
+                local hum = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
+                if hum and Players:GetPlayerFromCharacter(hum.Parent) == LP then
+                    playerTouched = true
+                end
+            end
+        end
+    end
+
+    if playerTouched then
+        Stack.reached = true
+        for _, p in ipairs(Stack.parts) do
+            p.Color = StackBox.validColor
+            local sb = p:FindFirstChildOfClass("SelectionBox")
+            if sb then sb.Color3 = StackBox.validColor end
+        end
+        if AB.enabled then
+            local now = tick()
+            if now - AB.last > 0.1 then
+                AB.last = now
+                if AB.delay > 0 then task.wait(AB.delay) end
+                FireBlock()
+            end
+        end
+        clearStack()
+        return
+    end
+
+    -- killer body ate the stack → dissolve
+    if killerTouched then
+        clearStack()
+        return
+    end
+end)
+
+--═══════════════════════════════════════════════════════════════════
+-- AUTO BLOCK TRIGGERS
+--═══════════════════════════════════════════════════════════════════
 local function triggerBlock(killer)
     if not AB.enabled or IsPlayerKiller() then return end
     local now = tick()
     if now - AB.last < 0.08 then return end
-    AB.last = now
-    if AdvBox and AdvBox.mode == "Advanced" then
-        AdvBox.SetKiller(killer)
-        AdvBox.Trigger()
+    if FacingMode == "Advanced" then
+        startStack(killer)
         return
     end
-    spatialBox(killer, FireBlock)
+    if FacingMode == "Normal" then
+        AB.last = now
+        normalSpatialBox(killer, FireBlock)
+        return
+    end
+    -- None: still fire block on ability without facing gate
+    AB.last = now
+    if AB.delay > 0 then
+        task.delay(AB.delay, FireBlock)
+    else
+        FireBlock()
+    end
 end
 
 local monitored = {}
@@ -283,492 +496,320 @@ do
                 return
             end
             AB.enabled = v
+            if not v then clearStack() end
         end,
-    })
-    left:AddToggle("AB_Show", {
-        Text = "Show Hitbox",
-        Default = true,
-        Callback = function(v) AB.showVisual = v end,
     })
     left:AddSlider("AB_Delay", {
         Text = "Block Delay",
         Default = 0, Min = 0, Max = 1, Rounding = 2,
         Callback = function(v) AB.delay = v end,
     })
+    left:AddLabel("Facing mode is set in the Facing tab.", true)
     left:AddButton({
         Text = "Force Block",
         Func = function() FireBlock() end,
     })
-
-    local right = Tabs.Block:AddRightGroupbox("Hitbox Size")
-    right:AddSlider("AB_W", {
-        Text = "Width", Default = 4.5, Min = 1, Max = 25, Rounding = 1,
-        Callback = function(v) AB.width = v end,
-    })
-    right:AddSlider("AB_H", {
-        Text = "Height", Default = 6, Min = 1, Max = 25, Rounding = 1,
-        Callback = function(v) AB.height = v end,
-    })
-    right:AddSlider("AB_L", {
-        Text = "Length", Default = 7.5, Min = 1, Max = 30, Rounding = 1,
-        Callback = function(v) AB.length = v end,
-    })
-    right:AddSlider("AB_Off", {
-        Text = "Offset Z", Default = -1.4, Min = -10, Max = 5, Rounding = 1,
-        Callback = function(v) AB.offset = v end,
-    })
-    right:AddSlider("AB_Dur", {
-        Text = "Duration", Default = 1.2, Min = 0.2, Max = 4, Rounding = 1,
-        Callback = function(v) AB.duration = v end,
-    })
 end
 
 --═══════════════════════════════════════════════════════════════════
--- ADVANCED BOX FACING (giant + small boxes)
+-- FACING TAB (all hitbox visuals + mode exclusive)
 --═══════════════════════════════════════════════════════════════════
 do
-    AdvBox = {
-        mode = "None", -- None | Normal | Advanced
-        enabled = false,
-        count = 3,
-        small = Vector3.new(5, 6, 8),
-        giant = Vector3.new(16, 10, 22),
-        giantForward = 10,
-        spawnForward = 4,
-        lifetime = 0.55,
-        speed = 70,
-        showSmall = true,
-        showGiant = false,
-        fillT = 0.55,
-    }
-
-    local Folder = Instance.new("Folder")
-    Folder.Name = "Nos_AdvBoxes"
-    Folder.Parent = Workspace
-
-    local killerModel = nil
-    local boxes = {}
-    local lastValid = 0
-    local Colors = {
-        Out = Color3.fromRGB(255, 55, 55),
-        Invalid = Color3.fromRGB(255, 210, 40),
-        Valid = Color3.fromRGB(40, 255, 110),
-        Bound = Color3.fromRGB(100, 160, 255),
-    }
-
-    local function makePart(name)
-        local p = Instance.new("Part")
-        p.Name = name
-        p.Anchored = true
-        p.CanCollide = false
-        p.CanTouch = false
-        p.CanQuery = false
-        p.CastShadow = false
-        p.Material = Enum.Material.ForceField
-        p.Transparency = AdvBox.fillT
-        p.Parent = Folder
-        local sb = Instance.new("SelectionBox")
-        sb.Adornee = p
-        sb.LineThickness = 0.05
-        sb.SurfaceTransparency = 1
-        sb.Parent = p
-        local pl = Instance.new("PointLight")
-        pl.Range = 7
-        pl.Brightness = 0.7
-        pl.Parent = p
-        return p
-    end
-
-    local boundary = makePart("Giant")
-    boundary.Transparency = 1
-
-    local function syncCount()
-        local n = math.clamp(math.floor(AdvBox.count), 1, 10)
-        while #boxes < n do
-            table.insert(boxes, {
-                part = makePart("Small_" .. (#boxes + 1)),
-                pos = Vector3.zero,
-                active = false,
-                age = 0,
-                index = #boxes + 1,
-            })
-        end
-        while #boxes > n do
-            local o = table.remove(boxes)
-            o.part:Destroy()
-        end
-    end
-    syncCount()
-
-    local function rootOf(m)
-        return m and m:FindFirstChild("HumanoidRootPart")
-    end
-
-    local function boundaryCF(kr)
-        return kr.CFrame * CFrame.new(0, 0, -AdvBox.giantForward)
-    end
-
-    local function clampIn(world, bcf, bsz, ssz)
-        local lp = bcf:PointToObjectSpace(world)
-        local hx = math.max(0, bsz.X / 2 - ssz.X / 2)
-        local hy = math.max(0, bsz.Y / 2 - ssz.Y / 2)
-        local hz = math.max(0, bsz.Z / 2 - ssz.Z / 2)
-        lp = Vector3.new(
-            math.clamp(lp.X, -hx, hx),
-            math.clamp(lp.Y, -hy, hy),
-            math.clamp(lp.Z, -hz, hz)
-        )
-        return bcf:PointToWorldSpace(lp)
-    end
-
-    local function inside(world, cf, size)
-        local lp = cf:PointToObjectSpace(world)
-        return math.abs(lp.X) <= size.X / 2
-            and math.abs(lp.Y) <= size.Y / 2
-            and math.abs(lp.Z) <= size.Z / 2
-    end
-
-    local function style(p, size, cf, col)
-        p.Size = size
-        p.CFrame = cf
-        p.Color = col
-        p.Transparency = AdvBox.showSmall and AdvBox.fillT or 1
-        local sb = p:FindFirstChildOfClass("SelectionBox")
-        if sb then sb.Color3 = col end
-        local pl = p:FindFirstChildOfClass("PointLight")
-        if pl then pl.Color = col; pl.Enabled = AdvBox.showSmall end
-    end
-
-    function AdvBox.SetKiller(m)
-        if m and m:IsA("Model") then killerModel = m end
-    end
-
-    function AdvBox.Trigger()
-        if AdvBox.mode ~= "Advanced" then return end
-        local kr = rootOf(killerModel)
-        local pr = rootOf(LP.Character)
-        if not kr or not pr then return end
-        syncCount()
-        local bcf = boundaryCF(kr)
-        local spawn = kr.Position + kr.CFrame.LookVector * AdvBox.spawnForward
-        for i, o in ipairs(boxes) do
-            local lane = (i - (#boxes + 1) / 2) * 0.9
-            local pos = spawn + bcf.RightVector * lane
-            o.pos = clampIn(pos, bcf, AdvBox.giant, AdvBox.small)
-            o.age = 0
-            o.active = true
-        end
-    end
-
-    function AdvBox.Clear()
-        for _, o in ipairs(boxes) do
-            o.active = false
-            o.part.Transparency = 1
-        end
-    end
-
-    RunService.Heartbeat:Connect(function(dt)
-        if AdvBox.mode ~= "Advanced" then
-            AdvBox.Clear()
-            boundary.Transparency = 1
-            return
-        end
-        local kr = rootOf(killerModel)
-        local pr = rootOf(LP.Character)
-        if not kr or not pr then
-            AdvBox.Clear()
-            return
-        end
-        local bcf = boundaryCF(kr)
-        boundary.Size = AdvBox.giant
-        boundary.CFrame = bcf
-        boundary.Color = Colors.Bound
-        boundary.Transparency = AdvBox.showGiant and 0.88 or 1
-
-        local target = pr.Position
-        local inGiant = inside(target, bcf, AdvBox.giant)
-        local dest = clampIn(target, bcf, AdvBox.giant, AdvBox.small)
-        local spawnBase = kr.Position + kr.CFrame.LookVector * AdvBox.spawnForward
-        local anyGreen = false
-        syncCount()
-
-        for i, o in ipairs(boxes) do
-            if o.active then
-                o.age = o.age + dt
-                if o.age >= AdvBox.lifetime then
-                    o.active = false
-                    o.part.Transparency = 1
-                else
-                    if inGiant then
-                        local diff = dest - o.pos
-                        if diff.Magnitude > 0.01 then
-                            local step = math.min(AdvBox.speed * dt, 40)
-                            o.pos = o.pos + diff.Unit * math.min(diff.Magnitude, step)
-                        end
-                        o.pos = clampIn(o.pos, bcf, AdvBox.giant, AdvBox.small)
-                    else
-                        local lane = (i - (#boxes + 1) / 2) * 0.9
-                        o.pos = clampIn(spawnBase + bcf.RightVector * lane, bcf, AdvBox.giant, AdvBox.small)
-                    end
-                    local cf = CFrame.new(o.pos) * (bcf - bcf.Position)
-                    local col
-                    if not inGiant then
-                        col = Colors.Out
-                    elseif inside(target, cf, AdvBox.small) then
-                        col = Colors.Valid
-                        anyGreen = true
-                    else
-                        col = Colors.Invalid
-                    end
-                    style(o.part, AdvBox.small, cf, col)
-                end
-            end
-        end
-
-        if anyGreen and AB.enabled then
-            local now = tick()
-            if now - lastValid > 0.12 then
-                lastValid = now
-                FireBlock()
-            end
-        end
-    end)
-
     local left = Tabs.Facing:AddLeftGroupbox("Facing Mode")
     left:AddDropdown("FaceMode", {
         Values = { "None", "Normal", "Advanced" },
         Default = 1,
         Text = "Mode",
         Callback = function(v)
-            AdvBox.mode = v
-            if v ~= "Advanced" then AdvBox.Clear() end
-        end,
-    })
-    left:AddLabel("Advanced = giant + small boxes. Chase only inside giant.", true)
-    left:AddToggle("FaceShowSmall", {
-        Text = "Show Small Boxes",
-        Default = true,
-        Callback = function(v) AdvBox.showSmall = v end,
-    })
-    left:AddToggle("FaceShowGiant", {
-        Text = "Show Giant Boundary",
-        Default = false,
-        Callback = function(v) AdvBox.showGiant = v end,
-    })
-
-    local right = Tabs.Facing:AddRightGroupbox("Box Sizes")
-    right:AddSlider("FaceCount", {
-        Text = "Small Box Count", Default = 3, Min = 1, Max = 8, Rounding = 0,
-        Callback = function(v) AdvBox.count = v end,
-    })
-    right:AddSlider("FaceLife", {
-        Text = "Lifetime", Default = 0.55, Min = 0.2, Max = 2, Rounding = 2,
-        Callback = function(v) AdvBox.lifetime = v end,
-    })
-    right:AddSlider("FaceSpeed", {
-        Text = "Chase Speed", Default = 70, Min = 20, Max = 150, Rounding = 0,
-        Callback = function(v) AdvBox.speed = v end,
-    })
-    right:AddSlider("FaceSW", {
-        Text = "Small Width", Default = 5, Min = 1, Max = 20, Rounding = 0,
-        Callback = function(v) AdvBox.small = Vector3.new(v, AdvBox.small.Y, AdvBox.small.Z) end,
-    })
-    right:AddSlider("FaceSH", {
-        Text = "Small Height", Default = 6, Min = 1, Max = 20, Rounding = 0,
-        Callback = function(v) AdvBox.small = Vector3.new(AdvBox.small.X, v, AdvBox.small.Z) end,
-    })
-    right:AddSlider("FaceSL", {
-        Text = "Small Length", Default = 8, Min = 1, Max = 25, Rounding = 0,
-        Callback = function(v) AdvBox.small = Vector3.new(AdvBox.small.X, AdvBox.small.Y, v) end,
-    })
-    right:AddSlider("FaceGW", {
-        Text = "Giant Width", Default = 16, Min = 6, Max = 40, Rounding = 0,
-        Callback = function(v) AdvBox.giant = Vector3.new(v, AdvBox.giant.Y, AdvBox.giant.Z) end,
-    })
-    right:AddSlider("FaceGL", {
-        Text = "Giant Length", Default = 22, Min = 8, Max = 50, Rounding = 0,
-        Callback = function(v) AdvBox.giant = Vector3.new(AdvBox.giant.X, AdvBox.giant.Y, v) end,
-    })
-    right:AddButton({
-        Text = "Test Spawn",
-        Func = function()
-            local k = GetNearestKiller(80)
-            if k then
-                AdvBox.mode = "Advanced"
-                AdvBox.SetKiller(k)
-                AdvBox.Trigger()
+            FacingMode = v
+            -- exclusive: switching away from Advanced kills stack visuals
+            if v ~= "Advanced" then
+                clearStack()
             end
         end,
     })
+    left:AddLabel("None = block with no facing check", true)
+    left:AddLabel("Normal = single spatial hitbox in front of killer", true)
+    left:AddLabel("Advanced = stacked boxes extend toward you", true)
+
+    local norm = Tabs.Facing:AddLeftGroupbox("Normal Hitbox")
+    norm:AddToggle("Norm_Show", {
+        Text = "Show Normal Hitbox",
+        Default = true,
+        Callback = function(v) NormalBox.showVisual = v end,
+    })
+    norm:AddSlider("Norm_W", {
+        Text = "Width", Default = 4.5, Min = 1, Max = 25, Rounding = 1,
+        Callback = function(v) NormalBox.width = v end,
+    })
+    norm:AddSlider("Norm_H", {
+        Text = "Height", Default = 6, Min = 1, Max = 25, Rounding = 1,
+        Callback = function(v) NormalBox.height = v end,
+    })
+    norm:AddSlider("Norm_L", {
+        Text = "Length", Default = 7.5, Min = 1, Max = 30, Rounding = 1,
+        Callback = function(v) NormalBox.length = v end,
+    })
+    norm:AddSlider("Norm_Off", {
+        Text = "Offset Z", Default = -1.4, Min = -10, Max = 5, Rounding = 1,
+        Callback = function(v) NormalBox.offset = v end,
+    })
+    norm:AddSlider("Norm_Dur", {
+        Text = "Duration", Default = 1.2, Min = 0.2, Max = 4, Rounding = 1,
+        Callback = function(v) NormalBox.duration = v end,
+    })
+
+    local adv = Tabs.Facing:AddRightGroupbox("Advanced Stack")
+    adv:AddToggle("Adv_Show", {
+        Text = "Show Stack Boxes",
+        Default = true,
+        Callback = function(v)
+            StackBox.showVisual = v
+            if not v then
+                for _, p in ipairs(Stack.parts) do
+                    p.Transparency = 1
+                    local sb = p:FindFirstChildOfClass("SelectionBox")
+                    if sb then sb.Visible = false end
+                end
+            end
+        end,
+    })
+    adv:AddSlider("Adv_Count", {
+        Text = "Box Count", Default = 4, Min = 1, Max = 12, Rounding = 0,
+        Callback = function(v) StackBox.count = v end,
+    })
+    adv:AddSlider("Adv_Reach", {
+        Text = "Max Reach", Default = 18, Min = 6, Max = 40, Rounding = 0,
+        Callback = function(v) StackBox.maxReach = v end,
+    })
+    adv:AddSlider("Adv_Extend", {
+        Text = "Extend Time", Default = 0.30, Min = 0.1, Max = 1, Rounding = 2,
+        Callback = function(v) StackBox.extendTime = v end,
+    })
+    adv:AddSlider("Adv_Life", {
+        Text = "Max Lifetime", Default = 0.50, Min = 0.2, Max = 1.5, Rounding = 2,
+        Callback = function(v) StackBox.maxLife = v end,
+    })
+    adv:AddSlider("Adv_Size", {
+        Text = "Box Size", Default = 3.2, Min = 1.5, Max = 8, Rounding = 1,
+        Callback = function(v) StackBox.size = Vector3.new(v, v * 1.4, v) end,
+    })
+    adv:AddButton({
+        Text = "Test Stack",
+        Func = function()
+            local k = GetNearestKiller(40)
+            if k then
+                FacingMode = "Advanced"
+                pcall(function() Options.FaceMode:SetValue("Advanced") end)
+                startStack(k)
+            end
+        end,
+    })
+    adv:AddLabel("Stacks from killer front toward you. Touch you = block. Touch killer or timeout = vanish.", true)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- AIMBOT (button-start only, optimized — not laggy Chance scan)
+-- AIMBOT — Guesting ActiveLock (animation-based)
 --═══════════════════════════════════════════════════════════════════
 do
-    local Aim = {
-        enabled = false,
-        lockTime = 0.9,
-        predMin = 2,
-        predMax = 3,
-        locking = false,
-        untilT = 0,
-        target = nil,
-        last = 0,
-        hooked = setmetatable({}, { __mode = "k" }),
+    getgenv().AimbotValues = getgenv().AimbotValues or {
+        Guest1337 = { Enabled = false, Distance = 50, LockDuration = 1.3, Prediction = 0 },
+        Shedlekey = { Enabled = false, Distance = 29, LockDuration = 1.2, Prediction = 0 },
+        TwoTime = { Enabled = false, Distance = 29, LockDuration = 0.9, Prediction = 0 },
+        Chance = { Enabled = false, Distance = 80, LockDuration = 1.5, Prediction = 3 },
+        JaneDoe = { Enabled = false, Distance = 50, LockDuration = 1.1, Prediction = 0 },
+    }
+    getgenv().AnimationData = {
+        Guest1337 = {},
+        Shedlekey = {},
+        TwoTime = {
+            ["100725497418533"] = true,
+            ["89448354637442"] = true,
+        },
+        Chance = {},
+        JaneDoe = {},
     }
 
-    local keywords = {
-        "slash", "punch", "axe", "stab", "shoot", "gun", "flint",
-        "oneshot", "parry", "block", "knife", "dagger",
-    }
-
-    local function predict(root)
-        if not root then return nil end
-        local vel = root.AssemblyLinearVelocity
-        local horiz = Vector3.new(vel.X, 0, vel.Z)
-        local pos = root.Position
-        if horiz.Magnitude < 1.2 then return pos end
-        local lead = Aim.predMin + (Aim.predMax - Aim.predMin) * math.clamp(horiz.Magnitude / 28, 0, 1)
-        return pos + horiz.Unit * lead
-    end
-
-    local function aimAt(root)
-        local me = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-        if not me or not root or not root.Parent then return end
-        local at = predict(root)
-        if not at then return end
-        local p = me.Position
-        me.CFrame = CFrame.new(p, Vector3.new(at.X, p.Y, at.Z))
-    end
-
-    local function startLock()
-        if not Aim.enabled or IsPlayerKiller() then return end
-        if os.clock() - Aim.last < 0.12 then return end
-        local k = GetNearestKiller(80)
-        local root = k and k:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-        Aim.last = os.clock()
-        Aim.locking = true
-        Aim.untilT = os.clock() + Aim.lockTime
-        Aim.target = root
-        aimAt(root)
-    end
-
-    local function matches(btn)
-        local blob = string.lower(tostring(btn.Name or ""))
-        pcall(function()
-            if btn:IsA("TextButton") or btn:IsA("TextLabel") then
-                blob = blob .. " " .. string.lower(tostring(btn.Text or ""))
-            end
-            for _, d in ipairs(btn:GetDescendants()) do
-                if d:IsA("TextLabel") or d:IsA("TextButton") then
-                    blob = blob .. " " .. string.lower(tostring(d.Text or ""))
-                end
-            end
-        end)
-        for _, kw in ipairs(keywords) do
-            if blob:find(kw, 1, true) then return true end
-        end
-        return false
-    end
-
-    local function hookButton(btn)
-        if Aim.hooked[btn] then return end
-        if not (btn:IsA("GuiButton") or btn:IsA("ImageButton") or btn:IsA("TextButton")) then
-            return
-        end
-        if not matches(btn) then return end
-        Aim.hooked[btn] = true
-        local function fire()
-            if Aim.enabled then startLock() end
-        end
-        pcall(function() btn.Activated:Connect(fire) end)
-        pcall(function() btn.MouseButton1Click:Connect(fire) end)
-        pcall(function() btn.MouseButton1Down:Connect(fire) end)
-    end
-
-    -- Lightweight scan: only AbilityContainer / MainUI, not full PlayerGui spam
-    local function scan()
-        local pg = LP:FindFirstChild("PlayerGui")
-        if not pg then return end
-        local main = pg:FindFirstChild("MainUI")
-        local ac = main and main:FindFirstChild("AbilityContainer")
-        if ac then
-            for _, b in ipairs(ac:GetDescendants()) do
-                hookButton(b)
-            end
-            return
-        end
-        -- fallback: shallow scan MainUI only
-        if main then
-            for _, b in ipairs(main:GetDescendants()) do
-                if b:IsA("GuiButton") or b:IsA("ImageButton") then
-                    hookButton(b)
+    -- load animation ids from survivor configs
+    pcall(function()
+        local assets = ReplicatedStorage:FindFirstChild("Assets")
+        if not assets then return end
+        local folders = { assets:FindFirstChild("Survivors") }
+        local skins = assets:FindFirstChild("Skins")
+        if skins then table.insert(folders, skins:FindFirstChild("Survivors")) end
+        for _, folder in ipairs(folders) do
+            if folder then
+                for _, d in ipairs(folder:GetDescendants()) do
+                    if d:IsA("ModuleScript") and d.Name == "Config" then
+                        local ok, result = pcall(require, d)
+                        if ok and type(result) == "table" and type(result.Animations) == "table" then
+                            local a = result.Animations
+                            local function add(key, val)
+                                if not val then return end
+                                local id = tostring(val):match("%d+")
+                                if id and getgenv().AnimationData[key] then
+                                    getgenv().AnimationData[key][id] = true
+                                end
+                            end
+                            add("Guest1337", a.Punch)
+                            add("Guest1337", a.ParryPunch)
+                            add("Shedlekey", a.Slash)
+                            add("JaneDoe", a.Axe)
+                            add("Chance", a.AimGun)
+                        end
+                    end
                 end
             end
         end
+    end)
+
+    getgenv().ActiveLock = { IsActive = false, Target = nil, StartTime = 0, Mode = "", Track = nil }
+    getgenv().LastFinishedTrack = nil
+    getgenv().GlobalAimbotToggle = false
+    getgenv().GlobalAimlockMode = "Character Lock"
+
+    local function pickTarget(mode, cfg)
+        return GetNearestKiller(cfg.Distance or 50)
     end
 
     RunService.RenderStepped:Connect(function()
-        if not Aim.locking then return end
-        if os.clock() > Aim.untilT then
-            Aim.locking = false
-            Aim.target = nil
+        if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then
+            if getgenv().ActiveLock.IsActive then
+                getgenv().ActiveLock.IsActive = false
+                getgenv().ActiveLock.Target = nil
+                local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+                if hum then hum.AutoRotate = true end
+            end
             return
         end
-        local k = GetNearestKiller(80)
-        local root = k and k:FindFirstChild("HumanoidRootPart")
-        if root then Aim.target = root end
-        if Aim.target and Aim.target.Parent then
-            aimAt(Aim.target)
+        local character = LP.Character
+        if not character then return end
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not hrp or not humanoid then return end
+
+        if not getgenv().ActiveLock.IsActive then
+            local animator = humanoid:FindFirstChildOfClass("Animator")
+            if not animator then return end
+            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                if track ~= getgenv().LastFinishedTrack and track.IsPlaying and track.Animation then
+                    local id = tostring(track.Animation.AnimationId):match("%d+")
+                    if id then
+                        for modeKey, idMap in pairs(getgenv().AnimationData) do
+                            local cfg = getgenv().AimbotValues[modeKey]
+                            if cfg and cfg.Enabled and idMap[id] then
+                                local target = pickTarget(modeKey, cfg)
+                                if target then
+                                    getgenv().ActiveLock.IsActive = true
+                                    getgenv().ActiveLock.Target = target
+                                    getgenv().ActiveLock.StartTime = tick()
+                                    getgenv().ActiveLock.Mode = modeKey
+                                    getgenv().ActiveLock.Track = track
+                                    humanoid.AutoRotate = false
+                                end
+                                break
+                            end
+                        end
+                        if getgenv().ActiveLock.IsActive then break end
+                    end
+                end
+            end
+            return
+        end
+
+        local mode = getgenv().ActiveLock.Mode
+        local cfg = getgenv().AimbotValues[mode]
+        if not cfg then
+            getgenv().ActiveLock.IsActive = false
+            return
+        end
+        local elapsed = tick() - getgenv().ActiveLock.StartTime
+        local tHRP = getgenv().ActiveLock.Target and getgenv().ActiveLock.Target:FindFirstChild("HumanoidRootPart")
+        local tHum = getgenv().ActiveLock.Target and getgenv().ActiveLock.Target:FindFirstChildOfClass("Humanoid")
+        if elapsed > (cfg.LockDuration or 1) or not tHRP or (tHum and tHum.Health <= 0) then
+            getgenv().LastFinishedTrack = getgenv().ActiveLock.Track
+            getgenv().ActiveLock.IsActive = false
+            getgenv().ActiveLock.Target = nil
+            getgenv().ActiveLock.Track = nil
+            humanoid.AutoRotate = true
+            return
+        end
+        local position = tHRP.Position
+        local pred = cfg.Prediction or 0
+        if pred > 0 and tHum and tHum.MoveDirection.Magnitude > 0 then
+            position = position + tHum.MoveDirection.Unit * pred
+        end
+        local lookAt = Vector3.new(position.X, hrp.Position.Y, position.Z)
+        local cframe = CFrame.lookAt(hrp.Position, lookAt)
+        if (tHRP.Position - hrp.Position).Magnitude < 6 then
+            hrp.CFrame = cframe
+        else
+            hrp.CFrame = hrp.CFrame:Lerp(cframe, 0.65)
+        end
+        if getgenv().GlobalAimlockMode == "Char + Cam Lock" then
+            local cam = Workspace.CurrentCamera
+            if cam then
+                cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, position), 0.75)
+            end
         end
     end)
 
-    task.spawn(function()
-        while true do
-            if Aim.enabled then pcall(scan) end
-            task.wait(1.0) -- slow scan, not 0.4 spam
-        end
-    end)
-
-    LP.CharacterAdded:Connect(function()
-        Aim.locking = false
-        Aim.hooked = setmetatable({}, { __mode = "k" })
-        task.wait(1)
-        if Aim.enabled then pcall(scan) end
-    end)
-
-    local left = Tabs.Aimbot:AddLeftGroupbox("Button Aim")
+    local left = Tabs.Aimbot:AddLeftGroupbox("Aimbot")
     left:AddToggle("Aim_Enable", {
-        Text = "Enable Button Aim",
+        Text = "Enable Aimbot",
         Default = false,
         Callback = function(v)
             if v and IsPlayerKiller() then
                 pcall(function() Toggles.Aim_Enable:SetValue(false) end)
                 return
             end
-            Aim.enabled = v
-            if v then pcall(scan) end
+            getgenv().GlobalAimbotToggle = v
         end,
     })
-    left:AddSlider("Aim_Lock", {
-        Text = "Lock Time", Default = 0.9, Min = 0.2, Max = 2, Rounding = 2,
-        Callback = function(v) Aim.lockTime = v end,
+    left:AddDropdown("Aim_Pick", {
+        Text = "Pick Aimbots",
+        Values = { "Guest1337", "Shedlekey", "TwoTime", "Chance", "JaneDoe" },
+        Default = 1,
+        Multi = true,
+        Callback = function(sel)
+            for k, cfg in pairs(getgenv().AimbotValues) do cfg.Enabled = false end
+            if type(sel) == "table" then
+                for name, on in pairs(sel) do
+                    local key = (on == true) and name or (type(on) == "string" and on or nil)
+                    if key and getgenv().AimbotValues[key] then
+                        getgenv().AimbotValues[key].Enabled = true
+                    end
+                end
+            end
+        end,
     })
-    left:AddSlider("Aim_PredMin", {
-        Text = "Pred Min", Default = 2, Min = 0, Max = 8, Rounding = 1,
-        Callback = function(v) Aim.predMin = v end,
+    left:AddDropdown("Aim_Mode", {
+        Text = "Aimlock Mode",
+        Values = { "Character Lock", "Char + Cam Lock" },
+        Default = 1,
+        Callback = function(v) getgenv().GlobalAimlockMode = v end,
     })
-    left:AddSlider("Aim_PredMax", {
-        Text = "Pred Max", Default = 3, Min = 0, Max = 12, Rounding = 1,
-        Callback = function(v) Aim.predMax = v end,
-    })
-    left:AddLabel("Starts when you press an ability button. Lightweight scan.", true)
+
+    local function addSurv(key, title, dd, dp)
+        local box = Tabs.Aimbot:AddRightGroupbox(title)
+        box:AddSlider(key .. "_Dur", {
+            Text = "Duration", Default = dd, Min = 0.1, Max = 3, Rounding = 2,
+            Callback = function(v) getgenv().AimbotValues[key].LockDuration = v end,
+        })
+        box:AddSlider(key .. "_Pred", {
+            Text = "Prediction", Default = dp, Min = 0, Max = 15, Rounding = 1,
+            Callback = function(v) getgenv().AimbotValues[key].Prediction = v end,
+        })
+    end
+    addSurv("Guest1337", "Guest 1337", 1.3, 0)
+    addSurv("Shedlekey", "Shedletsky", 1.2, 0)
+    addSurv("TwoTime", "Two Time", 0.9, 0)
+    addSurv("Chance", "Chance", 1.5, 3)
+    addSurv("JaneDoe", "Jane Doe", 1.1, 0)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- TWO TIME AUTO BACKSTAB
+-- TWO TIME BACKSTAB
 --═══════════════════════════════════════════════════════════════════
 do
     local BS = {
@@ -844,7 +885,7 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- GENERATOR SOLVER
+-- GENERATOR
 --═══════════════════════════════════════════════════════════════════
 do
     local Gen = {
@@ -852,7 +893,6 @@ do
         gen = 0,
         installed = false,
         startDelay = 1.2,
-        actionDelay = 0.05,
         connectDelay = 0.8,
     }
 
@@ -902,34 +942,6 @@ do
                 end)
                 return object
             end
-
-            -- Flow
-            local okFlow, FlowInput = pcall(function()
-                return require(folder.FlowClientMinigame.FlowInput)
-            end)
-            local okBoard, FlowBoard = pcall(function()
-                return require(ReplicatedStorage.Modules.Minigames.FlowBoard)
-            end)
-            if okFlow and okBoard then
-                local oldF = FlowInput.new
-                FlowInput.new = function(board, renderer, callbacks)
-                    local object = oldF(board, renderer, callbacks)
-                    local token = Gen.gen
-                    task.spawn(function()
-                        if not waitSolve(object) then return end
-                        task.wait(Gen.actionDelay)
-                        -- simple pair walk if available
-                        if board.Pairs and FlowBoard then
-                            -- minimal: attempt finish if already solvable helpers exist
-                        end
-                        if still(token, object) and board.IsSolved and board:IsSolved() then
-                            object:__finish()
-                            if callbacks and callbacks.OnSolved then callbacks.OnSolved() end
-                        end
-                    end)
-                    return object
-                end
-            end
         end)
     end
 
@@ -954,7 +966,7 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- PLAYER / STAMINA
+-- STAMINA
 --═══════════════════════════════════════════════════════════════════
 do
     local Stam = { infinite = false }
@@ -993,11 +1005,7 @@ end
 -- BASIC ESP
 --═══════════════════════════════════════════════════════════════════
 do
-    local S = {
-        killer = false,
-        survivor = false,
-        generator = false,
-    }
+    local S = { killer = false, survivor = false, generator = false }
     local folder = Instance.new("Folder")
     folder.Name = "Nos_ESP"
     folder.Parent = CoreGui
@@ -1086,7 +1094,7 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- UI SETTINGS (Example.lua pattern)
+-- UI SETTINGS
 --═══════════════════════════════════════════════════════════════════
 do
     local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
@@ -1106,6 +1114,7 @@ do
     MenuGroup:AddButton({
         Text = "Unload",
         Func = function()
+            clearStack()
             Library:Unload()
         end,
     })
@@ -1125,6 +1134,7 @@ pcall(function()
 end)
 
 Library:OnUnload(function()
+    clearStack()
     print("[Nos Hub] Unloaded")
 end)
 
