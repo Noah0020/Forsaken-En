@@ -29,100 +29,110 @@ if not table.clone then
     end
 end
 
-local OBSIDIAN_URLS = {
-    "https://raw.githubusercontent.com/deividcomsono/Obsidian/3674d51ec8ca046a3b21b2bb17317eee12ecac89/",
-    "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/",
-}
-local obsidianRepo = OBSIDIAN_URLS[1]
-local Library = nil
-for _, base in ipairs(OBSIDIAN_URLS) do
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library, ThemeManager, SaveManager
+do
     local ok, lib = pcall(function()
-        return loadstring(game:HttpGet(base .. "Library.lua"))()
+        return loadstring(game:HttpGet(repo .. "Library.lua"))()
     end)
-    if ok and type(lib) == "table" and type(lib.CreateWindow) == "function" then
-        Library = lib
-        obsidianRepo = base
-        break
+    if not ok or type(lib) ~= "table" then
+        -- fallback pinned commit used by NergPlus
+        local pinned = "https://raw.githubusercontent.com/deividcomsono/Obsidian/3674d51ec8ca046a3b21b2bb17317eee12ecac89/"
+        ok, lib = pcall(function()
+            return loadstring(game:HttpGet(pinned .. "Library.lua"))()
+        end)
+        if ok and type(lib) == "table" then
+            repo = pinned
+        end
     end
-end
-if not Library then
-    warn("[Nos Hub] Obsidian failed to load — abort")
-    return
+    if not ok or type(lib) ~= "table" then
+        warn("[Nos Hub] Failed to load Obsidian Library: " .. tostring(lib))
+        return
+    end
+    Library = lib
+    pcall(function() ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))() end)
+    pcall(function() SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))() end)
 end
 
-local ThemeManager, SaveManager
-pcall(function() ThemeManager = loadstring(game:HttpGet(obsidianRepo .. "addons/ThemeManager.lua"))() end)
-pcall(function() SaveManager = loadstring(game:HttpGet(obsidianRepo .. "addons/SaveManager.lua"))() end)
+local Options = Library.Options
+local Toggles = Library.Toggles
 
-local Options = Library.Options or {}
-local Toggles = Library.Toggles or {}
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 Library.ShowCustomCursor = true
-pcall(function()
-    if type(Library.Scheme) == "table" then
-        Library.Scheme.AccentColor = Color3.fromRGB(220, 40, 50)
-        Library.Scheme.OutlineColor = Color3.fromRGB(120, 25, 30)
-        Library.Scheme.BackgroundColor = Color3.fromRGB(18, 8, 10)
-        Library.Scheme.MainColor = Color3.fromRGB(28, 12, 14)
-        Library.Scheme.FontColor = Color3.fromRGB(255, 240, 240)
-    end
-end)
 
 local Window
 do
-    local ok, win = pcall(function()
+    local ok, winOrErr = pcall(function()
         return Library:CreateWindow({
             Title = "Nos Hub",
             Footer = tostring(LP.Name) .. " | " .. tostring(gameName),
             Icon = 131786483064769,
-            Size = UDim2.fromOffset(740, 580),
             NotifySide = "Right",
             ShowCustomCursor = true,
             Center = true,
             AutoShow = true,
             Resizable = true,
-            ShowMobileButtons = true,
-            MobileButtonsSide = "Left",
-            ToggleKeybind = Enum.KeyCode.RightShift,
+            Size = UDim2.fromOffset(740, 580),
         })
     end)
-    if not ok or not win then
-        -- minimal fallback without icon / mobile
-        ok, win = pcall(function()
+    if not ok then
+        warn("[Nos Hub] CreateWindow error: " .. tostring(winOrErr))
+        ok, winOrErr = pcall(function()
             return Library:CreateWindow({
                 Title = "Nos Hub",
-                Footer = tostring(LP.Name),
+                Footer = "Forsaken",
                 Center = true,
                 AutoShow = true,
             })
         end)
     end
-    if not ok or not win then
-        warn("[Nos Hub] CreateWindow failed: " .. tostring(win))
+    if not ok or not winOrErr then
+        warn("[Nos Hub] CreateWindow failed completely: " .. tostring(winOrErr))
         return
     end
-    Window = win
+    Window = winOrErr
+end
+
+local function addTab(name, icon)
+    local ok, tab = pcall(function()
+        return Window:AddTab(name, icon)
+    end)
+    if ok and tab then return tab end
+    ok, tab = pcall(function()
+        return Window:AddTab(name)
+    end)
+    if ok then return tab end
+    warn("[Nos Hub] AddTab failed: " .. name)
+    return nil
 end
 
 local Tabs = {
-    Main = Window:AddTab("Main", "user"),
-    ESP = Window:AddTab("ESP", "eye"),
-    Generator = Window:AddTab("Generator", "zap"),
-    Player = Window:AddTab("Player", "person-standing"),
-    Aimbot = Window:AddTab("Aimbot", "crosshair"),
-    Silent = Window:AddTab("Silent Aim", "target"),
-    Block = Window:AddTab("Block", "shield"),
-    Facing = Window:AddTab("Facing", "scan-eye"),
-    TwoTime = Window:AddTab("Two Time", "sword"),
-    HDT = Window:AddTab("HDT", "activity"),
-    Killer = Window:AddTab("Killer", "swords"),
-    Vee = Window:AddTab("Vee", "gamepad-2"),
-    Misc = Window:AddTab("Misc", "wrench"),
-    ["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+    Main = addTab("Main", "user"),
+    ESP = addTab("ESP", "eye"),
+    Generator = addTab("Generator", "zap"),
+    Player = addTab("Player", "person-standing"),
+    Aimbot = addTab("Aimbot", "crosshair"),
+    Silent = addTab("Silent Aim", "target"),
+    Block = addTab("Block", "shield"),
+    Facing = addTab("Facing", "scan-eye"),
+    TwoTime = addTab("Two Time", "sword"),
+    HDT = addTab("HDT", "activity"),
+    Vee = addTab("Vee", "gamepad-2"),
+    Misc = addTab("Misc", "wrench"),
+    ["UI Settings"] = addTab("UI Settings", "settings"),
 }
 
-Library:Notify({ Title = "Nos Hub", Description = "UI loaded", Time = 3 })
+-- Guard: every feature that uses Tabs.X must skip if nil
+for k, v in pairs(Tabs) do
+    if v == nil then
+        warn("[Nos Hub] missing tab: " .. tostring(k))
+    end
+end
+
+pcall(function()
+    Library:Notify({ Title = "Nos Hub", Description = "UI loaded", Time = 3 })
+end)
 print("[Nos Hub] UI OK")
 
 local function safe(name, fn)
@@ -150,11 +160,11 @@ end
 
 local RemoteEvent, RemoteFunction
 pcall(function()
-    local net = ReplicatedStorage:WaitForChild("Modules", 10)
+    local net = ReplicatedStorage:FindFirstChild("Modules")
     net = net and net:FindFirstChild("Network")
     net = net and (net:FindFirstChild("Network") or net)
     if net then
-        RemoteEvent = net:FindFirstChild("RemoteEvent") or net:WaitForChild("RemoteEvent", 5)
+        RemoteEvent = net:FindFirstChild("RemoteEvent")
         RemoteFunction = net:FindFirstChild("RemoteFunction")
     end
 end)
@@ -274,7 +284,7 @@ safe("Main", function()
     left:AddLabel("User ID : " .. tostring(LP.UserId))
     pcall(function() left:AddLabel("Executor : " .. tostring(identifyexecutor())) end)
     local right = Tabs.Main:AddRightGroupbox("Info", "info")
-    right:AddLabel({ Text = "Nos Hub · Vortex Block · Nolsaken ESP · RFS Backstab", DoesWrap = true })
+    right:AddLabel("Nos Hub · Vortex Block · Nolsaken ESP · RFS Backstab", true)
 end)
 
 print("[Nos Hub] Core OK")
@@ -1360,10 +1370,7 @@ safe("Facing UI", function()
             if v ~= "AdvancedBox" then AdvBox.Clear() end
         end,
     })
-    left:AddLabel({
-        Text = "None = no facing gate. Normal = killer look/range. AdvancedBox = multi predictive boxes.",
-        DoesWrap = true,
-    })
+    left:AddLabel("None = no facing gate. Normal = killer look/range. AdvancedBox = multi predictive boxes.", true)
 
     local norm = Tabs.Facing:AddLeftGroupbox("Normal Facing", "eye")
     norm:AddToggle("NormFace_T", {
@@ -1887,10 +1894,7 @@ safe("HDT", function()
         Text = "Pull Speed", Default = 12, Min = 4, Max = 40, Rounding = 0,
         Callback = function(v) HDT.speed = v end,
     })
-    left:AddLabel({
-        Text = "Runs when Auto Block fires (Guesting PrimaryPart style).",
-        DoesWrap = true,
-    })
+    left:AddLabel("Runs when Auto Block fires (Guesting PrimaryPart style).", true)
 end)
 
 safe("Misc", function()
@@ -1927,16 +1931,20 @@ safe("Misc", function()
 end)
 
 do
-    local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu", "settings")
+    local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
     MenuGroup:AddToggle("KeybindMenuOpen", {
-        Default = Library.KeybindFrame and Library.KeybindFrame.Visible or false,
+        Default = false,
         Text = "Open Keybind Menu",
         Callback = function(v)
-            if Library.KeybindFrame then Library.KeybindFrame.Visible = v end
+            pcall(function() Library.KeybindFrame.Visible = v end)
         end,
     })
     MenuGroup:AddDivider()
-    MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
+    MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", {
+        Default = "RightShift",
+        NoUI = true,
+        Text = "Menu keybind",
+    })
     MenuGroup:AddButton({
         Text = "Unload",
         Func = function()
@@ -1947,19 +1955,17 @@ do
     Library.ToggleKeybind = Options.MenuKeybind
 end
 
-if ThemeManager and SaveManager then
-    pcall(function()
-        ThemeManager:SetLibrary(Library)
-        SaveManager:SetLibrary(Library)
-        SaveManager:IgnoreThemeSettings()
-        SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
-        ThemeManager:SetFolder("NosHub")
-        SaveManager:SetFolder("NosHub")
-        SaveManager:BuildConfigSection(Tabs["UI Settings"])
-        ThemeManager:ApplyToTab(Tabs["UI Settings"])
-        SaveManager:LoadAutoloadConfig()
-    end)
-end
+pcall(function()
+    ThemeManager:SetLibrary(Library)
+    SaveManager:SetLibrary(Library)
+    SaveManager:IgnoreThemeSettings()
+    SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+    ThemeManager:SetFolder("NosHub")
+    SaveManager:SetFolder("NosHub/Forsaken")
+    SaveManager:BuildConfigSection(Tabs["UI Settings"])
+    ThemeManager:ApplyToTab(Tabs["UI Settings"])
+    SaveManager:LoadAutoloadConfig()
+end)
 
 Library:OnUnload(function()
     _ShuttingDown = true
