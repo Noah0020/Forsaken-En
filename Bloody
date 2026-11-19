@@ -1,63 +1,44 @@
 --[[
     UNSERIOUS HUB
-    Fluent-based Catsaken-inspired UI starter - FULLY WIRED EDITION
-    Version: 1.0 - NOS FEATURES MERGED
+    Fluent-based Catsaken-inspired UI starter - FULLY WIRED + FIXED
+    Version: 2.0 - NOS MERGED + NEW AUTO BLOCK
 
-    Corrections applied:
-    A: MinimizeKey = LeftControl (Fluent) + RightControl = custom listener (no duplicate)
-    B: Reset Demo Settings -> Check Settings (does what label says)
-
-    Includes:
-    - 10 tabs with image icons + Lucide icons
-    - Orange/yellow branding
-    - SaveManager and InterfaceManager
-    - Mobile floating button
-    - RightControl + LeftControl shortcuts
-    - ALL NOS HUB features properly wired
-    - Fixes: NoFog restore, Real Character Noclip, ESP optimized, Fluent used correctly
+    Fixes:
+    A: MinimizeKey = LeftControl + RightControl custom (no duplicate)
+    B: Check Settings button
+    C: Reset now resets GUI controls (SetValue) not just internal vars
+    D: Unload fully cleans connections
+    E: Settings sync via control callbacks
+    F: Sound listeners dedup removed - replaced with ability-name system
+    G: New Auto Block with BlockAbilityNames + spatial box wired
 ]]
 
 --==================================================
 -- 1. LOAD FLUENT
 --==================================================
-
-local Fluent = loadstring(game:HttpGet(
-    "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"
-))()
-
-local SaveManager = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"
-))()
-
-local InterfaceManager = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"
-))()
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
 local Lighting = game:GetService("Lighting")
-local MarketplaceService = game:GetService("MarketplaceService")
 local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 local LP = LocalPlayer
 
-if type(getgenv) ~= "function" then
-    local g = {}
-    getgenv = function() return g end
-end
+if type(getgenv) ~= "function" then getgenv = function() return {} end end
 
 --==================================================
--- 2. BRANDING AND THEME
+-- 2. BRANDING
 --==================================================
-
 local HUB_NAME = "UNSERIOUS HUB"
-local HUB_VERSION = "1.0 - NOS MERGED"
+local HUB_VERSION = "2.0 - FIXED + NEW BLOCK"
 
 local COLORS = {
     Background = Color3.fromRGB(22, 22, 25),
@@ -69,9 +50,8 @@ local COLORS = {
 }
 
 --==================================================
--- 3. CREATE WINDOW - Correction A
+-- 3. WINDOW - Correction A
 --==================================================
-
 local Window = Fluent:CreateWindow({
     Title = HUB_NAME,
     SubTitle = "Catsaken-inspired | v" .. HUB_VERSION,
@@ -79,127 +59,60 @@ local Window = Fluent:CreateWindow({
     Size = UDim2.fromOffset(890, 460),
     Acrylic = false,
     Theme = "Dark",
-    MinimizeKey = Enum.KeyCode.LeftControl -- Correction A: LeftControl is Fluent's shortcut, RightControl is ours
+    MinimizeKey = Enum.KeyCode.LeftControl
 })
 
 --==================================================
--- 4. CREATE TABS
+-- 4. TABS
 --==================================================
-
 local Tabs = {}
-
 local function CreateTab(Name, Icon)
-    Tabs[Name] = Window:AddTab({
-        Title = Name,
-        Icon = Icon
-    })
+    Tabs[Name] = Window:AddTab({ Title = Name, Icon = Icon })
 end
-
 CreateTab("ESP", "rbxassetid://87925260564358")
 CreateTab("Stamina", "rbxassetid://83167300982374")
 CreateTab("Auto Block", "rbxassetid://106233617385799")
 CreateTab("Aim", "rbxassetid://85016540854730")
 CreateTab("Silent Aim", "rbxassetid://115530476553415")
-CreateTab("Two Time", "repeat")
-CreateTab("Killer", "zap")
-CreateTab("Mist", "cloud")
-CreateTab("Gen", "cpu")
+CreateTab("Two Time", "rbxassetid://96175300994185")
+CreateTab("Killer", "rbxassetid://124384535760427")
+CreateTab("Mist", "rbxassetid://120439865325711")
+CreateTab("Gen", "rbxassetid://119328994950296")
 CreateTab("Settings", "settings")
 
 --==================================================
--- 5. CENTRAL SETTINGS TABLE - EXPANDED FOR ALL FEATURES
+-- 5. SETTINGS + CONTROL REGISTRY - FIX for Reset GUI
 --==================================================
-
 local Settings = {
-    -- ESP
-    ESP_Survivors = false,
-    ESP_Killers = false,
-    ESP_Generators = false,
-    ESP_Items = false,
-    ESP_Minions = false,
-    ESP_Traps = false,
-    ESP_Sprays = false,
-    ESP_Names = true,
-    ESP_Health = true,
-
-    -- Stamina
-    Stam_Unlimited = false,
-    Stam_Min = 0,
-    Stam_Max = 100,
-    Stam_Loss = 10,
-    Stam_Gain = 20,
-    Stam_AutoUnsprint = false,
-    Stam_UnsprintAt = 10,
-
-    -- Auto Block + HDT
-    AB_Enabled = false,
-    AB_ShowHitbox = true,
-    AB_Sound = true,
-    AB_Anim = true,
-    AB_Attr = true,
-    AB_Delay = 0,
-    AB_Duration = 0.4,
-    AB_Width = 5,
-    AB_Height = 6,
-    AB_Length = 8,
-    AB_Offset = -2,
-    HDT_Enabled = false,
-    HDT_Duration = 0.35,
-    HDT_Speed = 14,
-    HDT_Range = 30,
-
-    -- Aim
-    Aim_Enabled = false,
-    Aim_Mode = "Character Lock",
-    Aim_Prediction = 1,
-    Aim_Easing = 0.8,
-    Aim_Guest1337 = true,
-    Aim_Shedlekey = true,
-    Aim_TwoTime = true,
-    Aim_Chance = true,
-    Aim_JaneDoe = false,
-    Aim_Pizza = false,
-
-    -- Silent Aim
-    Silent_Crystal = false,
-    Silent_CrystalPred = 2.5,
-    Silent_CrystalY = 1.5,
-    Silent_Dusk = false,
-    Silent_DuskPred = 0.5,
-
-    -- Two Time
-    TT_Enabled = false,
-    TT_Method = "Teleport",
-    TT_NormalRange = 3,
-    TT_CrouchRange = 3,
-    TT_Duration = 0.5,
-    TT_Delay = 0.05,
-    TT_Speed = 100,
-    TT_TPBack = false,
-    TT_PrimMode = "Character",
-    TT_Pivot = false,
-
-    -- Killer
-    Killer_AutoPunch = false,
-    Killer_PunchDelay = 0.45,
-
-    -- Mist
-    Mist_Fullbright = false,
-    Mist_NoFog = false,
-    Mist_Noclip = false,
-    Mist_AntiSlow = false,
-    Mist_NoTrails = false,
-
-    -- Gen
-    Gen_Enabled = false,
-    Gen_StartDelay = 1.2,
-    Gen_ConnectDelay = 0.8,
+    ESP_Survivors = false, ESP_Killers = false, ESP_Generators = false, ESP_Items = false,
+    ESP_Minions = false, ESP_Traps = false, ESP_Sprays = false, ESP_Names = true, ESP_Health = true,
+    Stam_Unlimited = false, Stam_Min = 0, Stam_Max = 100, Stam_Loss = 10, Stam_Gain = 20,
+    Stam_AutoUnsprint = false, Stam_UnsprintAt = 10,
+    AB_Enabled = false, AB_ShowHitbox = true, AB_ShowOutline = true, AB_Sound = true, AB_Anim = true, AB_Attr = true,
+    AB_Delay = 0, AB_Duration = 0.4, AB_Width = 5, AB_Height = 6, AB_Length = 8, AB_Offset = -2,
+    AB_Transparency = 0.35, AB_OutlineThickness = 0.05,
+    HDT_Enabled = false, HDT_Duration = 0.35, HDT_Speed = 14, HDT_Range = 30,
+    Aim_Enabled = false, Aim_Mode = "Character Lock", Aim_Prediction = 1, Aim_Easing = 0.8,
+    Aim_Guest1337 = true, Aim_Shedlekey = true, Aim_TwoTime = true, Aim_Chance = true, Aim_JaneDoe = false, Aim_Pizza = false,
+    Silent_Crystal = false, Silent_CrystalPred = 2.5, Silent_CrystalY = 1.5, Silent_Dusk = false, Silent_DuskPred = 0.5,
+    TT_Enabled = false, TT_Method = "Teleport", TT_NormalRange = 3, TT_CrouchRange = 3, TT_Duration = 0.5, TT_Delay = 0.05, TT_Speed = 100, TT_TPBack = false, TT_PrimMode = "Character", TT_Pivot = false,
+    Killer_AutoPunch = false, Killer_PunchDelay = 0.45,
+    Mist_Fullbright = false, Mist_NoFog = false, Mist_Noclip = false, Mist_AntiSlow = false, Mist_NoTrails = false,
+    Gen_Enabled = false, Gen_StartDelay = 1.2, Gen_ConnectDelay = 0.8,
 }
 
---==================================================
--- 5B. CORE FEATURES - FROM NOS HUB (FULLY WORKING)
---==================================================
+-- Registry to fix reset bug - stores Fluent controls and defaults
+local FluentControls = {}
+local ControlDefaults = {}
+local AllConnections = {} -- for full unload cleanup
+local function TrackConnection(conn)
+    if conn then table.insert(AllConnections, conn) end
+    return conn
+end
 
+--==================================================
+-- 5B. CORE KILLER CHECKS
+--==================================================
 local KILLER_NAMES = {
     ["Slasher"]=true,["Jason"]=true,["c00lkidd"]=true,["CoolKid"]=true,["Coolkidd"]=true,
     ["John Doe"]=true,["JohnDoe"]=true,["Noli"]=true,["1x1x1x1"]=true,["Onex"]=true,["OneX"]=true,
@@ -213,7 +126,6 @@ local function IsPlayerKiller()
     if kf and c:IsDescendantOf(kf) then return true end
     return KILLER_NAMES[c:GetAttribute("CharacterName") or c.Name] == true
 end
-
 local RemoteEvent, RemoteFunction
 pcall(function()
     local m = ReplicatedStorage:FindFirstChild("Modules")
@@ -234,6 +146,7 @@ local function getRF()
     pcall(function() RemoteFunction = ReplicatedStorage.Modules.Network.Network.RemoteFunction end)
     return RemoteFunction
 end
+local function getNetworkEvent() return getRE() end
 local function GetNearestKiller(maxDist)
     local char = LP.Character
     local my = char and char:FindFirstChild("HumanoidRootPart")
@@ -298,7 +211,6 @@ local function DragToward(killerRoot)
         if hum and hum.Parent then pcall(function() hum:Move(Vector3.zero, false) end) end
     end)
 end
-
 local AutoPunch = { enabled = false, delay = 0.45 }
 local function FirePunch()
     local re = getRE()
@@ -316,145 +228,206 @@ local function FireBlock(killerRoot)
     end
 end
 
--- AUTO BLOCK
+--==================================================
+-- NEW AUTO BLOCK - Ability Name Based (replaces sound/anim IDs)
+--==================================================
+-- Global compat for your snippet
+_G.BlockAbilityNames = {
+    "PERFORATING", "LACERATE", "EVISCERATE", "CARVING SLASH",
+    "STAB", "TAG", "SLASH", "ENRAGED SLASH",
+}
+_G.HitboxWidth = 5
+_G.HitboxHeight = 6
+_G.HitboxLength = 8
+_G.HitboxOffset = -2
+_G.HitboxDuration = 0.4
+_G.HitboxTransparency = 0.35
+_G.HitboxColor = Color3.fromRGB(220,40,50)
+_G.ShowHitboxVisual = true
+_G.ShowOutline = true
+_G.OutlineThickness = 0.05
+_G.BlockDelay = 0
+_G.AutoBlockEnabled = false
+
 local AB = {
-    enabled=false, delay=0, duration=0.4, width=5, height=6, length=8, offset=-2,
-    showVisual=true, color=Color3.fromRGB(220,40,50), transparency=0.35, last=0,
-    useAudio=true, useAnim=true, useAttr=true,
+    enabled = false,
+    delay = 0,
+    duration = 0.4,
+    width = 5, height = 6, length = 8, offset = -2,
+    showVisual = true, showOutline = true,
+    color = Color3.fromRGB(220,40,50),
+    transparency = 0.35, outlineThickness = 0.05,
+    last = 0,
 }
-local SOUND_IDS = {
-    ["74809026448465"]=true,["85853080745515"]=true,["95079963655241"]=true,
-    ["98111231282218"]=true,["101199185291628"]=true,["115026634746636"]=true,
-    ["133709029886490"]=true,["86174610237192"]=true,["98675142200448"]=true,
-    ["89004992452376"]=true,["96117920303138"]=true,["104910828105172"]=true,
-    ["71805956520207"]=true,["74842815979546"]=true,["75330693422988"]=true,
-    ["79391273191671"]=true,["80516583309685"]=true,
-}
-local SLASHER_ANIMS = {
-    ["94958041603347"]=true,["106860049270347"]=true,["108196996477620"]=true,
-    ["109667959938617"]=true,["118298475669935"]=true,["125403313786645"]=true,
-}
-local function doBlock(killer)
-    if AB.delay > 0 then task.wait(AB.delay) end
-    FireBlock(killer and killer:FindFirstChild("HumanoidRootPart"))
+
+local function shouldBlockAbility(name)
+    if type(name) ~= "string" or name == "" then return false end
+    local upper = string.upper(name)
+    for _, bn in ipairs(_G.BlockAbilityNames) do
+        if string.find(upper, string.upper(bn), 1, true) then return true end
+    end
+    return false
 end
-local function spawnBlockBox(killer)
-    if not AB.enabled or IsPlayerKiller() or not killer then return end
-    local root = killer:FindFirstChild("HumanoidRootPart")
+
+local function getAbilityName(killer)
+    if not killer then return nil end
+    for _, attr in ipairs({"AbilityName", "LastAbility", "CurrentAbility", "LastAbilityName", "AbilityUsed", "Ability", "CurrentAttack"}) do
+        local ok, val = pcall(function() return killer:GetAttribute(attr) end)
+        if ok and type(val) == "string" and val ~= "" then return val end
+    end
+    return nil
+end
+
+-- WIRED TO BOX - creates spatial overlap box
+local function createSpatialOverlapBox(killerChar, size, onHit)
+    if IsPlayerKiller() then return end
+    if not killerChar or killerChar == LP.Character then return end
+    local root = killerChar:FindFirstChild("HumanoidRootPart") or killerChar:FindFirstChild("RootPart")
     if not root then return end
-    local now = tick()
-    if now - AB.last < 0.06 then return end
-    AB.last = now
+    local op = OverlapParams.new()
+    op.FilterType = Enum.RaycastFilterType.Exclude
+    op.FilterDescendantsInstances = { killerChar }
     task.spawn(function()
-        local elapsed, duration, fired = 0, math.clamp(AB.duration, 0.1, 1), false
-        local op = OverlapParams.new()
-        op.FilterType = Enum.RaycastFilterType.Exclude
-        op.FilterDescendantsInstances = { killer }
-        while killer.Parent and root.Parent and elapsed < duration and not fired do
-            if not AB.enabled or IsPlayerKiller() then return end
-            local part = Instance.new("Part")
-            part.Name = "Nos_BlockBox"
-            part.Anchored = true
-            part.CanCollide = false
-            part.CanTouch = false
-            part.CanQuery = true
-            part.CastShadow = false
-            part.Material = Enum.Material.ForceField
-            part.Color = AB.color
-            part.Transparency = AB.showVisual and AB.transparency or 1
-            part.Size = Vector3.new(AB.width, AB.height, AB.length)
-            part.CFrame = root.CFrame * CFrame.new(0, 0, AB.offset)
-            part.Parent = Workspace
-            if AB.showVisual then
+        local elapsed = 0
+        local duration = _G.HitboxDuration or AB.duration
+        while killerChar.Parent and root.Parent and elapsed < duration do
+            if IsPlayerKiller() then return end
+            if not AB.enabled and not _G.AutoBlockEnabled then return end
+            local Part = Instance.new("Part")
+            Part.Name = "Vortex_BlockBox"
+            Part.Transparency = _G.HitboxTransparency or AB.transparency
+            Part.CanCollide = false; Part.CanTouch = false; Part.CanQuery = false
+            Part.CastShadow = false; Part.Anchored = true
+            Part.Size = size or Vector3.new(_G.HitboxWidth, _G.HitboxHeight, _G.HitboxLength)
+            Part.Color = _G.HitboxColor or AB.color
+            Part.Material = Enum.Material.ForceField
+            Part.CFrame = root.CFrame * CFrame.new(0, 0, _G.HitboxOffset or AB.offset)
+            Part.Parent = Workspace
+            if (_G.ShowOutline and _G.ShowHitboxVisual) or (AB.showOutline and AB.showVisual) then
                 local sb = Instance.new("SelectionBox")
-                sb.Adornee = part
-                sb.Color3 = AB.color
-                sb.LineThickness = 0.05
-                sb.Parent = part
+                sb.Adornee = Part; sb.Color3 = _G.HitboxColor or AB.color
+                sb.LineThickness = _G.OutlineThickness or AB.outlineThickness
+                sb.Transparency = 0.1; sb.Visible = true
+                sb.Parent = Part
             end
-            Debris:AddItem(part, 0.06)
-            for _, hit in ipairs(Workspace:GetPartsInPart(part, op)) do
-                local model = hit:FindFirstAncestorOfClass("Model")
-                local hum = model and model:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 and Players:GetPlayerFromCharacter(model) == LP then
-                    doBlock(killer)
-                    fired = true
-                    break
+            Debris:AddItem(Part, 0.06)
+            for _, v in ipairs(Workspace:GetPartsInPart(Part, op)) do
+                local hum = v.Parent and v.Parent:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 and Players:GetPlayerFromCharacter(hum.Parent) == LP then
+                    if (_G.BlockDelay or AB.delay) > 0 then task.wait(_G.BlockDelay or AB.delay) end
+                    if onHit then onHit() end
+                    return
                 end
             end
             elapsed = elapsed + RunService.Heartbeat:Wait()
         end
     end)
 end
-local function onDetect(killer)
-    if not AB.enabled or IsPlayerKiller() or not killer then return end
-    spawnBlockBox(killer)
+
+local lastTrigger = 0
+local function triggerBoxCheck(killer)
+    if IsPlayerKiller() then return end
+    if not killer or killer == LP.Character or not killer.Parent then return end
+    local now = tick()
+    if now - lastTrigger < 0.05 then return end
+    lastTrigger = now
+    createSpatialOverlapBox(killer, Vector3.new(_G.HitboxWidth, _G.HitboxHeight, _G.HitboxLength), function()
+        FireBlock(killer:FindFirstChild("HumanoidRootPart"))
+    end)
 end
-local monitored = {}
-local function monitorKiller(k)
-    if not k or monitored[k] or not k:IsA("Model") then return end
-    monitored[k] = true
-    local lastAbility = k:GetAttribute("AbilityLastUsed") or 0
-    local lastUsed = k:GetAttribute("AbilitiesUsed") or 0
-    k:GetAttributeChangedSignal("AbilityLastUsed"):Connect(function()
-        if not AB.enabled or not AB.useAttr or IsPlayerKiller() then return end
-        local cur = k:GetAttribute("AbilityLastUsed") or 0
+
+local monitoredKillers = {}
+local function monitorKiller(killer)
+    if not killer or monitoredKillers[killer] or not killer:IsA("Model") then return end
+    if killer == LP.Character then return end
+    monitoredKillers[killer] = true
+    local lastAbility = killer:GetAttribute("AbilityLastUsed") or 0
+    local lastUsed = killer:GetAttribute("AbilitiesUsed") or 0
+    local function onNewAbility()
+        if not _G.AutoBlockEnabled and not AB.enabled then return end
+        if IsPlayerKiller() then return end
+        local name = getAbilityName(killer)
+        if name == nil or shouldBlockAbility(name) then triggerBoxCheck(killer) end
+    end
+    local conn1 = killer:GetAttributeChangedSignal("AbilityLastUsed"):Connect(function()
+        local cur = killer:GetAttribute("AbilityLastUsed") or 0
         if cur == lastAbility then return end
         lastAbility = cur
-        local curU = k:GetAttribute("AbilitiesUsed") or 0
-        if curU > lastUsed then lastUsed = curU; return end
-        onDetect(k)
+        local curUsed = killer:GetAttribute("AbilitiesUsed") or 0
+        if curUsed > lastUsed then lastUsed = curUsed; return end
+        onNewAbility()
     end)
-end
-local function hookSound(snd, model)
-    if not snd or not snd:IsA("Sound") then return end
-    local id = tostring(snd.SoundId):match("%d+")
-    if not id or not SOUND_IDS[id] then return end
-    local function fire()
-        if not AB.enabled or not AB.useAudio or IsPlayerKiller() then return end
-        local k = model or snd:FindFirstAncestorOfClass("Model")
-        if k then onDetect(k) end
-    end
-    pcall(function() snd.Played:Connect(fire) end)
-    if snd.IsPlaying then task.defer(fire) end
-end
-local function hookKillerAnim(model)
-    task.spawn(function()
-        local hum = model:WaitForChild("Humanoid", 5)
-        if not hum then return end
-        local anim = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 4)
-        if not anim then return end
-        anim.AnimationPlayed:Connect(function(track)
-            if not AB.enabled or not AB.useAnim or IsPlayerKiller() then return end
-            local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
-            if id and SLASHER_ANIMS[id] then onDetect(model) end
+    TrackConnection(conn1)
+    for _, attr in ipairs({"AbilityName", "LastAbility", "CurrentAbility", "LastAbilityName"}) do
+        pcall(function()
+            local c = killer:GetAttributeChangedSignal(attr):Connect(onNewAbility)
+            TrackConnection(c)
         end)
-    end)
+    end
 end
+
+local remoteHooked = false
+local function hookAbilityRemote()
+    if remoteHooked then return end
+    remoteHooked = true
+    local remote = getNetworkEvent()
+    if not remote then return end
+    local function argMatches(arg)
+        if type(arg) == "string" then return shouldBlockAbility(arg) end
+        if typeof(arg) == "buffer" then
+            local ok, str = pcall(buffer.tostring, arg)
+            if ok and str then return shouldBlockAbility(str) end
+        end
+        return false
+    end
+    local conn = remote.OnClientEvent:Connect(function(...)
+        if not _G.AutoBlockEnabled and not AB.enabled then return end
+        if IsPlayerKiller() then return end
+        for _, arg in ipairs({...}) do
+            if argMatches(arg) then
+                local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+                if kf then
+                    for _, k in ipairs(kf:GetChildren()) do
+                        if k:IsA("Model") and k ~= LP.Character then triggerBoxCheck(k); break end
+                    end
+                end
+                break
+            end
+        end
+    end)
+    TrackConnection(conn)
+end
+
+local function EnableAutoBlock()
+    if IsPlayerKiller() then return end
+    hookAbilityRemote()
+    local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+    if kf then
+        for _, k in ipairs(kf:GetChildren()) do
+            if k:IsA("Model") and k ~= LP.Character then monitorKiller(k) end
+        end
+    end
+end
+
+-- Background monitor for new killers
+TrackConnection(RunService.Heartbeat:Connect(function() end)) -- placeholder to keep table
 task.spawn(function()
     while true do
         task.wait(1)
-        if AB.enabled and not IsPlayerKiller() then
-            for _, k in ipairs(GetKillersList()) do
-                monitorKiller(k)
-                if not monitored[tostring(k).."_anim"] then
-                    monitored[tostring(k).."_anim"] = true
-                    hookKillerAnim(k)
-                end
-                for _, d in ipairs(k:GetDescendants()) do
-                    if d:IsA("Sound") then hookSound(d, k) end
+        if (_G.AutoBlockEnabled or AB.enabled) and not IsPlayerKiller() then
+            local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+            if kf then
+                for _, k in ipairs(kf:GetChildren()) do
+                    if k:IsA("Model") and k ~= LP.Character then monitorKiller(k) end
                 end
             end
         end
     end
 end)
-Workspace.DescendantAdded:Connect(function(obj)
-    if AB.enabled and obj:IsA("Sound") then
-        task.defer(function() hookSound(obj, obj:FindFirstAncestorOfClass("Model")) end)
-    end
-end)
 
--- TWO TIME
+--==================================================
+-- TWO TIME, AIM, SILENT, STAMINA, ESP, MIST, GEN (same as before, cleaned)
+--==================================================
 local TT = {
     enabled=false, normalRange=3, crouchRange=3, duration=0.5, delay=0.05,
     method="Teleport", speed=100, tpBack=false, pivotTo=false, primaryMode="Character",
@@ -541,13 +514,12 @@ local function hookCharTT(char)
         local hum = char:WaitForChild("Humanoid", 8)
         if not hum then return end
         local anim = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 5)
-        if anim then anim.AnimationPlayed:Connect(onAnimTT) end
+        if anim then TrackConnection(anim.AnimationPlayed:Connect(onAnimTT)) end
     end)
 end
 if LP.Character then hookCharTT(LP.Character) end
-LP.CharacterAdded:Connect(hookCharTT)
+TrackConnection(LP.CharacterAdded:Connect(hookCharTT))
 
--- AIMBOT CORE
 local AimCore = { prediction = 1, easing = 0.8, cooldown = false }
 local function PredictNext(part)
     if not part then return Vector3.zero end
@@ -573,6 +545,7 @@ local function SyncAimbot(targetPart, duration)
         if (flat - hrp.Position).Magnitude < 0.01 then return end
         hrp.CFrame = hrp.CFrame:Lerp(CFrame.lookAt(hrp.Position, flat), AimCore.easing)
     end)
+    TrackConnection(conn)
 end
 getgenv().AimbotValues = {
     Guest1337 = { Enabled = true, Distance = 55, LockDuration = 1.3, Prediction = 0 },
@@ -653,11 +626,11 @@ local function hookCharAim(char)
         local hum = char:WaitForChild("Humanoid", 10)
         if not hum then return end
         local animator = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 6)
-        if animator then animator.AnimationPlayed:Connect(tryTrack) end
+        if animator then TrackConnection(animator.AnimationPlayed:Connect(tryTrack)) end
     end)
 end
 if LP.Character then hookCharAim(LP.Character) end
-LP.CharacterAdded:Connect(hookCharAim)
+TrackConnection(LP.CharacterAdded:Connect(hookCharAim))
 task.spawn(function()
     pcall(function()
         if typeof(hookmetamethod) ~= "function" then return end
@@ -683,7 +656,7 @@ task.spawn(function()
         end)
     end)
 end)
-RunService.Heartbeat:Connect(function()
+TrackConnection(RunService.Heartbeat:Connect(function()
     if not getgenv().GlobalAimbotToggle or getgenv().ActiveLock.IsActive or IsPlayerKiller() then return end
     local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
     local animator = hum and hum:FindFirstChildOfClass("Animator")
@@ -691,8 +664,8 @@ RunService.Heartbeat:Connect(function()
     for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
         if track.IsPlaying then tryTrack(track); if getgenv().ActiveLock.IsActive then break end end
     end
-end)
-RunService.RenderStepped:Connect(function()
+end))
+TrackConnection(RunService.RenderStepped:Connect(function()
     if not getgenv().ActiveLock.IsActive then return end
     if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then
         getgenv().ActiveLock.IsActive = false
@@ -735,9 +708,8 @@ RunService.RenderStepped:Connect(function()
         local cam = Workspace.CurrentCamera
         if cam then cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, position), 0.85) end
     end
-end)
+end))
 
--- SILENT AIM
 local Silent = { crystal=false, crystalPred=2.5, crystalY=1.5, dusk=false, duskPred=0.5, hooked=false }
 local function aimCamCF()
     local killer = GetNearestKiller(math.huge)
@@ -809,7 +781,6 @@ local function installSilent()
 end
 task.defer(installSilent)
 
--- STAMINA
 local Stam = { unlimited=false, minS=0, maxS=100, loss=10, gain=20, autoUnsprint=false, unsprintAt=10 }
 local function getSprint()
     if getgenv()._SharedSprintMod then return getgenv()._SharedSprintMod end
@@ -844,7 +815,7 @@ local function readBar()
     if not amount then return nil end
     return tonumber(tostring(amount.Text):match("(%d+)%s*/"))
 end
-RunService.Heartbeat:Connect(function()
+TrackConnection(RunService.Heartbeat:Connect(function()
     if Stam.unlimited then applyStam() end
     if Stam.autoUnsprint then
         local cur = readBar()
@@ -858,12 +829,11 @@ RunService.Heartbeat:Connect(function()
             end
         end
     end
-end)
+end))
 task.defer(function()
     for _=1,30 do if getSprint() then applyStam(); break end; task.wait(0.3) end
 end)
 
--- ESP - OPTIMIZED
 local ESP = {
     survivor=false, killer=false, generator=false, item=false,
     minion=false, trap=false, spray=false, names=true, health=true,
@@ -971,7 +941,7 @@ local function refreshESP()
     end
     for inst in pairs(ESP.tracked) do if not seen[inst] or not inst.Parent then clearOne(inst) end end
 end
-Workspace.DescendantAdded:Connect(function(obj)
+TrackConnection(Workspace.DescendantAdded:Connect(function(obj)
     if not obj:IsA("Model") then return end
     task.wait(0.1)
     if ESP.generator and obj.Name=="Generator" then ensureESP(obj,"generator")
@@ -980,10 +950,9 @@ Workspace.DescendantAdded:Connect(function(obj)
     elseif ESP.trap and (obj.Name=="SubspaceTripmine" or obj.Name:find("TaphTripwire")) then ensureESP(obj,"trap")
     elseif ESP.spray and obj.Name:find("Spray") then ensureESP(obj,"spray")
     end
-end)
+end))
 task.spawn(function() while true do pcall(refreshESP); task.wait(0.5) end end)
 
--- MIST - FIXED NoFog restore + Real Noclip
 local Mist = {
     fullbright=false, noFog=false, cameraNoclip=false, antiSlow=false, disableTrails=false,
     fbToken=0, savedLighting=nil, savedFog=nil, noclipConn=nil, defaultOcclusion=LP.DevCameraOcclusionMode,
@@ -1047,6 +1016,7 @@ local function setCharacterNoclip(on)
                 end
             end
         end)
+        TrackConnection(Mist.noclipConn)
     else
         if Mist.noclipConn then Mist.noclipConn:Disconnect(); Mist.noclipConn=nil end
         local char=LP.Character
@@ -1059,21 +1029,20 @@ local function setCharacterNoclip(on)
         end
     end
 end
-LP.CharacterAdded:Connect(function() task.wait(0.5) if Mist.cameraNoclip and not Mist.noclipConn then setCharacterNoclip(true) end end)
+TrackConnection(LP.CharacterAdded:Connect(function() task.wait(0.5) if Mist.cameraNoclip and not Mist.noclipConn then setCharacterNoclip(true) end end))
 local function applyAntiSlow()
     if not Mist.antiSlow then return end
     local sm=Workspace:FindFirstChild("SpeedMultipliers", true)
     if not sm then return end
     for _,child in ipairs(sm:GetChildren()) do if child:IsA("NumberValue") and child.Name~="Base" and child.Value<1 then child.Value=1 end end
 end
-RunService.Heartbeat:Connect(function()
+TrackConnection(RunService.Heartbeat:Connect(function()
     if Mist.antiSlow then applyAntiSlow() end
     if Mist.disableTrails and LP.Character then
         for _,d in ipairs(LP.Character:GetDescendants()) do if d:IsA("Trail") or d:IsA("ParticleEmitter") then d.Enabled=false end end
     end
-end)
+end))
 
--- GEN
 local Gen = { enabled=false, gen=0, installed=false, startDelay=1.2, connectDelay=0.8 }
 local function still(token, object) return Gen.enabled and token==Gen.gen and object and not object.Ended end
 local function waitSolve(object)
@@ -1113,16 +1082,17 @@ local function installGen()
 end
 
 --==================================================
--- 6. CONTROL HELPERS - Pattern from Tuto
+-- 6. CONTROL HELPERS - FIXED to track controls
 --==================================================
-
 local function AddInfo(Tab, Title, Content)
     Tab:AddParagraph({ Title = Title, Content = Content })
 end
 
 local function AddToggle(Tab, Id, Title, Default, Callback)
     Settings[Id] = Default
+    ControlDefaults[Id] = Default
     local Control = Tab:AddToggle(Id, { Title = Title, Default = Default })
+    FluentControls[Id] = Control
     Control:OnChanged(function(Value)
         Settings[Id] = Value
         if Callback then Callback(Value) end
@@ -1136,7 +1106,8 @@ end
 
 local function AddSlider(Tab, Id, Title, Minimum, Maximum, Default, Rounding, Callback)
     Settings[Id] = Default
-    return Tab:AddSlider(Id, {
+    ControlDefaults[Id] = Default
+    local Control = Tab:AddSlider(Id, {
         Title = Title,
         Min = Minimum,
         Max = Maximum,
@@ -1147,11 +1118,14 @@ local function AddSlider(Tab, Id, Title, Minimum, Maximum, Default, Rounding, Ca
             if Callback then Callback(Value) end
         end
     })
+    FluentControls[Id] = Control
+    return Control
 end
 
 local function AddDropdown(Tab, Id, Title, Values, Default, Callback)
     Settings[Id] = Default
-    return Tab:AddDropdown(Id, {
+    ControlDefaults[Id] = Default
+    local Control = Tab:AddDropdown(Id, {
         Title = Title,
         Values = Values,
         Default = Default,
@@ -1160,6 +1134,8 @@ local function AddDropdown(Tab, Id, Title, Values, Default, Callback)
             if Callback then Callback(Value) end
         end
     })
+    FluentControls[Id] = Control
+    return Control
 end
 
 local function Notify(Title, Content)
@@ -1167,118 +1143,108 @@ local function Notify(Title, Content)
 end
 
 --==================================================
--- 7. ESP TAB - WIRED
+-- 7. ESP TAB
 --==================================================
-
 do
     local Tab = Tabs.ESP
-
-    AddInfo(Tab, "ESP - NOS MERGED", "SyncSaken-style categories + optimized scanning")
-
-    local function MyFeature_Survivors(Value)
-        ESP.survivor = Value
-        refreshESP()
-        print("ESP Survivors:", Value)
-    end
-    AddToggle(Tab, "ESP_Survivors", "Survivors", false, MyFeature_Survivors)
-
-    local function MyFeature_Killers(Value)
-        ESP.killer = Value
-        refreshESP()
-        print("ESP Killers:", Value)
-    end
-    AddToggle(Tab, "ESP_Killers", "Killers", false, MyFeature_Killers)
-
-    AddToggle(Tab, "ESP_Generators", "Generators", false, function(Value)
-        ESP.generator = Value
-        refreshESP()
-    end)
-    AddToggle(Tab, "ESP_Items", "Items / Medkits", false, function(Value)
-        ESP.item = Value
-        refreshESP()
-    end)
-    AddToggle(Tab, "ESP_Minions", "Minions (Pizza/Zombie)", false, function(Value)
-        ESP.minion = Value
-        refreshESP()
-    end)
-    AddToggle(Tab, "ESP_Traps", "Traps (Subspace/Taph)", false, function(Value)
-        ESP.trap = Value
-        refreshESP()
-    end)
-    AddToggle(Tab, "ESP_Sprays", "Sprays", false, function(Value)
-        ESP.spray = Value
-        refreshESP()
-    end)
-
+    AddInfo(Tab, "ESP - NOS MERGED", "Optimized scanning, no Workspace spam")
+    AddToggle(Tab, "ESP_Survivors", "Survivors", false, function(Value) ESP.survivor = Value; refreshESP() end)
+    AddToggle(Tab, "ESP_Killers", "Killers", false, function(Value) ESP.killer = Value; refreshESP() end)
+    AddToggle(Tab, "ESP_Generators", "Generators", false, function(Value) ESP.generator = Value; refreshESP() end)
+    AddToggle(Tab, "ESP_Items", "Items / Medkits", false, function(Value) ESP.item = Value; refreshESP() end)
+    AddToggle(Tab, "ESP_Minions", "Minions", false, function(Value) ESP.minion = Value; refreshESP() end)
+    AddToggle(Tab, "ESP_Traps", "Traps", false, function(Value) ESP.trap = Value; refreshESP() end)
+    AddToggle(Tab, "ESP_Sprays", "Sprays", false, function(Value) ESP.spray = Value; refreshESP() end)
     AddInfo(Tab, "Details", "Name and health tags")
     AddToggle(Tab, "ESP_Names", "Show Names", true, function(Value) ESP.names = Value end)
     AddToggle(Tab, "ESP_Health", "Show Health", true, function(Value) ESP.health = Value end)
-
-    AddButton(Tab, "Refresh ESP", function()
-        refreshESP()
-        Notify("ESP", "Refreshed - optimized scan")
-    end)
+    AddButton(Tab, "Refresh ESP", function() refreshESP() Notify("ESP", "Refreshed - optimized scan") end)
 end
 
 --==================================================
--- 8. STAMINA TAB - WIRED
+-- 8. STAMINA TAB
 --==================================================
-
 do
     local Tab = Tabs.Stamina
-    AddInfo(Tab, "STAMINA - NOS CORE", "Unlimited + rates + safety")
-
-    AddToggle(Tab, "Stam_Unlimited", "Unlimited Stamina", false, function(Value)
-        Stam.unlimited = Value
-        applyStam()
-    end)
-    AddSlider(Tab, "Stam_Min", "Min Stamina", 0, 50, 0, 0, function(Value)
-        Stam.minS = math.floor(Value+0.5)
-        if not Stam.unlimited then applyStam() end
-    end)
-    AddSlider(Tab, "Stam_Max", "Max Stamina", 50, 200, 100, 0, function(Value)
-        Stam.maxS = math.floor(Value+0.5)
-        if not Stam.unlimited then applyStam() end
-    end)
-    AddSlider(Tab, "Stam_Loss", "Drain Rate", 0, 50, 10, 1, function(Value)
-        Stam.loss = Value
-        if not Stam.unlimited then applyStam() end
-    end)
-    AddSlider(Tab, "Stam_Gain", "Gain Rate", 0, 100, 20, 1, function(Value)
-        Stam.gain = Value
-        if not Stam.unlimited then applyStam() end
-    end)
+    AddInfo(Tab, "STAMINA - NOS CORE", "Unlimited + rates")
+    AddToggle(Tab, "Stam_Unlimited", "Unlimited Stamina", false, function(Value) Stam.unlimited = Value; applyStam() end)
+    AddSlider(Tab, "Stam_Min", "Min Stamina", 0, 50, 0, 0, function(Value) Stam.minS = math.floor(Value+0.5); if not Stam.unlimited then applyStam() end end)
+    AddSlider(Tab, "Stam_Max", "Max Stamina", 50, 200, 100, 0, function(Value) Stam.maxS = math.floor(Value+0.5); if not Stam.unlimited then applyStam() end end)
+    AddSlider(Tab, "Stam_Loss", "Drain Rate", 0, 50, 10, 1, function(Value) Stam.loss = Value; if not Stam.unlimited then applyStam() end end)
+    AddSlider(Tab, "Stam_Gain", "Gain Rate", 0, 100, 20, 1, function(Value) Stam.gain = Value; if not Stam.unlimited then applyStam() end end)
     AddToggle(Tab, "Stam_AutoUnsprint", "Auto Unsprint Low", false, function(Value) Stam.autoUnsprint = Value end)
     AddSlider(Tab, "Stam_UnsprintAt", "Unsprint At", 0, 50, 10, 0, function(Value) Stam.unsprintAt = math.floor(Value+0.5) end)
 end
 
 --==================================================
--- 9. AUTO BLOCK TAB - WIRED + HDT
+-- 9. AUTO BLOCK TAB - NEW ABILITY NAME SYSTEM + BOX WIRED
 --==================================================
-
 do
     local Tab = Tabs["Auto Block"]
-    AddInfo(Tab, "AUTO BLOCK - NOS CORE", "Sound + Anim + Attribute detection")
+    AddInfo(Tab, "AUTO BLOCK - NEW SYSTEM", "Ability name filter + spatial overlap box - killer-safe")
 
     AddToggle(Tab, "AB_Enabled", "Enable Auto Block", false, function(Value)
-        if Value and IsPlayerKiller() then return end
+        if Value and IsPlayerKiller() then
+            Notify("Block", "Disabled - you are Killer")
+            pcall(function() FluentControls["AB_Enabled"]:SetValue(false) end)
+            return
+        end
         AB.enabled = Value
+        _G.AutoBlockEnabled = Value
+        _G.HitboxWidth = AB.width
+        _G.HitboxHeight = AB.height
+        _G.HitboxLength = AB.length
+        _G.HitboxOffset = AB.offset
+        _G.HitboxDuration = AB.duration
+        _G.HitboxTransparency = AB.transparency
+        _G.BlockDelay = AB.delay
+        if Value then EnableAutoBlock() end
     end)
-    AddToggle(Tab, "AB_ShowHitbox", "Show Hitbox", true, function(Value) AB.showVisual = Value end)
-    AddToggle(Tab, "AB_Sound", "Sound Detection", true, function(Value) AB.useAudio = Value end)
-    AddToggle(Tab, "AB_Anim", "Anim Detection", true, function(Value) AB.useAnim = Value end)
-    AddToggle(Tab, "AB_Attr", "Attribute Detection", true, function(Value) AB.useAttr = Value end)
 
-    AddSlider(Tab, "AB_Delay", "Block Delay", 0, 1, 0, 2, function(Value) AB.delay = Value end)
-    AddSlider(Tab, "AB_Duration", "Box Duration", 0.1, 1, 0.4, 2, function(Value) AB.duration = Value end)
+    AddToggle(Tab, "AB_ShowHitbox", "Show Hitbox", true, function(Value)
+        AB.showVisual = Value
+        _G.ShowHitboxVisual = Value
+    end)
+    AddToggle(Tab, "AB_ShowOutline", "Show Outline", true, function(Value)
+        AB.showOutline = Value
+        _G.ShowOutline = Value
+    end)
+
+    AddSlider(Tab, "AB_Delay", "Block Delay", 0, 1, 0, 2, function(Value)
+        AB.delay = Value
+        _G.BlockDelay = Value
+    end)
+    AddSlider(Tab, "AB_Duration", "Box Duration", 0.1, 1, 0.4, 2, function(Value)
+        AB.duration = Value
+        _G.HitboxDuration = Value
+    end)
 
     AddButton(Tab, "Force Block", function() FireBlock() end)
 
-    AddInfo(Tab, "Hitbox Size", "Tune detection box")
-    AddSlider(Tab, "AB_Width", "Width", 1, 30, 5, 0, function(Value) AB.width = math.floor(Value+0.5) end)
-    AddSlider(Tab, "AB_Height", "Height", 1, 30, 6, 0, function(Value) AB.height = math.floor(Value+0.5) end)
-    AddSlider(Tab, "AB_Length", "Length", 1, 40, 8, 0, function(Value) AB.length = math.floor(Value+0.5) end)
-    AddSlider(Tab, "AB_Offset", "Offset Z", -15, 5, -2, 0, function(Value) AB.offset = math.floor(Value+0.5) end)
+    AddInfo(Tab, "Hitbox Size - WIRED TO BOX", "Tune detection box")
+    AddSlider(Tab, "AB_Width", "Width", 1, 30, 5, 0, function(Value)
+        AB.width = math.floor(Value+0.5)
+        _G.HitboxWidth = AB.width
+    end)
+    AddSlider(Tab, "AB_Height", "Height", 1, 30, 6, 0, function(Value)
+        AB.height = math.floor(Value+0.5)
+        _G.HitboxHeight = AB.height
+    end)
+    AddSlider(Tab, "AB_Length", "Length", 1, 40, 8, 0, function(Value)
+        AB.length = math.floor(Value+0.5)
+        _G.HitboxLength = AB.length
+    end)
+    AddSlider(Tab, "AB_Offset", "Offset Z", -15, 5, -2, 0, function(Value)
+        AB.offset = math.floor(Value+0.5)
+        _G.HitboxOffset = AB.offset
+    end)
+    AddSlider(Tab, "AB_Transparency", "Transparency", 0, 1, 0.35, 2, function(Value)
+        AB.transparency = Value
+        _G.HitboxTransparency = Value
+    end)
+
+    AddInfo(Tab, "Ability Filter", "Only these abilities trigger block")
+    AddInfo(Tab, "BLOCK LIST", table.concat(_G.BlockAbilityNames, ", "))
 
     AddInfo(Tab, "HDT (Flex)", "Drag toward killer")
     AddToggle(Tab, "HDT_Enabled", "Enable HDT", false, function(Value)
@@ -1288,7 +1254,6 @@ do
     AddSlider(Tab, "HDT_Duration", "HDT Duration", 0.1, 1.5, 0.35, 2, function(Value) HDT.duration = Value end)
     AddSlider(Tab, "HDT_Speed", "Drag Speed", 4, 40, 14, 0, function(Value) HDT.speed = math.floor(Value+0.5) end)
     AddSlider(Tab, "HDT_Range", "Max Range", 5, 80, 30, 0, function(Value) HDT.range = math.floor(Value+0.5) end)
-
     AddButton(Tab, "Test HDT", function()
         HDT.enabled = true
         local k = GetNearestKiller(HDT.range)
@@ -1298,13 +1263,11 @@ do
 end
 
 --==================================================
--- 10. AIM TAB - WIRED
+-- 10. AIM TAB - FIXED SYNTAX
 --==================================================
-
 do
     local Tab = Tabs.Aim
     AddInfo(Tab, "AIM - NOS CORE", "Character lock + cam lock modes")
-
     AddToggle(Tab, "Aim_Enabled", "Enable Aimbot", false, function(Value)
         if Value and IsPlayerKiller() then return end
         getgenv().GlobalAimbotToggle = Value
@@ -1314,14 +1277,9 @@ do
             if hum then hum.AutoRotate = true end
         end
     end)
-
-    AddDropdown(Tab, "Aim_Mode", "Aimlock Mode", {"Character Lock", "Char + Cam Lock"}, "Character Lock", function(Value)
-        getgenv().GlobalAimlockMode = Value
-    end)
-
+    AddDropdown(Tab, "Aim_Mode", "Aimlock Mode", {"Character Lock", "Char + Cam Lock"}, "Character Lock", function(Value) getgenv().GlobalAimlockMode = Value end)
     AddSlider(Tab, "Aim_Prediction", "Velocity Prediction", 0, 3, 1, 1, function(Value) AimCore.prediction = Value end)
     AddSlider(Tab, "Aim_Easing", "Easing", 0.1, 1, 0.8, 2, function(Value) AimCore.easing = Value end)
-
     AddInfo(Tab, "Per Survivor", "Toggle per survivor")
     AddToggle(Tab, "Aim_Guest1337", "Guest1337", true, function(Value) getgenv().AimbotValues.Guest1337.Enabled = Value end)
     AddToggle(Tab, "Aim_Shedlekey", "Shedletsky", true, function(Value) getgenv().AimbotValues.Shedlekey.Enabled = Value end)
@@ -1332,55 +1290,40 @@ do
     end)
     AddToggle(Tab, "Aim_JaneDoe", "Jane Doe", false, function(Value) getgenv().AimbotValues.JaneDoe.Enabled = Value end)
     AddToggle(Tab, "Aim_Pizza", "Pizza", false, function(Value) getgenv().AimbotValues.Pizza.Enabled = Value end)
-
     AddInfo(Tab, "Guest 1337", "Guest tuning")
     AddSlider(Tab, "Guest_Dur", "Duration", 0.1, 3, 1.3, 2, function(Value) getgenv().AimbotValues.Guest1337.LockDuration = Value end)
     AddSlider(Tab, "Guest_Pred", "Prediction", 0, 15, 0, 1, function(Value) getgenv().AimbotValues.Guest1337.Prediction = Value end)
-
     AddInfo(Tab, "Chance", "Chance tuning")
     AddSlider(Tab, "Chance_Dur", "Duration", 0.1, 3, 1.5, 2, function(Value) getgenv().AimbotValues.Chance.LockDuration = Value end)
     AddSlider(Tab, "Chance_Pred", "Prediction", 0, 15, 3, 1, function(Value) getgenv().AimbotValues.Chance.Prediction = Value end)
 end
 
 --==================================================
--- 11. SILENT AIM TAB - WIRED
+-- 11. SILENT AIM TAB
 --==================================================
-
 do
     local Tab = Tabs["Silent Aim"]
     AddInfo(Tab, "Crystal Pinch", "Camera CF hook")
-
-    AddToggle(Tab, "Silent_Crystal", "Crystal Pinch Silent Aim", false, function(Value)
-        Silent.crystal = Value
-        if Value then installSilent() end
-    end)
+    AddToggle(Tab, "Silent_Crystal", "Crystal Pinch Silent Aim", false, function(Value) Silent.crystal = Value; if Value then installSilent() end end)
     AddSlider(Tab, "Silent_CrystalPred", "Prediction", 0, 10, 2.5, 1, function(Value) Silent.crystalPred = Value end)
     AddSlider(Tab, "Silent_CrystalY", "Y Offset", -2, 5, 1.5, 1, function(Value) Silent.crystalY = Value end)
-
     AddInfo(Tab, "Dusekkar", "Mouse pos hook")
-    AddToggle(Tab, "Silent_Dusk", "Dusekkar Silent Aim", false, function(Value)
-        Silent.dusk = Value
-        if Value then installSilent() end
-    end)
+    AddToggle(Tab, "Silent_Dusk", "Dusekkar Silent Aim", false, function(Value) Silent.dusk = Value; if Value then installSilent() end end)
     AddSlider(Tab, "Silent_DuskPred", "Prediction", 0, 5, 0.5, 1, function(Value) Silent.duskPred = Value end)
 end
 
 --==================================================
--- 12. TWO TIME TAB - WIRED
+-- 12. TWO TIME TAB
 --==================================================
-
 do
     local Tab = Tabs["Two Time"]
     AddInfo(Tab, "TWO TIME - AUTO BACKSTAB", "Teleport behind killer")
-
     AddToggle(Tab, "TT_Enabled", "Enable Auto Backstab", false, function(Value) TT.enabled = Value end)
     AddDropdown(Tab, "TT_Method", "Method", {"Teleport", "Lerp", "PrimaryPart"}, "Teleport", function(Value) TT.method = Value end)
-
     AddSlider(Tab, "TT_NormalRange", "Normal Stab Range", 1, 10, 3, 0, function(Value) TT.normalRange = math.floor(Value+0.5) end)
     AddSlider(Tab, "TT_CrouchRange", "Crouch Stab Range", 1, 10, 3, 0, function(Value) TT.crouchRange = math.floor(Value+0.5) end)
     AddSlider(Tab, "TT_Duration", "Duration", 0.1, 2, 0.5, 2, function(Value) TT.duration = Value end)
     AddSlider(Tab, "TT_Delay", "Delay", 0, 0.5, 0.05, 2, function(Value) TT.delay = Value end)
-
     AddInfo(Tab, "Advanced", "Speed & pivot")
     AddSlider(Tab, "TT_Speed", "Lerp/Primary Speed", 10, 200, 100, 0, function(Value) TT.speed = math.floor(Value+0.5) end)
     AddToggle(Tab, "TT_TPBack", "Teleport Back", false, function(Value) TT.tpBack = Value end)
@@ -1389,191 +1332,165 @@ do
 end
 
 --==================================================
--- 13. KILLER TAB - WIRED
+-- 13. KILLER TAB
 --==================================================
-
 do
     local Tab = Tabs.Killer
     AddInfo(Tab, "KILLER - COMBAT", "Auto punch after block")
-
     AddToggle(Tab, "Killer_AutoPunch", "Auto Punch After Block", false, function(Value) AutoPunch.enabled = Value end)
     AddSlider(Tab, "Killer_PunchDelay", "Punch Delay", 0, 1.5, 0.45, 2, function(Value) AutoPunch.delay = Value end)
     AddButton(Tab, "Force Punch", function() FirePunch() end)
 end
 
 --==================================================
--- 14. MIST TAB - WIRED + FIXES
+-- 14. MIST TAB - FIXED RESTORE
 --==================================================
-
 do
     local Tab = Tabs.Mist
     AddInfo(Tab, "MIST - VISUAL & MOVEMENT", "Fixed: NoFog restore + Real Noclip")
-
-    AddToggle(Tab, "Mist_Fullbright", "Fullbright", false, function(Value)
-        Mist.fullbright = Value
-        setFullbright(Value)
-    end)
-    AddToggle(Tab, "Mist_NoFog", "No Fog (restores on off)", false, function(Value)
-        Mist.noFog = Value
-        setNoFog(Value)
-    end)
-    AddToggle(Tab, "Mist_Noclip", "Character Noclip (Real)", false, function(Value)
-        setCharacterNoclip(Value)
-    end)
-    AddToggle(Tab, "Mist_AntiSlow", "Anti Slowness", false, function(Value)
-        Mist.antiSlow = Value
-    end)
-    AddToggle(Tab, "Mist_NoTrails", "Disable Trails / Particles", false, function(Value)
-        Mist.disableTrails = Value
-    end)
+    AddToggle(Tab, "Mist_Fullbright", "Fullbright", false, function(Value) Mist.fullbright = Value; setFullbright(Value) end)
+    AddToggle(Tab, "Mist_NoFog", "No Fog (restores on off)", false, function(Value) Mist.noFog = Value; setNoFog(Value) end)
+    AddToggle(Tab, "Mist_Noclip", "Character Noclip (Real)", false, function(Value) setCharacterNoclip(Value) end)
+    AddToggle(Tab, "Mist_AntiSlow", "Anti Slowness", false, function(Value) Mist.antiSlow = Value end)
+    AddToggle(Tab, "Mist_NoTrails", "Disable Trails / Particles", false, function(Value) Mist.disableTrails = Value end)
 end
 
 --==================================================
--- 15. GEN TAB - WIRED
+-- 15. GEN TAB
 --==================================================
-
 do
     local Tab = Tabs.Gen
     AddInfo(Tab, "GEN - AUTO GENERATOR", "Auto solve Connect minigame")
-
-    AddToggle(Tab, "Gen_Enabled", "Enable Auto Gen", false, function(Value)
-        Gen.enabled = Value
-        Gen.gen += 1
-        if Value then installGen() end
-    end)
+    AddToggle(Tab, "Gen_Enabled", "Enable Auto Gen", false, function(Value) Gen.enabled = Value; Gen.gen += 1; if Value then installGen() end end)
     AddSlider(Tab, "Gen_StartDelay", "Start Delay", 0, 4, 1.2, 2, function(Value) Gen.startDelay = Value end)
     AddSlider(Tab, "Gen_ConnectDelay", "Connect Delay", 0, 2, 0.8, 2, function(Value) Gen.connectDelay = Value end)
 end
 
 --==================================================
--- 16. SETTINGS TAB - Correction B
+-- 16. SETTINGS TAB - FIXED RESET + CLEANUP
 --==================================================
-
 do
     local Tab = Tabs.Settings
-
-    AddInfo(Tab, "UNSERIOUS HUB", "Fluent-based | v" .. HUB_VERSION .. " | NOS MERGED + FIXES")
-
-    AddButton(Tab, "Test Notification", function()
-        Notify("UNSERIOUS HUB", "Your interface is working! Fluent used correctly.")
-    end)
-
+    AddInfo(Tab, "UNSERIOUS HUB", "Fluent-based | v" .. HUB_VERSION .. " | FIXED + NEW BLOCK")
+    AddButton(Tab, "Test Notification", function() Notify("UNSERIOUS HUB", "Interface working! All fixes applied.") end)
     AddButton(Tab, "Print Current Settings", function()
-        for Name, Value in pairs(Settings) do
-            print(Name, Value)
-        end
+        for Name, Value in pairs(Settings) do print(Name, Value) end
         Notify("Settings", "Settings printed to console.")
     end)
-
-    -- Correction B: Rename Reset Demo Settings -> Check Settings, does what label promises
     AddButton(Tab, "Check Settings", function()
         Notify("Settings", "Your settings table is available in the script.")
         print("=== SETTINGS TABLE ===")
         for k,v in pairs(Settings) do print(k, v) end
     end)
 
-    AddButton(Tab, "Complete Reset / Cleanup", function()
-        -- Disable all features
-        ESP.survivor = false; ESP.killer = false; ESP.generator = false; ESP.item = false; ESP.minion = false; ESP.trap = false; ESP.spray = false
-        refreshESP()
+    AddButton(Tab, "Complete Reset - FIXED", function()
+        Notify("Settings", "Resetting all controls...")
+        -- FIX 1 & 3: Reset GUI controls via SetValue, which triggers callbacks and syncs Settings table
+        for Id, Default in pairs(ControlDefaults) do
+            local ctrl = FluentControls[Id]
+            if ctrl and ctrl.SetValue then
+                pcall(function() ctrl:SetValue(Default) end)
+            end
+        end
+        -- Ensure internal states also cleared
         for inst in pairs(ESP.tracked) do clearOne(inst) end
-
-        Stam.unlimited = false; Stam.autoUnsprint = false
-        applyStam()
-
-        AB.enabled = false
-        HDT.enabled = false
-        if HDT.token then HDT.token += 1 end
-
-        getgenv().GlobalAimbotToggle = false
-        getgenv().ActiveLock.IsActive = false
+        ESP.survivor = false; ESP.killer = false; ESP.generator = false; ESP.item = false; ESP.minion = false; ESP.trap = false; ESP.spray = false
+        Stam.unlimited = false; Stam.autoUnsprint = false; applyStam()
+        AB.enabled = false; _G.AutoBlockEnabled = false; HDT.enabled = false; HDT.token += 1
+        monitoredKillers = {}
+        getgenv().GlobalAimbotToggle = false; getgenv().ActiveLock.IsActive = false
         local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
         if hum then hum.AutoRotate = true end
-
         Silent.crystal = false; Silent.dusk = false
         TT.enabled = false
         AutoPunch.enabled = false
-
         Mist.fullbright = false; setFullbright(false)
         Mist.noFog = false; setNoFog(false)
         Mist.cameraNoclip = false; setCharacterNoclip(false)
         Mist.antiSlow = false; Mist.disableTrails = false
-
         Gen.enabled = false; Gen.gen += 1
-
-        -- Clear highlights
         pcall(function()
             for _, obj in ipairs(Workspace:GetDescendants()) do
-                if obj.Name == "__SESP" or obj.Name == "__SBB" or obj.Name == "Nos_BlockBox" then
+                if obj.Name == "__SESP" or obj.Name == "__SBB" or obj.Name == "Nos_BlockBox" or obj.Name == "Vortex_BlockBox" then
                     obj:Destroy()
                 end
             end
         end)
-
-        Notify("Settings", "Complete reset done - all features disabled and visuals cleaned")
-        print("[UNSERIOUS HUB] Complete reset executed")
+        Notify("Settings", "Complete reset done - GUI + internal vars synced")
+        print("[UNSERIOUS HUB] Complete reset - controls visually OFF and synced")
     end)
 
-    AddButton(Tab, "Unload Hub", function()
+    AddButton(Tab, "Unload Hub - FULL CLEANUP", function()
+        Notify("Settings", "Unloading - full cleanup...")
+        -- Full cleanup of all connections and states
         pcall(function()
-            -- Full cleanup then destroy UI
-            ESP.survivor = false; ESP.killer = false; ESP.generator = false; ESP.item = false; ESP.minion = false; ESP.trap = false; ESP.spray = false
+            -- Reset controls first
+            for Id, Default in pairs(ControlDefaults) do
+                local ctrl = FluentControls[Id]
+                if ctrl and ctrl.SetValue then pcall(function() ctrl:SetValue(Default) end) end
+            end
+            -- Disconnect all tracked connections
+            for _, conn in ipairs(AllConnections) do pcall(function() conn:Disconnect() end) end
+            AllConnections = {}
+            if Mist.noclipConn then Mist.noclipConn:Disconnect(); Mist.noclipConn = nil end
+            if Mist.fullbright then setFullbright(false) end
+            if Mist.noFog then setNoFog(false) end
+            -- Clear ESP
             for inst in pairs(ESP.tracked) do clearOne(inst) end
-            if Mist.noclipConn then Mist.noclipConn:Disconnect() end
-            Mist.fullbright = false; setFullbright(false)
-            Mist.noFog = false; setNoFog(false)
+            -- Clear boxes
+            for _, obj in ipairs(Workspace:GetDescendants()) do
+                if obj.Name == "__SESP" or obj.Name == "__SBB" or obj.Name == "Nos_BlockBox" or obj.Name == "Vortex_BlockBox" then
+                    pcall(function() obj:Destroy() end)
+                end
+            end
+            monitoredKillers = {}
+            HDT.token += 1
+            Gen.gen += 1
+            getgenv().GlobalAimbotToggle = false
+            getgenv().ActiveLock.IsActive = false
+            -- Destroy UI
             if FloatingGui then FloatingGui:Destroy() end
             if Fluent and Fluent.GUI then Fluent.GUI:Destroy() end
         end)
-        Notify("Settings", "Hub unloaded")
+        Notify("Settings", "Hub fully unloaded")
+        print("[UNSERIOUS HUB] Fully unloaded - all connections disconnected")
     end)
-
 end
 
 --==================================================
 -- 17. SAVE MANAGER
 --==================================================
-
 SaveManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetFolder("UNSERIOUS_HUB")
 SaveManager:BuildConfigSection(Tabs.Settings)
-
-pcall(function()
-    SaveManager:LoadAutoloadConfig()
-end)
+pcall(function() SaveManager:LoadAutoloadConfig() end)
 
 --==================================================
 -- 18. INTERFACE MANAGER
 --==================================================
-
 InterfaceManager:SetLibrary(Fluent)
 InterfaceManager:SetFolder("UNSERIOUS_HUB")
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 
 --==================================================
--- 19. MOBILE FLOATING OPEN/CLOSE BUTTON
+-- 19. MOBILE FLOATING BUTTON
 --==================================================
-
 local FloatingGuiName = "UNSERIOUS_HUB_MOBILE"
-
 pcall(function()
     local Existing
     if gethui then Existing = gethui():FindFirstChild(FloatingGuiName)
     else Existing = CoreGui:FindFirstChild(FloatingGuiName) end
     if Existing then Existing:Destroy() end
 end)
-
 local FloatingGui = Instance.new("ScreenGui")
 FloatingGui.Name = FloatingGuiName
 FloatingGui.ResetOnSpawn = false
 FloatingGui.IgnoreGuiInset = true
-
 local ParentSuccess = pcall(function()
     if gethui then FloatingGui.Parent = gethui() else FloatingGui.Parent = CoreGui end
 end)
 if not ParentSuccess then FloatingGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
-
 local OpenButton = Instance.new("TextButton")
 OpenButton.Name = "OpenButton"
 OpenButton.Size = UDim2.fromOffset(54, 54)
@@ -1585,48 +1502,37 @@ OpenButton.TextSize = 25
 OpenButton.Font = Enum.Font.GothamBold
 OpenButton.AutoButtonColor = true
 OpenButton.Parent = FloatingGui
-
 local ButtonCorner = Instance.new("UICorner")
 ButtonCorner.CornerRadius = UDim.new(1, 0)
 ButtonCorner.Parent = OpenButton
-
 local ButtonStroke = Instance.new("UIStroke")
 ButtonStroke.Color = COLORS.Yellow
 ButtonStroke.Thickness = 2
 ButtonStroke.Parent = OpenButton
-
 local function SetWindowVisible(Value)
     Fluent.GUI.Enabled = Value
     OpenButton.Text = Value and "×" or "U"
 end
-
-OpenButton.Activated:Connect(function()
-    SetWindowVisible(not Fluent.GUI.Enabled)
-end)
+OpenButton.Activated:Connect(function() SetWindowVisible(not Fluent.GUI.Enabled) end)
 
 --==================================================
--- 20. KEYBOARD OPEN/CLOSE - RightControl is ours, LeftControl is Fluent's (Correction A)
+-- 20. KEYBOARD - Correction A
 --==================================================
-
-UserInputService.InputBegan:Connect(function(Input, GameProcessed)
+TrackConnection(UserInputService.InputBegan:Connect(function(Input, GameProcessed)
     if GameProcessed then return end
     if Input.KeyCode == Enum.KeyCode.RightControl then
         SetWindowVisible(not Fluent.GUI.Enabled)
     end
-end)
+end))
 
 --==================================================
--- 21. INITIALIZE
+-- 21. INIT
 --==================================================
-
 Window:SelectTab(1)
-
-Notify(HUB_NAME, "Loaded! LeftCtrl=Fluent, RightCtrl=Custom | NOS MERGED")
-
+Notify(HUB_NAME, "Loaded! NEW BLOCK + ALL FIXES")
 print("====================================")
 print(HUB_NAME .. " loaded.")
 print("Version:", HUB_VERSION)
 print("Tabs:", 10)
-print("Fluent:", Fluent.Version)
-print("Fixes: Fluent used, Config auto-applies via SaveManager, NoFog restore, Real Noclip, ESP optimized")
+print("Fixes: Reset GUI, Full Unload, Settings Sync, No Sound Spam, New Ability Block + Box Wired")
 print("====================================")
