@@ -1,6 +1,6 @@
 --[[
   Nos Hub — clean Obsidian build
-  Auto Gen · Auto Block · BoxFacing Check · Survivor Ability Aimbot · Backstab · ESP · Stamina
+  Auto Gen · Directional Auto Block · Guesting Aim · Backstab · ESP · Stamina
 ]]
 
 local Players = game:GetService("Players")
@@ -28,7 +28,7 @@ if not table.clone then
 end
 
 --═══════════════════════════════════════════════════════════════════
--- OBSIDIAN
+-- OBSIDIAN (official Example.lua pattern) + red scheme
 --═══════════════════════════════════════════════════════════════════
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
@@ -148,321 +148,279 @@ local function GetNearestKiller(maxDist)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- MAIN TAB
+-- MAIN
 --═══════════════════════════════════════════════════════════════════
 do
     local left = Tabs.Main:AddLeftGroupbox("Info")
     left:AddLabel("User: " .. LP.Name)
-    left:AddLabel("Nos Hub · BoxFacing + Ability Aimbot")
+    left:AddLabel("Nos Hub · red Obsidian build")
     left:AddLabel("Toggle menu: RightShift")
 end
 
 --═══════════════════════════════════════════════════════════════════
--- FACING CHECK (BoxFacing — client-side adaptation of BoxFacingCheck.lua)
+-- DIRECTIONAL AUTO BLOCK (killer-facing semicircle + returning box)
 --═══════════════════════════════════════════════════════════════════
-local FacingMode = "None" -- "None" | "BoxFacing"
-local AB = { enabled = false, delay = 0, last = 0 }
-
-local FacingConfig = {
-    ShowVisuals = true,
-    GiantSize = Vector3.new(18, 12, 32),
-    GiantOffset = Vector3.new(0, 0, -16),
-    SmallSize = Vector3.new(3, 3, 3),
-    IdleOffset = Vector3.new(0, 0, -6),
-    TravelSpeed = 55,
-    HitDistance = 3.5,
-    DisappearDelay = 0.2,
-    OutOfRangeDespawnDelay = 0.3,
-    UpdateRate = 1 / 30,
-    RequireLoS = false,
-    OnlyBlockOnValid = false,
-    Colors = {
-        Red = Color3.fromRGB(255, 70, 70),
-        Yellow = Color3.fromRGB(255, 210, 60),
-        Green = Color3.fromRGB(70, 255, 120),
-    },
+local AB = {
+    enabled = false,
+    delay = 0,
+    last = 0,
 }
 
-local FacingCheck = {}
-FacingCheck.__index = FacingCheck
+local FacingConfig = {
+    enabled = true,
+    angle = 120,              -- total cone angle in degrees
+    radius = 20,              -- horizontal range from killer
+    verticalTolerance = 6,
+    projectileSize = Vector3.new(4, 5, 4),
+    projectileSpeed = 100,
+    projectileTimeout = 0.8,
+    hitDistance = 3.5,
+    showZone = true,
+    showProjectile = true,
+    zoneSegments = 32,
+    zoneColor = Color3.fromRGB(255, 65, 75),
+    projectileColor = Color3.fromRGB(255, 90, 100),
+}
 
-local function createFacingBox(self)
+local FacingMode = "Semicircle" -- None | Semicircle
+local ProjectileFolder = Instance.new("Folder")
+ProjectileFolder.Name = "Nos_DirectionalBlock"
+ProjectileFolder.Parent = Workspace
+
+local ZoneFolder = Instance.new("Folder")
+ZoneFolder.Name = "Nos_DirectionalZones"
+ZoneFolder.Parent = Workspace
+
+local activeProjectiles = {}
+local zoneParts = {}
+
+local function clearStack()
+    for _, projectile in ipairs(activeProjectiles) do
+        if projectile.part then
+            pcall(function() projectile.part:Destroy() end)
+        end
+    end
+    table.clear(activeProjectiles)
+
+    for killer, parts in pairs(zoneParts) do
+        for _, part in ipairs(parts) do
+            pcall(function() part:Destroy() end)
+        end
+        zoneParts[killer] = nil
+    end
+end
+
+local function getRoot(model)
+    return model and model:FindFirstChild("HumanoidRootPart")
+end
+
+-- The cone belongs to the KILLER. It is measured from the killer's
+-- forward direction, not from the survivor's facing direction.
+local function IsPlayerInsideKillerZone(killer)
+    local killerRoot = getRoot(killer)
+    local playerRoot = getRoot(LP.Character)
+    if not killerRoot or not playerRoot then return false end
+
+    local offset = playerRoot.Position - killerRoot.Position
+    local horizontal = Vector3.new(offset.X, 0, offset.Z)
+    local distance = horizontal.Magnitude
+
+    if distance > FacingConfig.radius then return false end
+    if math.abs(offset.Y) > FacingConfig.verticalTolerance then return false end
+    if distance < 0.01 then return true end
+
+    local forward = Vector3.new(
+        killerRoot.CFrame.LookVector.X, 0, killerRoot.CFrame.LookVector.Z
+    )
+    if forward.Magnitude < 0.01 then return false end
+
+    local dot = math.clamp(forward.Unit:Dot(horizontal.Unit), -1, 1)
+    local halfAngle = math.rad(math.clamp(FacingConfig.angle, 1, 180) / 2)
+    return dot >= math.cos(halfAngle)
+end
+
+local function makeZonePart()
     local part = Instance.new("Part")
-    part.Name = "FacingCheckBox"
-    part.Size = self.Settings.SmallSize
+    part.Name = "Nos_SemicircleOutline"
     part.Anchored = true
     part.CanCollide = false
-    part.CanQuery = false
     part.CanTouch = false
+    part.CanQuery = false
     part.CastShadow = false
     part.Material = Enum.Material.Neon
-    part.Transparency = self.Settings.ShowVisuals and 0.55 or 1
-    part.Color = self.Settings.Colors.Red
-
-    local sel = Instance.new("SelectionBox")
-    sel.Name = "Outline"
-    sel.Adornee = part
-    sel.LineThickness = 0.08
-    sel.Color3 = self.Settings.Colors.Red
-    sel.SurfaceTransparency = 1
-    sel.Transparency = self.Settings.ShowVisuals and 0 or 1
-    sel.Parent = part
-
-    local light = Instance.new("PointLight")
-    light.Color = self.Settings.Colors.Red
-    light.Range = math.max(part.Size.X, part.Size.Y, part.Size.Z) * 2.2
-    light.Brightness = 2
-    light.Enabled = self.Settings.ShowVisuals
-    light.Parent = part
-
-    part.Parent = self._boxFolder
+    part.Color = FacingConfig.zoneColor
+    part.Transparency = 0.12
+    part.Size = Vector3.new(0.09, 0.09, 1)
+    part.Parent = ZoneFolder
     return part
 end
 
-local function setFacingBoxColor(box, color)
-    box.Color = color
-    local sel = box:FindFirstChild("Outline")
-    if sel then sel.Color3 = color end
-    local light = box:FindFirstChildOfClass("PointLight")
-    if light then light.Color = color end
-end
-
-local function getGiantCFrame(self)
-    return self.HRP.CFrame * CFrame.new(self.Settings.GiantOffset)
-end
-
-local function clampToGiantBox(self, worldPos)
-    local giantCFrame = getGiantCFrame(self)
-    local half = self.Settings.GiantSize * 0.5
-    local rel = giantCFrame:PointToObjectSpace(worldPos)
-    rel = Vector3.new(
-        math.clamp(rel.X, -half.X, half.X),
-        math.clamp(rel.Y, -half.Y, half.Y),
-        math.clamp(rel.Z, -half.Z, half.Z)
-    )
-    return giantCFrame:PointToWorldSpace(rel)
-end
-
-local function classifyLP(self)
-    local char = LP.Character
-    if not char then return nil end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
-
-    local giantCFrame = getGiantCFrame(self)
-    local half = self.Settings.GiantSize * 0.5
-    local rel = giantCFrame:PointToObjectSpace(hrp.Position)
-
-    local inside = math.abs(rel.X) <= half.X and math.abs(rel.Y) <= half.Y and math.abs(rel.Z) <= half.Z
-    if not inside then return "OUT" end
-
-    if self.Settings.RequireLoS then
-        local origin = self.HRP.Position
-        local dir = hrp.Position - origin
-        local params = self._defaultRayParams
-        local result = Workspace:Raycast(origin, dir, params)
-        if result and result.Instance and not result.Instance:IsDescendantOf(char) then
-            return "INVALID"
-        end
-    end
-
-    return "VALID"
-end
-
-function FacingCheck.new(killerCharacter)
-    local hrp = killerCharacter:FindFirstChild("HumanoidRootPart")
-    assert(hrp, "Killer character needs a HumanoidRootPart")
-
-    local self = setmetatable({}, FacingCheck)
-    self.Killer = killerCharacter
-    self.HRP = hrp
-    self.Settings = FacingConfig
-    self.OnBoxHit = Instance.new("BindableEvent")
-    self._slot = nil
-    self._scanAccum = 0
-
-    self._defaultRayParams = RaycastParams.new()
-    self._defaultRayParams.FilterType = Enum.RaycastFilterType.Exclude
-    self._defaultRayParams.FilterDescendantsInstances = { killerCharacter }
-
-    self._boxFolder = Instance.new("Folder")
-    self._boxFolder.Name = "Nos_FacingBoxes_" .. killerCharacter.Name
-    self._boxFolder.Parent = Workspace
-
-    self._conn = RunService.Heartbeat:Connect(function(dt) self:_update(dt) end)
-    return self
-end
-
-function FacingCheck:_addSlot(status)
-    if self._slot then return end
-    local box = createFacingBox(self)
-    setFacingBoxColor(box, status == "VALID" and self.Settings.Colors.Green or self.Settings.Colors.Yellow)
-    self._slot = { box = box, state = status, travelling = false, travelStart = 0, removeAt = nil, index = 1 }
-end
-
-function FacingCheck:_removeSlot()
-    if not self._slot then return end
-    pcall(function() self._slot.box:Destroy() end)
-    self._slot = nil
-end
-
-function FacingCheck:_onHit()
-    local slot = self._slot
-    if not slot then return end
-    slot.travelling = false
-    self.OnBoxHit:Fire(slot.state == "VALID")
-    task.delay(self.Settings.DisappearDelay, function()
-        self:_removeSlot()
-    end)
-end
-
-function FacingCheck:_scan()
-    local slot = self._slot
-    if not slot then
-        local status = classifyLP(self)
-        if status == "VALID" or status == "INVALID" then
-            self:_addSlot(status)
+local function updateKillerZone(killer)
+    local root = getRoot(killer)
+    if not root or not FacingConfig.showZone or FacingMode ~= "Semicircle" then
+        local old = zoneParts[killer]
+        if old then
+            for _, part in ipairs(old) do part:Destroy() end
+            zoneParts[killer] = nil
         end
         return
     end
 
-    if slot.travelling then
-        if classifyLP(self) == "OUT" then
-            self:_removeSlot()
+    local parts = zoneParts[killer]
+    if not parts then
+        parts = {}
+        for i = 1, FacingConfig.zoneSegments do
+            parts[i] = makeZonePart()
         end
-        return
+        -- Two radial edges complete the visible semicircle sector.
+        parts[#parts + 1] = makeZonePart()
+        parts[#parts + 1] = makeZonePart()
+        zoneParts[killer] = parts
     end
 
-    local status = classifyLP(self)
-    if status == "OUT" or status == nil then
-        if slot.state ~= "OUT" then
-            slot.state = "OUT"
-            slot.removeAt = os.clock() + self.Settings.OutOfRangeDespawnDelay
-            setFacingBoxColor(slot.box, self.Settings.Colors.Red)
-        end
-    elseif status == "VALID" then
-        slot.state = "VALID"
-        slot.removeAt = nil
-        setFacingBoxColor(slot.box, self.Settings.Colors.Green)
-    elseif status == "INVALID" then
-        slot.state = "INVALID"
-        slot.removeAt = nil
-        setFacingBoxColor(slot.box, self.Settings.Colors.Yellow)
+    local forward = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+    if forward.Magnitude < 0.01 then return end
+    forward = forward.Unit
+    local right = Vector3.new(-forward.Z, 0, forward.X)
+    local half = math.rad(math.clamp(FacingConfig.angle, 1, 180) / 2)
+    local center = root.Position + Vector3.new(0, 0.15, 0)
+
+    local points = {}
+    for i = 0, FacingConfig.zoneSegments do
+        local a = -half + (2 * half) * (i / FacingConfig.zoneSegments)
+        local direction = forward * math.cos(a) + right * math.sin(a)
+        points[i + 1] = center + direction * FacingConfig.radius
+    end
+
+    for i = 1, FacingConfig.zoneSegments do
+        local a, b = points[i], points[i + 1]
+        local delta = b - a
+        local part = parts[i]
+        part.Size = Vector3.new(0.09, 0.09, delta.Magnitude)
+        part.CFrame = CFrame.lookAt((a + b) / 2, b)
+        part.Color = FacingConfig.zoneColor
+        part.Transparency = 0.12
+    end
+
+    for i, pointIndex in ipairs({1, #points}) do
+        local part = parts[FacingConfig.zoneSegments + i]
+        local edge = points[pointIndex] - center
+        part.Size = Vector3.new(0.09, 0.09, edge.Magnitude)
+        part.CFrame = CFrame.lookAt((center + points[pointIndex]) / 2, points[pointIndex])
+        part.Color = FacingConfig.zoneColor
+        part.Transparency = 0.12
     end
 end
 
-function FacingCheck:_stepBoxes(dt)
-    if not self.HRP or not self.HRP.Parent then return end
-    local sb = self.Settings
-    local slot = self._slot
-    if not slot then return end
-
-    if slot.removeAt and os.clock() >= slot.removeAt then
-        self:_removeSlot()
-    elseif slot.travelling then
-        if slot.travelStart > 0 and os.clock() - slot.travelStart > 2 then
-            self:_removeSlot()
-            return
+local function removeProjectile(projectile)
+    if projectile.part then
+        pcall(function() projectile.part:Destroy() end)
+    end
+    for i = #activeProjectiles, 1, -1 do
+        if activeProjectiles[i] == projectile then
+            table.remove(activeProjectiles, i)
+            break
         end
+    end
+end
 
-        local char = LP.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            local current = slot.box.Position
-            local target = hrp.Position
-            local delta = target - current
-            local dist = delta.Magnitude
-            if dist <= sb.HitDistance then
-                self:_onHit()
-            else
-                local step = math.min(sb.TravelSpeed * dt, dist)
-                local newPos = current + delta.Unit * step
-                newPos = clampToGiantBox(self, newPos)
-                slot.box.CFrame = CFrame.new(newPos, Vector3.new(target.X, newPos.Y, target.Z))
+local function launchDirectionalBox(killer)
+    if not AB.enabled or IsPlayerKiller() or FacingMode ~= "Semicircle" then return end
+    if not killer or not killer.Parent then return end
+
+    local playerRoot = getRoot(LP.Character)
+    local killerRoot = getRoot(killer)
+    if not playerRoot or not killerRoot then return end
+
+    -- Only spawn when the survivor is inside the killer's forward semicircle
+    -- at the instant the M1 signal is received.
+    if not IsPlayerInsideKillerZone(killer) then return end
+
+    local part = Instance.new("Part")
+    part.Name = "Nos_DirectionalBlockBox"
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.CastShadow = false
+    part.Material = Enum.Material.Neon
+    part.Color = FacingConfig.projectileColor
+    part.Size = FacingConfig.projectileSize
+    part.Transparency = FacingConfig.showProjectile and 0.2 or 1
+    part.CFrame = CFrame.new(playerRoot.Position)
+    part.Parent = ProjectileFolder
+
+    local projectile = {
+        part = part,
+        killer = killer,
+        started = os.clock(),
+        lastPosition = playerRoot.Position,
+    }
+    table.insert(activeProjectiles, projectile)
+end
+
+-- Every active box travels FROM the survivor TOWARD the killer. At contact,
+-- the box is destroyed first, then the cone is checked again.
+RunService.Heartbeat:Connect(function(dt)
+    local killersFolder = Workspace:FindFirstChild("Players")
+    killersFolder = killersFolder and killersFolder:FindFirstChild("Killers")
+
+    if killersFolder then
+        for _, killer in ipairs(killersFolder:GetChildren()) do
+            if killer:IsA("Model") then
+                updateKillerZone(killer)
             end
-        else
-            self:_removeSlot()
         end
-    else
-        local idleCFrame = self.HRP.CFrame * CFrame.new(sb.IdleOffset)
-        local pos = clampToGiantBox(self, idleCFrame.Position)
-        slot.box.CFrame = CFrame.new(pos, pos + self.HRP.CFrame.LookVector)
-    end
-end
-
-function FacingCheck:_update(dt)
-    if not self.HRP or not self.HRP.Parent then return end
-    self._scanAccum += dt
-    if self._scanAccum >= self.Settings.UpdateRate then
-        self._scanAccum = 0
-        self:_scan()
-    end
-    self:_stepBoxes(dt)
-end
-
-function FacingCheck:M1()
-    local slot = self._slot
-    if slot and (slot.state == "VALID" or slot.state == "INVALID") and not slot.travelling then
-        slot.travelling = true
-        slot.travelStart = os.clock()
-    end
-end
-
-function FacingCheck:SetVisualsEnabled(enabled)
-    self.Settings.ShowVisuals = enabled
-    if self._slot then
-        local box = self._slot.box
-        box.Transparency = enabled and 0.55 or 1
-        local sel = box:FindFirstChild("Outline")
-        if sel then sel.Transparency = enabled and 0 or 1 end
-        local light = box:FindFirstChildOfClass("PointLight")
-        if light then light.Enabled = enabled end
-    end
-end
-
-function FacingCheck:Destroy()
-    if self._conn then pcall(function() self._conn:Disconnect() end) end
-    self:_removeSlot()
-    if self._boxFolder then pcall(function() self._boxFolder:Destroy() end) end
-    pcall(function() self.OnBoxHit:Destroy() end)
-end
-
---═══════════════════════════════════════════════════════════════════
--- CHECKER MANAGEMENT
---═══════════════════════════════════════════════════════════════════
-local FacingCheckers = {}
-
-local function destroyAllCheckers()
-    for k, c in pairs(FacingCheckers) do
-        pcall(function() c:Destroy() end)
-    end
-    FacingCheckers = {}
-end
-
-local function ensureChecker(killer)
-    if IsPlayerKiller() then return nil end
-    if not killer or not killer:IsA("Model") or killer == LP.Character then return nil end
-    if FacingMode ~= "BoxFacing" then return nil end
-
-    local existing = FacingCheckers[killer]
-    if existing and existing.HRP and existing.HRP.Parent == killer then
-        return existing
-    end
-    if existing then
-        pcall(function() existing:Destroy() end)
-        FacingCheckers[killer] = nil
     end
 
-    if not killer:FindFirstChild("HumanoidRootPart") then return nil end
+    for i = #activeProjectiles, 1, -1 do
+        local projectile = activeProjectiles[i]
+        local part = projectile.part
+        local killer = projectile.killer
+        local playerRoot = getRoot(LP.Character)
+        local killerRoot = getRoot(killer)
 
-    local checker = FacingCheck.new(killer)
+        if not part or not part.Parent or not playerRoot or not killerRoot
+            or not killer.Parent
+            or os.clock() - projectile.started >= FacingConfig.projectileTimeout then
+            removeProjectile(projectile)
+        else
+            local current = part.Position
+            local target = killerRoot.Position
+            local offset = target - current
+            local distance = offset.Magnitude
+            local step = math.max(FacingConfig.projectileSpeed, 1) * math.max(dt, 0)
 
-    checker.OnBoxHit.Event:Connect(function(wasValid)
-        if not AB.enabled then return end
-        if IsPlayerKiller() then return end
-        if FacingConfig.OnlyBlockOnValid and not wasValid then return end
+            if distance <= math.max(FacingConfig.hitDistance, 0.5) + step then
+                -- Contact always removes the box, even if the player moved
+                -- outside the killer's cone during its travel.
+                removeProjectile(projectile)
+                if AB.enabled and IsPlayerInsideKillerZone(killer) then
+                    local now = os.clock()
+                    if now - AB.last >= 0.08 then
+                        AB.last = now
+                        if AB.delay > 0 then
+                            task.delay(AB.delay, function()
+                                if AB.enabled then FireBlock() end
+                            end)
+                        else
+                            FireBlock()
+                        end
+                    end
+                end
+            elseif distance > 0.01 then
+                local nextPosition = current + offset.Unit * math.min(step, distance)
+                part.CFrame = CFrame.lookAt(nextPosition, target)
+                projectile.lastPosition = nextPosition
+            end
+        end
+    end
+end)
 
-        local now = tick()
+local function triggerBlock(killer)
+    if not AB.enabled or IsPlayerKiller() then return end
+    if FacingMode == "None" then
+        local now = os.clock()
         if now - AB.last < 0.08 then return end
         AB.last = now
         if AB.delay > 0 then
@@ -470,427 +428,334 @@ local function ensureChecker(killer)
         else
             FireBlock()
         end
-    end)
-
-    FacingCheckers[killer] = checker
-    return checker
-end
-
-local function syncCheckers()
-    if not AB.enabled or FacingMode ~= "BoxFacing" or IsPlayerKiller() then
-        destroyAllCheckers()
         return
     end
-
-    local kf = Workspace:FindFirstChild("Players")
-    kf = kf and kf:FindFirstChild("Killers")
-    if not kf then
-        destroyAllCheckers()
-        return
-    end
-
-    local current = {}
-    for _, k in ipairs(kf:GetChildren()) do
-        if k:IsA("Model") then
-            current[k] = true
-            ensureChecker(k)
-        end
-    end
-
-    for k in pairs(FacingCheckers) do
-        if not current[k] or not k.Parent then
-            pcall(function() FacingCheckers[k]:Destroy() end)
-            FacingCheckers[k] = nil
-        end
-    end
+    launchDirectionalBox(killer)
 end
 
---═══════════════════════════════════════════════════════════════════
--- AUTO BLOCK TRIGGERS
---═══════════════════════════════════════════════════════════════════
-local function triggerBlock(killer)
-    if not AB.enabled or IsPlayerKiller() then return end
+-- This uses the same killer attribute signal that the original script used.
+-- It must correspond to the game's M1 signal in the current Forsaken build.
+local monitored = {}
+local function monitorKiller(killer)
+    if not killer or monitored[killer] or not killer:IsA("Model") or killer == LP.Character then return end
+    monitored[killer] = true
+    local lastAbility = killer:GetAttribute("AbilityLastUsed") or 0
+    local lastUsed = killer:GetAttribute("AbilitiesUsed") or 0
 
-    if FacingMode == "BoxFacing" then
-        local checker = FacingCheckers[killer]
-        if checker then
-            checker:M1()
+    killer:GetAttributeChangedSignal("AbilityLastUsed"):Connect(function()
+        if not AB.enabled or IsPlayerKiller() then return end
+        local currentAbility = killer:GetAttribute("AbilityLastUsed") or 0
+        if currentAbility == lastAbility then return end
+        lastAbility = currentAbility
+
+        local currentUsed = killer:GetAttribute("AbilitiesUsed") or 0
+        if currentUsed > lastUsed then
+            lastUsed = currentUsed
             return
         end
-    end
-
-    local now = tick()
-    if now - AB.last < 0.08 then return end
-    AB.last = now
-    if AB.delay > 0 then
-        task.delay(AB.delay, FireBlock)
-    else
-        FireBlock()
-    end
-end
-
-local monitored = {}
-local function monitorKiller(k)
-    if not k or monitored[k] or not k:IsA("Model") or k == LP.Character then return end
-    monitored[k] = true
-    local lastAbility = k:GetAttribute("AbilityLastUsed") or 0
-    local lastUsed = k:GetAttribute("AbilitiesUsed") or 0
-    k:GetAttributeChangedSignal("AbilityLastUsed"):Connect(function()
-        if not AB.enabled or IsPlayerKiller() then return end
-        local cur = k:GetAttribute("AbilityLastUsed") or 0
-        if cur == lastAbility then return end
-        lastAbility = cur
-        local curU = k:GetAttribute("AbilitiesUsed") or 0
-        if curU > lastUsed then lastUsed = curU; return end
-        triggerBlock(k)
+        triggerBlock(killer)
     end)
 end
 
 task.spawn(function()
     while true do
         task.wait(1)
-        syncCheckers()
         if AB.enabled and not IsPlayerKiller() then
-            local kf = Workspace:FindFirstChild("Players")
-            kf = kf and kf:FindFirstChild("Killers")
-            if kf then
-                for _, k in ipairs(kf:GetChildren()) do
-                    if k:IsA("Model") then monitorKiller(k) end
+            local folder = Workspace:FindFirstChild("Players")
+            folder = folder and folder:FindFirstChild("Killers")
+            if folder then
+                for _, killer in ipairs(folder:GetChildren()) do
+                    if killer:IsA("Model") then monitorKiller(killer) end
                 end
             end
         end
     end
 end)
 
---═══════════════════════════════════════════════════════════════════
--- BLOCK TAB
---═══════════════════════════════════════════════════════════════════
 do
     local left = Tabs.Block:AddLeftGroupbox("Auto Block")
     left:AddToggle("AB_Enable", {
         Text = "Enable Auto Block",
         Default = false,
-        Callback = function(v)
-            if v and IsPlayerKiller() then
+        Callback = function(value)
+            if value and IsPlayerKiller() then
                 pcall(function() Toggles.AB_Enable:SetValue(false) end)
                 return
             end
-            AB.enabled = v
-            syncCheckers()
+            AB.enabled = value
+            if not value then clearStack() end
         end,
     })
     left:AddSlider("AB_Delay", {
         Text = "Block Delay",
         Default = 0, Min = 0, Max = 1, Rounding = 2,
-        Callback = function(v) AB.delay = v end,
+        Callback = function(value) AB.delay = value end,
     })
-    left:AddLabel("Facing mode is set in the Facing tab.", true)
     left:AddButton({
         Text = "Force Block",
         Func = function() FireBlock() end,
     })
+    left:AddLabel("Semicircle mode checks the killer's forward zone twice: on M1 and on box contact.", true)
 end
 
---═══════════════════════════════════════════════════════════════════
--- FACING TAB
---═══════════════════════════════════════════════════════════════════
 do
-    local face = Tabs.Facing:AddLeftGroupbox("Facing Mode")
-    face:AddDropdown("FaceMode", {
-        Values = { "None", "BoxFacing" },
+    local left = Tabs.Facing:AddLeftGroupbox("Killer Semicircle")
+    left:AddDropdown("FaceMode", {
+        Values = { "Semicircle", "None" },
         Default = 1,
         Text = "Mode",
-        Callback = function(v)
-            FacingMode = v
-            syncCheckers()
+        Callback = function(value)
+            FacingMode = value
+            if value == "None" then clearStack() end
         end,
     })
-    face:AddLabel("None = block immediately on ability", true)
-    face:AddLabel("BoxFacing = box travels to you → block on contact", true)
-
-    local giant = Tabs.Facing:AddLeftGroupbox("Giant Box (Range)")
-    giant:AddSlider("Giant_X", {
-        Text = "Width (X)", Default = 18, Min = 4, Max = 60, Rounding = 1,
-        Callback = function(v) FacingConfig.GiantSize = Vector3.new(v, FacingConfig.GiantSize.Y, FacingConfig.GiantSize.Z) end,
-    })
-    giant:AddSlider("Giant_Y", {
-        Text = "Height (Y)", Default = 12, Min = 2, Max = 40, Rounding = 1,
-        Callback = function(v) FacingConfig.GiantSize = Vector3.new(FacingConfig.GiantSize.X, v, FacingConfig.GiantSize.Z) end,
-    })
-    giant:AddSlider("Giant_Z", {
-        Text = "Depth (Z)", Default = 32, Min = 4, Max = 80, Rounding = 1,
-        Callback = function(v) FacingConfig.GiantSize = Vector3.new(FacingConfig.GiantSize.X, FacingConfig.GiantSize.Y, v) end,
-    })
-    giant:AddSlider("Giant_Off", {
-        Text = "Offset Z", Default = -16, Min = -50, Max = 10, Rounding = 1,
-        Callback = function(v) FacingConfig.GiantOffset = Vector3.new(0, 0, v) end,
-    })
-
-    local small = Tabs.Facing:AddRightGroupbox("Small Box")
-    small:AddToggle("Small_Show", {
-        Text = "Show Visuals",
+    left:AddToggle("Face_ShowZone", {
+        Text = "Show Killer Semicircle",
         Default = true,
-        Callback = function(v)
-            FacingConfig.ShowVisuals = v
-            for _, c in pairs(FacingCheckers) do
-                pcall(function() c:SetVisualsEnabled(v) end)
-            end
-        end,
+        Callback = function(value) FacingConfig.showZone = value end,
     })
-    small:AddSlider("Small_Size", {
-        Text = "Box Size", Default = 3, Min = 1, Max = 8, Rounding = 1,
-        Callback = function(v) FacingConfig.SmallSize = Vector3.new(v, v, v) end,
+    left:AddSlider("Face_Angle", {
+        Text = "Semicircle Angle",
+        Default = 120, Min = 10, Max = 180, Rounding = 0,
+        Callback = function(value) FacingConfig.angle = value end,
     })
-    small:AddSlider("Small_Idle", {
-        Text = "Idle Offset Z", Default = -6, Min = -20, Max = 0, Rounding = 1,
-        Callback = function(v) FacingConfig.IdleOffset = Vector3.new(0, 0, v) end,
+    left:AddSlider("Face_Radius", {
+        Text = "Semicircle Radius",
+        Default = 20, Min = 3, Max = 60, Rounding = 1,
+        Callback = function(value) FacingConfig.radius = value end,
     })
-    small:AddSlider("Small_Speed", {
-        Text = "Travel Speed", Default = 55, Min = 10, Max = 200, Rounding = 0,
-        Callback = function(v) FacingConfig.TravelSpeed = v end,
-    })
-    small:AddSlider("Small_Hit", {
-        Text = "Hit Distance", Default = 3.5, Min = 1, Max = 15, Rounding = 1,
-        Callback = function(v) FacingConfig.HitDistance = v end,
-    })
-    small:AddSlider("Small_Fade", {
-        Text = "Despawn Delay", Default = 0.2, Min = 0, Max = 1, Rounding = 2,
-        Callback = function(v) FacingConfig.DisappearDelay = v end,
+    left:AddSlider("Face_Vertical", {
+        Text = "Vertical Tolerance",
+        Default = 6, Min = 1, Max = 20, Rounding = 1,
+        Callback = function(value) FacingConfig.verticalTolerance = value end,
     })
 
-    local valid = Tabs.Facing:AddLeftGroupbox("Validity")
-    valid:AddToggle("Valid_LoS", {
-        Text = "Require Line of Sight",
-        Default = false,
-        Callback = function(v) FacingConfig.RequireLoS = v end,
+    local right = Tabs.Facing:AddRightGroupbox("Traveling Box")
+    right:AddToggle("Face_ShowProjectile", {
+        Text = "Show Traveling Box",
+        Default = true,
+        Callback = function(value) FacingConfig.showProjectile = value end,
     })
-    valid:AddToggle("Valid_OnlyBlock", {
-        Text = "Only Block on Valid",
-        Default = false,
-        Callback = function(v) FacingConfig.OnlyBlockOnValid = v end,
+    right:AddSlider("Face_BoxSize", {
+        Text = "Box Size",
+        Default = 4, Min = 1, Max = 12, Rounding = 1,
+        Callback = function(value)
+            FacingConfig.projectileSize = Vector3.new(value, value * 1.25, value)
+        end,
     })
-    valid:AddButton({
-        Text = "Test Facing Box",
+    right:AddSlider("Face_Speed", {
+        Text = "Box Speed",
+        Default = 100, Min = 10, Max = 250, Rounding = 0,
+        Callback = function(value) FacingConfig.projectileSpeed = value end,
+    })
+    right:AddSlider("Face_Timeout", {
+        Text = "Box Timeout",
+        Default = 0.8, Min = 0.1, Max = 3, Rounding = 2,
+        Callback = function(value) FacingConfig.projectileTimeout = value end,
+    })
+    right:AddSlider("Face_HitDistance", {
+        Text = "Contact Distance",
+        Default = 3.5, Min = 1, Max = 10, Rounding = 1,
+        Callback = function(value) FacingConfig.hitDistance = value end,
+    })
+    right:AddButton({
+        Text = "Test Box (nearest killer)",
         Func = function()
-            if FacingMode ~= "BoxFacing" then
-                FacingMode = "BoxFacing"
-                pcall(function() Options.FaceMode:SetValue("BoxFacing") end)
-            end
-            syncCheckers()
-            local k = GetNearestKiller(60)
-            if k and FacingCheckers[k] then
-                FacingCheckers[k]:M1()
-                Library:Notify({ Title = "Facing", Description = "Test M1 fired", Time = 2 })
-            else
-                Library:Notify({ Title = "Facing", Description = "No killer nearby", Time = 2 })
+            local killer = GetNearestKiller(60)
+            if killer then
+                local oldEnabled = AB.enabled
+                AB.enabled = true
+                launchDirectionalBox(killer)
+                AB.enabled = oldEnabled
             end
         end,
     })
+    right:AddLabel("The box spawns at your character and flies to the killer. It vanishes on contact; BLOCK only fires if you are still inside the killer's semicircle.", true)
 end
 
 --═══════════════════════════════════════════════════════════════════
--- SURVIVOR ABILITY-TRIGGERED AIMBOT
--- Hooks UseActorAbility + ChanceFireGun instead of animation IDs.
+-- AIMBOT — Guesting ActiveLock via AnimationPlayed (reliable)
 --═══════════════════════════════════════════════════════════════════
 do
-    local Aim = {
-        Enabled = false,
-        Distance = 60,
-        LockDuration = 0.6,
-        Smoothness = 0.85,
-        Prediction = 0,
-        AimHead = false,
-        Debug = false,
+    getgenv().AimbotValues = {
+        Guest1337 = { Enabled = true, Distance = 50, LockDuration = 1.3, Prediction = 0 },
+        Shedlekey = { Enabled = true, Distance = 29, LockDuration = 1.2, Prediction = 0 },
+        TwoTime = { Enabled = true, Distance = 29, LockDuration = 0.9, Prediction = 0 },
+        Chance = { Enabled = false, Distance = 80, LockDuration = 1.5, Prediction = 3 },
+        JaneDoe = { Enabled = false, Distance = 50, LockDuration = 1.1, Prediction = 0 },
     }
 
-    -- Survivor name -> set of abilities that should trigger aim
-    local SURVIVOR_ABILITIES = {
-        ["Shedletsky"]   = { ["SLASH"] = true },
-        ["Guest 1337"]   = { ["PUNCH"] = true, ["PARRY"] = true, ["PARRY PUNCH"] = true },
-        ["Chance"]       = { ["ONE SHOT"] = true, ["SHOT"] = true, ["FLINTLOCK"] = true, ["GUN"] = true },
-        ["Jane Doe"]     = { ["HATCHET"] = true },
-        ["Jane"]         = { ["HATCHET"] = true },
+    -- known + loaded ids
+    getgenv().AnimationData = {
+        Guest1337 = {},
+        Shedlekey = {},
+        TwoTime = {
+            ["100725497418533"] = true,
+            ["89448354637442"] = true,
+            ["106086955212611"] = true,
+            ["107640065977686"] = true,
+        },
+        Chance = {},
+        JaneDoe = {},
     }
 
-    local ActiveLock = { IsActive = false, Target = nil, StartTime = 0 }
-
-    local function GetSurvivorName()
-        local char = LP.Character
-        if not char then return nil end
-        local attr = char:GetAttribute("CharacterName")
-        if attr and SURVIVOR_ABILITIES[attr] then return attr end
-        if SURVIVOR_ABILITIES[char.Name] then return char.Name end
-        return nil
-    end
-
-    -- Robust decode: handles "SLASH", "\3\5\0\0\0SLASH", buffer equivalents, etc.
-    local function decodeAbilityName(payload)
-        if not payload or type(payload) ~= "table" then return nil end
-        local first = payload[1]
-        if not first then return nil end
-
-        local raw
-        if type(first) == "string" then
-            raw = first
-        elseif typeof(first) == "buffer" then
-            local ok, s = pcall(buffer.tostring, first)
-            if ok then raw = s end
+    pcall(function()
+        local assets = ReplicatedStorage:FindFirstChild("Assets")
+        if not assets then return end
+        local folders = { assets:FindFirstChild("Survivors") }
+        local skins = assets:FindFirstChild("Skins")
+        if skins then table.insert(folders, skins:FindFirstChild("Survivors")) end
+        for _, folder in ipairs(folders) do
+            if folder then
+                for _, d in ipairs(folder:GetDescendants()) do
+                    if d:IsA("ModuleScript") and d.Name == "Config" then
+                        local ok, result = pcall(require, d)
+                        if ok and type(result) == "table" and type(result.Animations) == "table" then
+                            local a = result.Animations
+                            local function add(key, val)
+                                if not val then return end
+                                local id = tostring(val):match("%d+")
+                                if id and getgenv().AnimationData[key] then
+                                    getgenv().AnimationData[key][id] = true
+                                end
+                            end
+                            add("Guest1337", a.Punch)
+                            add("Guest1337", a.ParryPunch)
+                            add("Shedlekey", a.Slash)
+                            add("JaneDoe", a.Axe)
+                            add("Chance", a.AimGun)
+                            add("Chance", a.Shoot)
+                            add("Chance", a.Gun)
+                        end
+                    end
+                end
+            end
         end
-        if not raw then return nil end
+    end)
 
-        local best = ""
-        for word in raw:gmatch("[%a][%a%s]*") do
-            word = word:gsub("%s+$", "")
-            if #word > #best then best = word end
-        end
-        if best == "" then return nil end
-        return best
-    end
+    getgenv().ActiveLock = { IsActive = false, Target = nil, StartTime = 0, Mode = "", Track = nil }
+    getgenv().LastFinishedTrack = nil
+    getgenv().GlobalAimbotToggle = false
+    getgenv().GlobalAimlockMode = "Character Lock"
 
-    local function StartLock(abilityName)
-        if not Aim.Enabled then return end
-        if IsPlayerKiller() then return end
-
-        local survivor = GetSurvivorName()
-        if not survivor then return end
-
-        local allowed = SURVIVOR_ABILITIES[survivor]
-        if not allowed or not allowed[abilityName] then return end
-
-        local target = GetNearestKiller(Aim.Distance)
+    local function startLock(modeKey, track)
+        if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then return end
+        local cfg = getgenv().AimbotValues[modeKey]
+        if not cfg or not cfg.Enabled then return end
+        if getgenv().ActiveLock.IsActive then return end
+        if track and track == getgenv().LastFinishedTrack then return end
+        local target = GetNearestKiller(cfg.Distance or 50)
         if not target then return end
-
-        ActiveLock.IsActive = true
-        ActiveLock.Target = target
-        ActiveLock.StartTime = tick()
-
         local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        getgenv().ActiveLock.IsActive = true
+        getgenv().ActiveLock.Target = target
+        getgenv().ActiveLock.StartTime = tick()
+        getgenv().ActiveLock.Mode = modeKey
+        getgenv().ActiveLock.Track = track
         if hum then hum.AutoRotate = false end
-
-        if Aim.Debug then
-            print(string.format("[Aim] %s fired '%s' → locking %s", survivor, abilityName, target.Name))
-        end
     end
 
-    -- Weak table: if a remote is GC'd and a new one is created, we can re-hook it
-    local HookedRemotes = setmetatable({}, { __mode = "k" })
-
-    local function hookUseActorAbility()
-        local re = getRE()
-        if not re then return false end
-        if HookedRemotes[re] then return true end
-        HookedRemotes[re] = true
-
-        local oldFire = re.FireServer
-        re.FireServer = function(self, action, payload)
-            if action == "UseActorAbility" and type(payload) == "table" then
-                local name = decodeAbilityName(payload)
-                if name then StartLock(name) end
-            end
-            return oldFire(self, action, payload)
-        end
-        return true
-    end
-
-    local function findChanceGunRemote()
-        local r = ReplicatedStorage:FindFirstChild("ChanceFireGun")
-        if r then return r end
-        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-        return remotes and remotes:FindFirstChild("ChanceFireGun")
-    end
-
-    local function hookChanceGun()
-        local r = findChanceGunRemote()
-        if not r then return false end
-        if HookedRemotes[r] then return true end
-        HookedRemotes[r] = true
-
-        local oldFire = r.FireServer
-        r.FireServer = function(self, ...)
-            StartLock("ONE SHOT")
-            return oldFire(self, ...)
-        end
-        return true
-    end
-
-    -- Retry hooks in the background (remotes may not exist yet at load)
-    task.spawn(function()
-        while true do
-            if not hookUseActorAbility() then
-                task.wait(1)
-            else
-                break
+    local function onAnimPlayed(track)
+        if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then return end
+        if not track or not track.Animation then return end
+        local id = tostring(track.Animation.AnimationId):match("%d+")
+        if not id then return end
+        for modeKey, idMap in pairs(getgenv().AnimationData) do
+            local cfg = getgenv().AimbotValues[modeKey]
+            if cfg and cfg.Enabled and idMap[id] then
+                startLock(modeKey, track)
+                return
             end
         end
-    end)
-    task.spawn(function()
-        while true do
-            if hookChanceGun() then break end
-            task.wait(2)
-        end
-    end)
+    end
 
-    -- Aim loop
+    local animConns = {}
+    local function hookCharacter(char)
+        for _, c in ipairs(animConns) do pcall(function() c:Disconnect() end) end
+        animConns = {}
+        task.spawn(function()
+            local hum = char:WaitForChild("Humanoid", 8)
+            if not hum then return end
+            local animator = hum:FindFirstChildOfClass("Animator")
+            if not animator then
+                animator = hum:WaitForChild("Animator", 5)
+            end
+            if not animator then return end
+            table.insert(animConns, animator.AnimationPlayed:Connect(onAnimPlayed))
+            -- also poll lightly as backup (some skins skip AnimationPlayed)
+            table.insert(animConns, RunService.Heartbeat:Connect(function()
+                if not getgenv().GlobalAimbotToggle or getgenv().ActiveLock.IsActive then return end
+                if IsPlayerKiller() then return end
+                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                    if track.IsPlaying and track.Animation then
+                        onAnimPlayed(track)
+                        if getgenv().ActiveLock.IsActive then break end
+                    end
+                end
+            end))
+        end)
+    end
+    if LP.Character then hookCharacter(LP.Character) end
+    LP.CharacterAdded:Connect(hookCharacter)
+
     RunService.RenderStepped:Connect(function()
-        if not ActiveLock.IsActive then return end
-
-        if not Aim.Enabled or IsPlayerKiller() then
-            ActiveLock.IsActive = false
+        if not getgenv().ActiveLock.IsActive then return end
+        if not getgenv().GlobalAimbotToggle or IsPlayerKiller() then
+            getgenv().ActiveLock.IsActive = false
             local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
             if hum then hum.AutoRotate = true end
             return
         end
-
-        local char = LP.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if not hrp or not hum then
-            ActiveLock.IsActive = false
+        local character = LP.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not hrp or not humanoid then
+            getgenv().ActiveLock.IsActive = false
             return
         end
-
-        local elapsed = tick() - ActiveLock.StartTime
-        if elapsed > Aim.LockDuration then
-            ActiveLock.IsActive = false
-            ActiveLock.Target = nil
-            hum.AutoRotate = true
+        local mode = getgenv().ActiveLock.Mode
+        local cfg = getgenv().AimbotValues[mode]
+        if not cfg then
+            getgenv().ActiveLock.IsActive = false
+            humanoid.AutoRotate = true
             return
         end
-
-        local target = ActiveLock.Target
+        local elapsed = tick() - getgenv().ActiveLock.StartTime
+        local target = getgenv().ActiveLock.Target
         local tHRP = target and target:FindFirstChild("HumanoidRootPart")
         local tHum = target and target:FindFirstChildOfClass("Humanoid")
-
+        -- refresh target if lost
         if not tHRP or (tHum and tHum.Health <= 0) then
-            target = GetNearestKiller(Aim.Distance)
-            ActiveLock.Target = target
+            target = GetNearestKiller(cfg.Distance or 50)
+            getgenv().ActiveLock.Target = target
             tHRP = target and target:FindFirstChild("HumanoidRootPart")
             tHum = target and target:FindFirstChildOfClass("Humanoid")
         end
-
-        if not tHRP then
-            ActiveLock.IsActive = false
-            hum.AutoRotate = true
+        if elapsed > (cfg.LockDuration or 1) or not tHRP then
+            getgenv().LastFinishedTrack = getgenv().ActiveLock.Track
+            getgenv().ActiveLock.IsActive = false
+            getgenv().ActiveLock.Target = nil
+            getgenv().ActiveLock.Track = nil
+            humanoid.AutoRotate = true
             return
         end
-
-        local aimPos = tHRP.Position
-        if Aim.AimHead then
-            local head = target:FindFirstChild("Head")
-            if head then aimPos = head.Position end
+        local position = tHRP.Position
+        local pred = cfg.Prediction or 0
+        if pred > 0 and tHum and tHum.MoveDirection.Magnitude > 0.05 then
+            position = position + tHum.MoveDirection.Unit * pred
         end
-        if Aim.Prediction > 0 and tHum and tHum.MoveDirection.Magnitude > 0.05 then
-            aimPos = aimPos + tHum.MoveDirection.Unit * Aim.Prediction
+        local lookAt = Vector3.new(position.X, hrp.Position.Y, position.Z)
+        local cframe = CFrame.lookAt(hrp.Position, lookAt)
+        hrp.CFrame = hrp.CFrame:Lerp(cframe, 0.85)
+        if getgenv().GlobalAimlockMode == "Char + Cam Lock" then
+            local cam = Workspace.CurrentCamera
+            if cam then
+                cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, position), 0.8)
+            end
         end
-
-        local lookAt = Vector3.new(aimPos.X, hrp.Position.Y, aimPos.Z)
-        if (lookAt - hrp.Position).Magnitude < 0.1 then return end
-        local goalCF = CFrame.lookAt(hrp.Position, lookAt)
-        hrp.CFrame = hrp.CFrame:Lerp(goalCF, Aim.Smoothness)
     end)
 
-    -- UI
-    local left = Tabs.Aimbot:AddLeftGroupbox("Survivor Aimbot")
+    local left = Tabs.Aimbot:AddLeftGroupbox("Aimbot")
     left:AddToggle("Aim_Enable", {
         Text = "Enable Aimbot",
         Default = false,
@@ -899,71 +764,68 @@ do
                 pcall(function() Toggles.Aim_Enable:SetValue(false) end)
                 return
             end
-            Aim.Enabled = v
+            getgenv().GlobalAimbotToggle = v
             if not v then
-                ActiveLock.IsActive = false
+                getgenv().ActiveLock.IsActive = false
                 local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
                 if hum then hum.AutoRotate = true end
             end
         end,
     })
-    left:AddSlider("Aim_Dist", {
-        Text = "Search Distance", Default = 60, Min = 5, Max = 200, Rounding = 0,
-        Callback = function(v) Aim.Distance = v end,
-    })
-    left:AddSlider("Aim_Lock", {
-        Text = "Lock Duration", Default = 0.6, Min = 0.1, Max = 3, Rounding = 2,
-        Callback = function(v) Aim.LockDuration = v end,
-    })
-    left:AddSlider("Aim_Smooth", {
-        Text = "Smoothness", Default = 0.85, Min = 0.1, Max = 1, Rounding = 2,
-        Callback = function(v) Aim.Smoothness = v end,
-    })
-    left:AddSlider("Aim_Pred", {
-        Text = "Prediction (studs)", Default = 0, Min = 0, Max = 15, Rounding = 1,
-        Callback = function(v) Aim.Prediction = v end,
-    })
-    left:AddToggle("Aim_Head", {
-        Text = "Aim at Head",
-        Default = false,
-        Callback = function(v) Aim.AimHead = v end,
-    })
-    left:AddToggle("Aim_Debug", {
-        Text = "Debug prints",
-        Default = false,
-        Callback = function(v) Aim.Debug = v end,
-    })
-
-    local right = Tabs.Aimbot:AddRightGroupbox("Triggers")
-    right:AddLabel("Auto-detects your survivor.")
-    right:AddLabel("Shedletsky → SLASH")
-    right:AddLabel("Guest 1337 → PUNCH / PARRY")
-    right:AddLabel("Chance → ONE SHOT / SHOT / FLINTLOCK / GUN")
-    right:AddLabel("Jane / Jane Doe → HATCHET")
-    right:AddLabel("If nothing triggers, enable Debug and check Console.", true)
-    right:AddButton({
-        Text = "Test Lock (nearest killer)",
-        Func = function()
-            local t = GetNearestKiller(Aim.Distance)
-            if t then
-                ActiveLock.IsActive = true
-                ActiveLock.Target = t
-                ActiveLock.StartTime = tick()
-                local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-                if hum then hum.AutoRotate = false end
-                Library:Notify({ Title = "Aim", Description = "Test lock on " .. t.Name, Time = 2 })
-            else
-                Library:Notify({ Title = "Aim", Description = "No killer in range", Time = 2 })
+    left:AddDropdown("Aim_Pick", {
+        Text = "Pick Aimbots",
+        Values = { "Guest1337", "Shedlekey", "TwoTime", "Chance", "JaneDoe" },
+        Default = { "Guest1337", "Shedlekey", "TwoTime" },
+        Multi = true,
+        Callback = function(sel)
+            for k, cfg in pairs(getgenv().AimbotValues) do cfg.Enabled = false end
+            if type(sel) == "table" then
+                -- handle both list and map forms
+                for k, v in pairs(sel) do
+                    if v == true and type(k) == "string" and getgenv().AimbotValues[k] then
+                        getgenv().AimbotValues[k].Enabled = true
+                    elseif type(v) == "string" and getgenv().AimbotValues[v] then
+                        getgenv().AimbotValues[v].Enabled = true
+                    end
+                end
             end
         end,
     })
+    left:AddDropdown("Aim_Mode", {
+        Text = "Aimlock Mode",
+        Values = { "Character Lock", "Char + Cam Lock" },
+        Default = 1,
+        Callback = function(v) getgenv().GlobalAimlockMode = v end,
+    })
+    left:AddLabel("Locks when your ability animation plays (Guesting style).", true)
+
+    local function addSurv(key, title, dd, dp)
+        local box = Tabs.Aimbot:AddRightGroupbox(title)
+        box:AddSlider(key .. "_Dur", {
+            Text = "Duration", Default = dd, Min = 0.1, Max = 3, Rounding = 2,
+            Callback = function(v) getgenv().AimbotValues[key].LockDuration = v end,
+        })
+        box:AddSlider(key .. "_Pred", {
+            Text = "Prediction", Default = dp, Min = 0, Max = 15, Rounding = 1,
+            Callback = function(v) getgenv().AimbotValues[key].Prediction = v end,
+        })
+    end
+    addSurv("Guest1337", "Guest 1337", 1.3, 0)
+    addSurv("Shedlekey", "Shedletsky", 1.2, 0)
+    addSurv("TwoTime", "Two Time", 0.9, 0)
+    addSurv("Chance", "Chance", 1.5, 3)
+    addSurv("JaneDoe", "Jane Doe", 1.1, 0)
 end
 
---═══════════════════════════════════════════════════════════════════
 -- TWO TIME BACKSTAB
 --═══════════════════════════════════════════════════════════════════
 do
-    local BS = { enabled = false, duration = 0.35, behind = 3, method = "Lerp" }
+    local BS = {
+        enabled = false,
+        duration = 0.35,
+        behind = 3,
+        method = "Lerp",
+    }
     local IDS = {
         ["100725497418533"] = true,
         ["89448354637442"] = true,
@@ -999,7 +861,9 @@ do
             anim.AnimationPlayed:Connect(function(track)
                 if not BS.enabled then return end
                 local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
-                if id and IDS[id] then task.spawn(doStab) end
+                if id and IDS[id] then
+                    task.spawn(doStab)
+                end
             end)
         end)
     end
@@ -1032,7 +896,13 @@ end
 -- GENERATOR
 --═══════════════════════════════════════════════════════════════════
 do
-    local Gen = { enabled = false, gen = 0, installed = false, startDelay = 1.2, connectDelay = 0.8 }
+    local Gen = {
+        enabled = false,
+        gen = 0,
+        installed = false,
+        startDelay = 1.2,
+        connectDelay = 0.8,
+    }
 
     local function still(token, object)
         return Gen.enabled and token == Gen.gen and object and not object.Ended
@@ -1132,12 +1002,15 @@ do
     left:AddToggle("Stam_Inf", {
         Text = "Infinite Stamina",
         Default = false,
-        Callback = function(v) Stam.infinite = v; apply() end,
+        Callback = function(v)
+            Stam.infinite = v
+            apply()
+        end,
     })
 end
 
 --═══════════════════════════════════════════════════════════════════
--- ESP
+-- BASIC ESP
 --═══════════════════════════════════════════════════════════════════
 do
     local S = { killer = false, survivor = false, generator = false }
@@ -1214,9 +1087,18 @@ do
     end)
 
     local left = Tabs.ESP:AddLeftGroupbox("ESP")
-    left:AddToggle("ESP_K", { Text = "Killer ESP", Default = false, Callback = function(v) S.killer = v end })
-    left:AddToggle("ESP_S", { Text = "Survivor ESP", Default = false, Callback = function(v) S.survivor = v end })
-    left:AddToggle("ESP_G", { Text = "Generator ESP", Default = false, Callback = function(v) S.generator = v end })
+    left:AddToggle("ESP_K", {
+        Text = "Killer ESP", Default = false,
+        Callback = function(v) S.killer = v end,
+    })
+    left:AddToggle("ESP_S", {
+        Text = "Survivor ESP", Default = false,
+        Callback = function(v) S.survivor = v end,
+    })
+    left:AddToggle("ESP_G", {
+        Text = "Generator ESP", Default = false,
+        Callback = function(v) S.generator = v end,
+    })
 end
 
 --═══════════════════════════════════════════════════════════════════
@@ -1240,7 +1122,7 @@ do
     MenuGroup:AddButton({
         Text = "Unload",
         Func = function()
-            destroyAllCheckers()
+            clearStack()
             Library:Unload()
         end,
     })
@@ -1260,7 +1142,7 @@ pcall(function()
 end)
 
 Library:OnUnload(function()
-    destroyAllCheckers()
+    clearStack()
     print("[Nos Hub] Unloaded")
 end)
 
