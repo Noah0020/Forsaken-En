@@ -158,7 +158,7 @@ do
 end
 
 --═══════════════════════════════════════════════════════════════════
--- DIRECTIONAL AUTO BLOCK (killer-facing semicircle + returning box)
+-- STACKED BOX AUTO BLOCK (killer-front column that travels forward)
 --═══════════════════════════════════════════════════════════════════
 local AB = {
     enabled = false,
@@ -166,56 +166,50 @@ local AB = {
     last = 0,
 }
 
-local FacingConfig = {
-    enabled = true,
-    angle = 120,              -- total cone angle in degrees
-    radius = 20,              -- horizontal range from killer
+local StackConfig = {
+    angle = 120,
+    radius = 20,
     verticalTolerance = 6,
-    projectileSize = Vector3.new(4, 5, 4),
-    projectileSpeed = 100,
-    projectileTimeout = 0.8,
-    hitDistance = 3.5,
-    showZone = true,
-    showProjectile = true,
-    zoneSegments = 32,
-    zoneColor = Color3.fromRGB(255, 65, 75),
-    projectileColor = Color3.fromRGB(255, 90, 100),
+    boxWidth = 3,
+    boxHeight = 3,
+    boxDepth = 3,
+    boxSize = Vector3.new(3, 3, 3),
+    boxCount = 5,
+    boxGap = 0.15,
+    speed = 90,
+    timeout = 1.5,
+    touchPadding = 1.25,
+    showRange = true,
+    showBoxes = true,
+    rangeSegments = 32,
+    rangeColor = Color3.fromRGB(255, 65, 75),
+    boxColor = Color3.fromRGB(255, 90, 100),
 }
 
-local FacingMode = "Semicircle" -- None | Semicircle
-local ProjectileFolder = Instance.new("Folder")
-ProjectileFolder.Name = "Nos_DirectionalBlock"
-ProjectileFolder.Parent = Workspace
+local FacingMode = "Stacked Boxes" -- Stacked Boxes | None
+local StackFolder = Instance.new("Folder")
+StackFolder.Name = "Nos_StackedAutoBlock"
+StackFolder.Parent = Workspace
 
-local ZoneFolder = Instance.new("Folder")
-ZoneFolder.Name = "Nos_DirectionalZones"
-ZoneFolder.Parent = Workspace
+local RangeFolder = Instance.new("Folder")
+RangeFolder.Name = "Nos_StackedRange"
+RangeFolder.Parent = Workspace
 
-local activeProjectiles = {}
-local zoneParts = {}
-
-local function clearStack()
-    for _, projectile in ipairs(activeProjectiles) do
-        if projectile.part then
-            pcall(function() projectile.part:Destroy() end)
-        end
-    end
-    table.clear(activeProjectiles)
-
-    for killer, parts in pairs(zoneParts) do
-        for _, part in ipairs(parts) do
-            pcall(function() part:Destroy() end)
-        end
-        zoneParts[killer] = nil
-    end
-end
+local killerStacks = {}
+local rangeParts = {}
+local stackHeartbeat = nil
 
 local function getRoot(model)
     return model and model:FindFirstChild("HumanoidRootPart")
 end
 
--- The cone belongs to the KILLER. It is measured from the killer's
--- forward direction, not from the survivor's facing direction.
+local function getKillerForward(root)
+    local f = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+    if f.Magnitude < 0.001 then return Vector3.new(0, 0, -1) end
+    return f.Unit
+end
+
+-- The detection sector always belongs to the killer and only extends forward.
 local function IsPlayerInsideKillerZone(killer)
     local killerRoot = getRoot(killer)
     local playerRoot = getRoot(LP.Character)
@@ -224,198 +218,203 @@ local function IsPlayerInsideKillerZone(killer)
     local offset = playerRoot.Position - killerRoot.Position
     local horizontal = Vector3.new(offset.X, 0, offset.Z)
     local distance = horizontal.Magnitude
-
-    if distance > FacingConfig.radius then return false end
-    if math.abs(offset.Y) > FacingConfig.verticalTolerance then return false end
+    if distance > StackConfig.radius then return false end
+    if math.abs(offset.Y) > StackConfig.verticalTolerance then return false end
     if distance < 0.01 then return true end
 
-    local forward = Vector3.new(
-        killerRoot.CFrame.LookVector.X, 0, killerRoot.CFrame.LookVector.Z
-    )
-    if forward.Magnitude < 0.01 then return false end
-
-    local dot = math.clamp(forward.Unit:Dot(horizontal.Unit), -1, 1)
-    local halfAngle = math.rad(math.clamp(FacingConfig.angle, 1, 180) / 2)
-    return dot >= math.cos(halfAngle)
+    local dot = math.clamp(getKillerForward(killerRoot):Dot(horizontal.Unit), -1, 1)
+    return dot >= math.cos(math.rad(math.clamp(StackConfig.angle, 1, 180) / 2))
 end
 
-local function makeZonePart()
+local function makeLinePart(parent, name, color)
     local part = Instance.new("Part")
-    part.Name = "Nos_SemicircleOutline"
+    part.Name = name
     part.Anchored = true
     part.CanCollide = false
     part.CanTouch = false
     part.CanQuery = false
     part.CastShadow = false
     part.Material = Enum.Material.Neon
-    part.Color = FacingConfig.zoneColor
+    part.Color = color
     part.Transparency = 0.12
-    part.Size = Vector3.new(0.09, 0.09, 1)
-    part.Parent = ZoneFolder
+    part.Size = Vector3.new(0.08, 0.08, 1)
+    part.Parent = parent
     return part
 end
 
-local function updateKillerZone(killer)
-    local root = getRoot(killer)
-    if not root or not FacingConfig.showZone or FacingMode ~= "Semicircle" then
-        local old = zoneParts[killer]
-        if old then
-            for _, part in ipairs(old) do part:Destroy() end
-            zoneParts[killer] = nil
+local function clearRange(killer)
+    local parts = rangeParts[killer]
+    if parts then
+        for _, part in ipairs(parts) do
+            pcall(function() part:Destroy() end)
         end
+        rangeParts[killer] = nil
+    end
+end
+
+local function updateKillerRange(killer)
+    local root = getRoot(killer)
+    if not root or not StackConfig.showRange or FacingMode ~= "Stacked Boxes" then
+        clearRange(killer)
         return
     end
 
-    local parts = zoneParts[killer]
+    local parts = rangeParts[killer]
     if not parts then
         parts = {}
-        for i = 1, FacingConfig.zoneSegments do
-            parts[i] = makeZonePart()
+        for i = 1, StackConfig.rangeSegments + 2 do
+            parts[i] = makeLinePart(RangeFolder, "Nos_RangeOutline", StackConfig.rangeColor)
         end
-        -- Two radial edges complete the visible semicircle sector.
-        parts[#parts + 1] = makeZonePart()
-        parts[#parts + 1] = makeZonePart()
-        zoneParts[killer] = parts
+        rangeParts[killer] = parts
     end
 
-    local forward = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
-    if forward.Magnitude < 0.01 then return end
-    forward = forward.Unit
+    local forward = getKillerForward(root)
     local right = Vector3.new(-forward.Z, 0, forward.X)
-    local half = math.rad(math.clamp(FacingConfig.angle, 1, 180) / 2)
-    local center = root.Position + Vector3.new(0, 0.15, 0)
-
+    local half = math.rad(math.clamp(StackConfig.angle, 1, 180) / 2)
+    local center = root.Position + Vector3.new(0, 0.12, 0)
     local points = {}
-    for i = 0, FacingConfig.zoneSegments do
-        local a = -half + (2 * half) * (i / FacingConfig.zoneSegments)
-        local direction = forward * math.cos(a) + right * math.sin(a)
-        points[i + 1] = center + direction * FacingConfig.radius
+
+    for i = 0, StackConfig.rangeSegments do
+        local a = -half + (2 * half) * (i / StackConfig.rangeSegments)
+        local dir = forward * math.cos(a) + right * math.sin(a)
+        points[i + 1] = center + dir * StackConfig.radius
     end
 
-    for i = 1, FacingConfig.zoneSegments do
-        local a, b = points[i], points[i + 1]
+    local function placeLine(part, a, b)
         local delta = b - a
-        local part = parts[i]
-        part.Size = Vector3.new(0.09, 0.09, delta.Magnitude)
+        part.Size = Vector3.new(0.08, 0.08, math.max(delta.Magnitude, 0.05))
         part.CFrame = CFrame.lookAt((a + b) / 2, b)
-        part.Color = FacingConfig.zoneColor
-        part.Transparency = 0.12
+        part.Color = StackConfig.rangeColor
     end
 
-    for i, pointIndex in ipairs({1, #points}) do
-        local part = parts[FacingConfig.zoneSegments + i]
-        local edge = points[pointIndex] - center
-        part.Size = Vector3.new(0.09, 0.09, edge.Magnitude)
-        part.CFrame = CFrame.lookAt((center + points[pointIndex]) / 2, points[pointIndex])
-        part.Color = FacingConfig.zoneColor
-        part.Transparency = 0.12
+    for i = 1, StackConfig.rangeSegments do
+        placeLine(parts[i], points[i], points[i + 1])
+    end
+    placeLine(parts[StackConfig.rangeSegments + 1], center, points[1])
+    placeLine(parts[StackConfig.rangeSegments + 2], center, points[#points])
+end
+
+local function destroyStack(killer)
+    local data = killerStacks[killer]
+    if not data then return end
+    for _, part in ipairs(data.parts) do
+        pcall(function() part:Destroy() end)
+    end
+    killerStacks[killer] = nil
+end
+
+local function createStack(killer)
+    local data = killerStacks[killer]
+    if data then return data end
+
+    data = { parts = {}, active = false, started = 0, position = nil }
+    for i = 1, StackConfig.boxCount do
+        local part = Instance.new("Part")
+        part.Name = "Nos_StackedBlockBox_" .. i
+        part.Anchored = true
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.CastShadow = false
+        part.Material = Enum.Material.Neon
+        part.Color = StackConfig.boxColor
+        part.Transparency = StackConfig.showBoxes and 0.2 or 1
+        part.Size = StackConfig.boxSize
+        part.Parent = StackFolder
+        data.parts[i] = part
+    end
+    killerStacks[killer] = data
+    return data
+end
+
+local function resizeStack(data)
+    while #data.parts > StackConfig.boxCount do
+        local part = table.remove(data.parts)
+        if part then part:Destroy() end
+    end
+    while #data.parts < StackConfig.boxCount do
+        local i = #data.parts + 1
+        local part = Instance.new("Part")
+        part.Name = "Nos_StackedBlockBox_" .. i
+        part.Anchored = true
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.CastShadow = false
+        part.Material = Enum.Material.Neon
+        part.Color = StackConfig.boxColor
+        part.Transparency = StackConfig.showBoxes and 0.2 or 1
+        part.Size = StackConfig.boxSize
+        part.Parent = StackFolder
+        data.parts[i] = part
+    end
+    for _, part in ipairs(data.parts) do
+        part.Size = StackConfig.boxSize
+        part.Color = StackConfig.boxColor
+        part.Transparency = StackConfig.showBoxes and 0.2 or 1
     end
 end
 
-local function removeProjectile(projectile)
-    if projectile.part then
-        pcall(function() projectile.part:Destroy() end)
-    end
-    for i = #activeProjectiles, 1, -1 do
-        if activeProjectiles[i] == projectile then
-            table.remove(activeProjectiles, i)
-            break
-        end
+local function getStackFrontPosition(root)
+    local forward = getKillerForward(root)
+    local frontOffset = math.max(StackConfig.boxSize.Z * 0.5 + 0.75, 1.5)
+    return root.Position + forward * frontOffset, forward
+end
+
+local function placeStack(killer, data, basePosition, forward)
+    local right = Vector3.new(-forward.Z, 0, forward.X)
+    local baseY = StackConfig.boxSize.Y * 0.5
+    local spacing = StackConfig.boxSize.Y + StackConfig.boxGap
+    for i, part in ipairs(data.parts) do
+        local pos = basePosition + Vector3.new(0, baseY + (i - 1) * spacing, 0)
+        part.CFrame = CFrame.lookAt(pos, pos + forward, Vector3.yAxis)
+        part.Transparency = StackConfig.showBoxes and 0.2 or 1
     end
 end
 
-local function launchDirectionalBox(killer)
-    if not AB.enabled or IsPlayerKiller() or FacingMode ~= "Semicircle" then return end
+local function resetStackToKillerFront(killer, data)
+    local root = getRoot(killer)
+    if not root then return end
+    local base, forward = getStackFrontPosition(root)
+    data.active = false
+    data.position = base
+    placeStack(killer, data, base, forward)
+end
+
+local function startStackTravel(killer)
     if not killer or not killer.Parent then return end
+    local root = getRoot(killer)
+    if not root then return end
+    local data = createStack(killer)
+    resizeStack(data)
 
-    local playerRoot = getRoot(LP.Character)
-    local killerRoot = getRoot(killer)
-    if not playerRoot or not killerRoot then return end
+    -- Outside the forward range: keep the complete stack parked at the killer's front.
+    if not IsPlayerInsideKillerZone(killer) then
+        resetStackToKillerFront(killer, data)
+        return
+    end
 
-    -- Only spawn when the survivor is inside the killer's forward semicircle
-    -- at the instant the M1 signal is received.
-    if not IsPlayerInsideKillerZone(killer) then return end
-
-    local part = Instance.new("Part")
-    part.Name = "Nos_DirectionalBlockBox"
-    part.Anchored = true
-    part.CanCollide = false
-    part.CanTouch = false
-    part.CanQuery = false
-    part.CastShadow = false
-    part.Material = Enum.Material.Neon
-    part.Color = FacingConfig.projectileColor
-    part.Size = FacingConfig.projectileSize
-    part.Transparency = FacingConfig.showProjectile and 0.2 or 1
-    part.CFrame = CFrame.new(playerRoot.Position)
-    part.Parent = ProjectileFolder
-
-    local projectile = {
-        part = part,
-        killer = killer,
-        started = os.clock(),
-        lastPosition = playerRoot.Position,
-    }
-    table.insert(activeProjectiles, projectile)
+    local front = getStackFrontPosition(root)
+    data.position = front
+    data.active = true
+    data.started = os.clock()
 end
 
--- Every active box travels FROM the survivor TOWARD the killer. At contact,
--- the box is destroyed first, then the cone is checked again.
-RunService.Heartbeat:Connect(function(dt)
-    local killersFolder = Workspace:FindFirstChild("Players")
-    killersFolder = killersFolder and killersFolder:FindFirstChild("Killers")
+local function removeAllStacks()
+    for killer in pairs(killerStacks) do destroyStack(killer) end
+    for killer in pairs(rangeParts) do clearRange(killer) end
+end
 
-    if killersFolder then
-        for _, killer in ipairs(killersFolder:GetChildren()) do
-            if killer:IsA("Model") then
-                updateKillerZone(killer)
-            end
-        end
+-- Kept for the hub's unload button and Library unload callback.
+local function clearStack()
+    if stackHeartbeat then
+        pcall(function() stackHeartbeat:Disconnect() end)
+        stackHeartbeat = nil
     end
-
-    for i = #activeProjectiles, 1, -1 do
-        local projectile = activeProjectiles[i]
-        local part = projectile.part
-        local killer = projectile.killer
-        local playerRoot = getRoot(LP.Character)
-        local killerRoot = getRoot(killer)
-
-        if not part or not part.Parent or not playerRoot or not killerRoot
-            or not killer.Parent
-            or os.clock() - projectile.started >= FacingConfig.projectileTimeout then
-            removeProjectile(projectile)
-        else
-            local current = part.Position
-            local target = killerRoot.Position
-            local offset = target - current
-            local distance = offset.Magnitude
-            local step = math.max(FacingConfig.projectileSpeed, 1) * math.max(dt, 0)
-
-            if distance <= math.max(FacingConfig.hitDistance, 0.5) + step then
-                -- Contact always removes the box, even if the player moved
-                -- outside the killer's cone during its travel.
-                removeProjectile(projectile)
-                if AB.enabled and IsPlayerInsideKillerZone(killer) then
-                    local now = os.clock()
-                    if now - AB.last >= 0.08 then
-                        AB.last = now
-                        if AB.delay > 0 then
-                            task.delay(AB.delay, function()
-                                if AB.enabled then FireBlock() end
-                            end)
-                        else
-                            FireBlock()
-                        end
-                    end
-                end
-            elseif distance > 0.01 then
-                local nextPosition = current + offset.Unit * math.min(step, distance)
-                part.CFrame = CFrame.lookAt(nextPosition, target)
-                projectile.lastPosition = nextPosition
-            end
-        end
-    end
-end)
+    removeAllStacks()
+    pcall(function() StackFolder:Destroy() end)
+    pcall(function() RangeFolder:Destroy() end)
+end
 
 local function triggerBlock(killer)
     if not AB.enabled or IsPlayerKiller() then return end
@@ -424,17 +423,109 @@ local function triggerBlock(killer)
         if now - AB.last < 0.08 then return end
         AB.last = now
         if AB.delay > 0 then
-            task.delay(AB.delay, FireBlock)
+            task.delay(AB.delay, function() if AB.enabled then FireBlock() end end)
         else
             FireBlock()
         end
         return
     end
-    launchDirectionalBox(killer)
+    startStackTravel(killer)
 end
 
--- This uses the same killer attribute signal that the original script used.
--- It must correspond to the game's M1 signal in the current Forsaken build.
+-- Keep one vertical stack parked at each killer's front. On an M1 signal,
+-- that stack moves as a column toward the survivor if they are in the forward range.
+stackHeartbeat = RunService.Heartbeat:Connect(function(dt)
+    local playersFolder = Workspace:FindFirstChild("Players")
+    local killersFolder = playersFolder and playersFolder:FindFirstChild("Killers")
+    local present = {}
+
+    if killersFolder then
+        for _, killer in ipairs(killersFolder:GetChildren()) do
+            if killer:IsA("Model") then
+                present[killer] = true
+                updateKillerRange(killer)
+                local root = getRoot(killer)
+                if root and FacingMode == "Stacked Boxes" then
+                    local data = createStack(killer)
+                    resizeStack(data)
+                    local playerRoot = getRoot(LP.Character)
+
+                    if data.active then
+                        if not playerRoot or not IsPlayerInsideKillerZone(killer)
+                            or os.clock() - data.started >= StackConfig.timeout then
+                            resetStackToKillerFront(killer, data)
+                        else
+                            local front = getStackFrontPosition(root)
+                            local target = playerRoot.Position
+                            local targetOffset = target - root.Position
+                            local horizontalTarget = Vector3.new(targetOffset.X, 0, targetOffset.Z)
+                            local forward = getKillerForward(root)
+
+                            -- Refuse any target vector that points behind the killer.
+                            if horizontalTarget.Magnitude < 0.01
+                                or forward:Dot(horizontalTarget.Unit) <= 0 then
+                                resetStackToKillerFront(killer, data)
+                            else
+                                local destination = target
+                                local current = data.position or front
+                                local delta = destination - current
+                                local distance = delta.Magnitude
+                                local step = math.max(StackConfig.speed, 1) * math.max(dt, 0)
+                                local collisionRadius = math.max(StackConfig.boxSize.Magnitude * 0.5 + StackConfig.touchPadding, 1)
+                                local anyBoxTouches = false
+                                for _, box in ipairs(data.parts) do
+                                    if box and box.Parent and (box.Position - playerRoot.Position).Magnitude <= collisionRadius then
+                                        anyBoxTouches = true
+                                        break
+                                    end
+                                end
+                                if anyBoxTouches or distance <= collisionRadius + step then
+                                    -- Any individual box reaching the player counts as contact.
+                                    data.active = false
+                                    resetStackToKillerFront(killer, data)
+                                    local now = os.clock()
+                                    if AB.enabled and now - AB.last >= 0.08 then
+                                        AB.last = now
+                                        if AB.delay > 0 then
+                                            task.delay(AB.delay, function()
+                                                if AB.enabled then FireBlock() end
+                                            end)
+                                        else
+                                            FireBlock()
+                                        end
+                                    end
+                                elseif distance > 0.01 then
+                                    local nextPosition = current + delta.Unit * math.min(step, distance)
+                                    -- Clamp the column to the killer's forward half-space.
+                                    local fromKiller = nextPosition - root.Position
+                                    local forwardDistance = Vector3.new(fromKiller.X, 0, fromKiller.Z):Dot(forward)
+                                    if forwardDistance < math.max(StackConfig.boxSize.Z * 0.5, 0.5) then
+                                        resetStackToKillerFront(killer, data)
+                                    else
+                                        data.position = nextPosition
+                                        placeStack(killer, data, nextPosition, delta.Unit)
+                                    end
+                                end
+                            end
+                        end
+                    else
+                        resetStackToKillerFront(killer, data)
+                    end
+                end
+            end
+        end
+    end
+
+    for killer in pairs(killerStacks) do
+        if not present[killer] or not killer.Parent then destroyStack(killer) end
+    end
+    for killer in pairs(rangeParts) do
+        if not present[killer] or not killer.Parent then clearRange(killer) end
+    end
+end)
+
+-- This uses the same killer attribute signal as the previous version.
+-- It still depends on AbilityLastUsed corresponding to the game's M1 signal.
 local monitored = {}
 local function monitorKiller(killer)
     if not killer or monitored[killer] or not killer:IsA("Model") or killer == LP.Character then return end
@@ -483,7 +574,12 @@ do
                 return
             end
             AB.enabled = value
-            if not value then clearStack() end
+            if not value then
+                for killer, data in pairs(killerStacks) do
+                    data.active = false
+                    resetStackToKillerFront(killer, data)
+                end
+            end
         end,
     })
     left:AddSlider("AB_Delay", {
@@ -491,86 +587,128 @@ do
         Default = 0, Min = 0, Max = 1, Rounding = 2,
         Callback = function(value) AB.delay = value end,
     })
-    left:AddButton({
-        Text = "Force Block",
-        Func = function() FireBlock() end,
-    })
-    left:AddLabel("Semicircle mode checks the killer's forward zone twice: on M1 and on box contact.", true)
+    left:AddButton({ Text = "Force Block", Func = function() FireBlock() end })
+    left:AddLabel("A stacked column moves from the killer's front toward you. Any box touching you triggers BLOCK.", true)
 end
 
 do
-    local left = Tabs.Facing:AddLeftGroupbox("Killer Semicircle")
+    local left = Tabs.Facing:AddLeftGroupbox("Forward Range Detection")
     left:AddDropdown("FaceMode", {
-        Values = { "Semicircle", "None" },
+        Values = { "Stacked Boxes", "None" },
         Default = 1,
         Text = "Mode",
         Callback = function(value)
             FacingMode = value
-            if value == "None" then clearStack() end
+            if value == "None" then
+                for killer, data in pairs(killerStacks) do
+                    data.active = false
+                    for _, part in ipairs(data.parts) do part.Transparency = 1 end
+                    resetStackToKillerFront(killer, data)
+                end
+                for killer in pairs(rangeParts) do clearRange(killer) end
+            end
         end,
     })
     left:AddToggle("Face_ShowZone", {
-        Text = "Show Killer Semicircle",
+        Text = "Show Range Detection",
         Default = true,
-        Callback = function(value) FacingConfig.showZone = value end,
+        Callback = function(value)
+            StackConfig.showRange = value
+            if not value then
+                for killer in pairs(rangeParts) do clearRange(killer) end
+            end
+        end,
     })
     left:AddSlider("Face_Angle", {
-        Text = "Semicircle Angle",
+        Text = "Forward Angle",
         Default = 120, Min = 10, Max = 180, Rounding = 0,
-        Callback = function(value) FacingConfig.angle = value end,
+        Callback = function(value) StackConfig.angle = value end,
     })
     left:AddSlider("Face_Radius", {
-        Text = "Semicircle Radius",
+        Text = "Detection Range",
         Default = 20, Min = 3, Max = 60, Rounding = 1,
-        Callback = function(value) FacingConfig.radius = value end,
+        Callback = function(value) StackConfig.radius = value end,
     })
     left:AddSlider("Face_Vertical", {
         Text = "Vertical Tolerance",
         Default = 6, Min = 1, Max = 20, Rounding = 1,
-        Callback = function(value) FacingConfig.verticalTolerance = value end,
+        Callback = function(value) StackConfig.verticalTolerance = value end,
     })
 
-    local right = Tabs.Facing:AddRightGroupbox("Traveling Box")
-    right:AddToggle("Face_ShowProjectile", {
-        Text = "Show Traveling Box",
+    local right = Tabs.Facing:AddRightGroupbox("Stacked Boxes")
+    right:AddToggle("Face_ShowBoxes", {
+        Text = "Show Boxes",
         Default = true,
-        Callback = function(value) FacingConfig.showProjectile = value end,
-    })
-    right:AddSlider("Face_BoxSize", {
-        Text = "Box Size",
-        Default = 4, Min = 1, Max = 12, Rounding = 1,
         Callback = function(value)
-            FacingConfig.projectileSize = Vector3.new(value, value * 1.25, value)
-        end,
-    })
-    right:AddSlider("Face_Speed", {
-        Text = "Box Speed",
-        Default = 100, Min = 10, Max = 250, Rounding = 0,
-        Callback = function(value) FacingConfig.projectileSpeed = value end,
-    })
-    right:AddSlider("Face_Timeout", {
-        Text = "Box Timeout",
-        Default = 0.8, Min = 0.1, Max = 3, Rounding = 2,
-        Callback = function(value) FacingConfig.projectileTimeout = value end,
-    })
-    right:AddSlider("Face_HitDistance", {
-        Text = "Contact Distance",
-        Default = 3.5, Min = 1, Max = 10, Rounding = 1,
-        Callback = function(value) FacingConfig.hitDistance = value end,
-    })
-    right:AddButton({
-        Text = "Test Box (nearest killer)",
-        Func = function()
-            local killer = GetNearestKiller(60)
-            if killer then
-                local oldEnabled = AB.enabled
-                AB.enabled = true
-                launchDirectionalBox(killer)
-                AB.enabled = oldEnabled
+            StackConfig.showBoxes = value
+            for _, data in pairs(killerStacks) do
+                for _, part in ipairs(data.parts) do part.Transparency = value and 0.2 or 1 end
             end
         end,
     })
-    right:AddLabel("The box spawns at your character and flies to the killer. It vanishes on contact; BLOCK only fires if you are still inside the killer's semicircle.", true)
+    right:AddSlider("Face_BoxWidth", {
+        Text = "Individual Box Width",
+        Default = 3, Min = 1, Max = 10, Rounding = 1,
+        Callback = function(value)
+            StackConfig.boxWidth = value
+            StackConfig.boxSize = Vector3.new(StackConfig.boxWidth, StackConfig.boxHeight, StackConfig.boxDepth)
+            for _, data in pairs(killerStacks) do resizeStack(data) end
+        end,
+    })
+    right:AddSlider("Face_BoxHeight", {
+        Text = "Individual Box Height",
+        Default = 3, Min = 1, Max = 10, Rounding = 1,
+        Callback = function(value)
+            StackConfig.boxHeight = value
+            StackConfig.boxSize = Vector3.new(StackConfig.boxWidth, StackConfig.boxHeight, StackConfig.boxDepth)
+            for _, data in pairs(killerStacks) do resizeStack(data) end
+        end,
+    })
+    right:AddSlider("Face_BoxDepth", {
+        Text = "Individual Box Depth",
+        Default = 3, Min = 1, Max = 10, Rounding = 1,
+        Callback = function(value)
+            StackConfig.boxDepth = value
+            StackConfig.boxSize = Vector3.new(StackConfig.boxWidth, StackConfig.boxHeight, StackConfig.boxDepth)
+            for _, data in pairs(killerStacks) do resizeStack(data) end
+        end,
+    })
+    right:AddSlider("Face_BoxCount", {
+        Text = "Number of Stacked Boxes",
+        Default = 5, Min = 1, Max = 12, Rounding = 0,
+        Callback = function(value)
+            StackConfig.boxCount = math.floor(value)
+            for _, data in pairs(killerStacks) do resizeStack(data) end
+        end,
+    })
+    right:AddSlider("Face_BoxGap", {
+        Text = "Gap Between Boxes",
+        Default = 0.15, Min = 0, Max = 2, Rounding = 2,
+        Callback = function(value) StackConfig.boxGap = value end,
+    })
+    right:AddSlider("Face_Speed", {
+        Text = "Stack Travel Speed",
+        Default = 90, Min = 10, Max = 250, Rounding = 0,
+        Callback = function(value) StackConfig.speed = value end,
+    })
+    right:AddSlider("Face_Timeout", {
+        Text = "Travel Timeout",
+        Default = 1.5, Min = 0.2, Max = 4, Rounding = 1,
+        Callback = function(value) StackConfig.timeout = value end,
+    })
+    right:AddSlider("Face_TouchPadding", {
+        Text = "Touch Detection Padding",
+        Default = 1.25, Min = 0, Max = 5, Rounding = 1,
+        Callback = function(value) StackConfig.touchPadding = value end,
+    })
+    right:AddButton({
+        Text = "Test Stack (nearest killer)",
+        Func = function()
+            local killer = GetNearestKiller(60)
+            if killer then startStackTravel(killer) end
+        end,
+    })
+    right:AddLabel("Boxes form a vertical stack at the killer's front. On M1, the stack advances only while you remain inside the forward range. Any box reaching your character triggers BLOCK.", true)
 end
 
 --═══════════════════════════════════════════════════════════════════
