@@ -21,9 +21,70 @@ end)
 --═══════════════════════════════════════════════════════════════════
 -- NEXUS UI
 --═══════════════════════════════════════════════════════════════════
-local Nexus = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/Noah0020/Nexus-Ui/main/Nexus"
-))()
+-- Load Nexus with known bugfixes applied before compile
+local function loadNexusFixed()
+    local ok, raw = pcall(function()
+        return game:HttpGet("https://raw.githubusercontent.com/Noah0020/Nexus-Ui/main/Nexus")
+    end)
+    if not ok or type(raw) ~= "string" or #raw < 100 then
+        error("[Nos Hub] Failed to download Nexus UI: " .. tostring(raw))
+    end
+
+    local function plainReplace(s, old, new)
+        local i = string.find(s, old, 1, true)
+        if not i then return s, false end
+        return string.sub(s, 1, i - 1) .. new .. string.sub(s, i + #old), true
+    end
+
+    -- Fix 1: safeCallback vararg scoping (prevents library from working)
+    do
+        local bad = "local function safeCallback(callback, ...)\n    if type(callback) == \"function\" then\n        task.spawn(function()\n            local ok, err = pcall(callback, ...)\n            if not ok then warn(\"[NEXUS UI] Callback error:\", err) end\n        end)\n    end\nend"
+        local goodCb = "local function safeCallback(callback, ...)\n    if type(callback) ~= \"function\" then return end\n    local args = table.pack(...)\n    task.spawn(function()\n        local ok, err = pcall(function()\n            callback(table.unpack(args, 1, args.n))\n        end)\n        if not ok then\n            warn(\"[NEXUS UI] Callback error:\", err)\n        end\n    end)\nend"
+        local replaced
+        raw, replaced = plainReplace(raw, bad, goodCb)
+        if not replaced then
+            -- minimal fallback if whitespace differs
+            raw, replaced = plainReplace(raw, "pcall(callback, ...)", "pcall(function() callback(...) end)")
+            if replaced and not string.find(raw, "local args = table.pack", 1, true) then
+                -- still broken for nested ...; force pack version via broader match
+                raw = string.gsub(raw,
+                    "local function safeCallback%(callback, %.%.%.%)%s*if type%(callback%) == \"function\" then%s*task%.spawn%(function%(%)%s*local ok, err = pcall%(function%(%) callback%(%.%..%) end%)",
+                    "local function safeCallback(callback, ...)\n    if type(callback) ~= \"function\" then return end\n    local args = table.pack(...)\n    task.spawn(function()\n        local ok, err = pcall(function() callback(table.unpack(args, 1, args.n)) end)"
+                )
+            end
+        end
+    end
+
+    -- Fix 2: responsive window size for mobile
+    raw = select(1, plainReplace(raw,
+        "Size = options.Size or UDim2.fromOffset(650, 440)",
+        "Size = options.Size or (function() local cam=workspace.CurrentCamera local vs=cam and cam.ViewportSize or Vector2.new(1280,720) return UDim2.fromOffset(math.clamp(math.floor(vs.X*0.92),320,650), math.clamp(math.floor(vs.Y*0.78),280,520)) end)()"
+    ))
+
+    -- Fix 3: allow Touch on slider drag updates
+    raw = select(1, plainReplace(raw,
+        "if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then setFromX(input.Position.X, true) end",
+        "if input.UserInputType == Enum.UserInputType.Touch or UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then setFromX(input.Position.X, true) end"
+    ))
+
+    local fn, err = loadstring(raw)
+    if not fn then
+        error("[Nos Hub] Nexus compile failed: " .. tostring(err))
+    end
+    local lib = fn()
+    if type(lib) ~= "table" or type(lib.CreateWindow) ~= "function" then
+        error("[Nos Hub] Nexus returned invalid library")
+    end
+    return lib
+end
+
+local Nexus = loadNexusFixed()
+
+-- getgenv fallback for weak executors
+if type(getgenv) ~= "function" then
+    local g = {}
+    getgenv = function() return g end
+end
 
 local Window = Nexus:CreateWindow({
     Title = "Nos Hub",
@@ -982,6 +1043,9 @@ do
             end)
         end
         Silent.hooked = ok
+        if not ok then
+            warn("[Nos Hub] Silent Aim hooks unavailable on this executor (need hookfunction/getcallbackvalue or OnClientInvoke)")
+        end
         return ok
     end
     task.defer(install)
@@ -1418,7 +1482,7 @@ do
     local function install()
         if Gen.installed then return end
         Gen.installed = true
-        pcall(function()
+        local okInstall, errInstall = pcall(function()
             local folder = ReplicatedStorage.Systems.Player.Game.Minigames
             local Connect = require(folder.ConnectClientMinigame.ConnectInput)
             local old = Connect.new
@@ -1448,6 +1512,10 @@ do
                 return object
             end
         end)
+        if not okInstall then
+            warn("[Nos Hub] Auto Gen install failed:", errInstall)
+            Gen.installed = false
+        end
     end
 
     local s = TabGen:Section("Auto Generator")
