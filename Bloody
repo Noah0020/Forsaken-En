@@ -1,17 +1,15 @@
 --[[
-    UNSERIOUS HUB
-    Rayfield Gen2 | Orange Edition
-    Sync ESP/Aim | Flex HDT | RFS Backstab | Vortex Auto Block + Box Facing
+    UNSERIOUS HUB — Rayfield Gen2
+    Clean rewrite · all tabs wired
 ]]
 
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
 local Lighting = game:GetService("Lighting")
-local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
 
 local LP = Players.LocalPlayer
 repeat task.wait() until LP
@@ -57,22 +55,22 @@ local function CreateTab(Name, Icon)
     return Window:CreateTab({ Name = Name, Icon = Icon })
 end
 
-local ESP = CreateTab("ESP", Icons.ESP)
-local Stam = CreateTab("Stam", Icons.Stam)
-local Aim = CreateTab("Aim", Icons.Aim)
-local SilentAim = CreateTab("Silent Aim", Icons.SilentAim)
-local AutoBlock = CreateTab("Auto Block", Icons.AutoBlock)
-local Stab = CreateTab("Stab", Icons.Stab)
-local Mist = CreateTab("Mist", Icons.Mist)
-local Gen = CreateTab("Gen", Icons.Gen)
-local Killer = CreateTab("Killer", Icons.Killer)
+local ESPTab = CreateTab("ESP", Icons.ESP)
+local StamTab = CreateTab("Stam", Icons.Stam)
+local AimTab = CreateTab("Aim", Icons.Aim)
+local SilentTab = CreateTab("Silent Aim", Icons.SilentAim)
+local BlockTab = CreateTab("Auto Block", Icons.AutoBlock)
+local StabTab = CreateTab("Stab", Icons.Stab)
+local MistTab = CreateTab("Mist", Icons.Mist)
+local GenTab = CreateTab("Gen", Icons.Gen)
+local KillerTab = CreateTab("Killer", Icons.Killer)
 
-local function Section(Tab, Name)
-    Tab:CreateSection({ Name = Name })
+local function Section(tab, name)
+    tab:CreateSection({ Name = name })
 end
 
 --==================================================
--- CORE
+-- CORE HELPERS
 --==================================================
 local KILLER_NAMES = {
     ["Slasher"]=true,["Jason"]=true,["c00lkidd"]=true,["CoolKid"]=true,["Coolkidd"]=true,
@@ -133,21 +131,6 @@ local function GetNearestKiller(maxDist)
     return best
 end
 
-local function GetKillersList()
-    local out = {}
-    local kf = Workspace:FindFirstChild("Players")
-    kf = kf and kf:FindFirstChild("Killers")
-    if not kf then return out end
-    for _, m in ipairs(kf:GetChildren()) do
-        if m:IsA("Model") then
-            local h = m:FindFirstChildOfClass("Humanoid")
-            local r = m:FindFirstChild("HumanoidRootPart")
-            if h and r and h.Health > 0 then table.insert(out, m) end
-        end
-    end
-    return out
-end
-
 local function FireAbility(name)
     local re = getRE()
     if not re then return end
@@ -162,7 +145,7 @@ local function FireAbility(name)
 end
 
 --==================================================
--- HDT (Flex)
+-- HDT
 --==================================================
 local HDT = { enabled = false, duration = 0.35, speed = 14, range = 30, token = 0 }
 
@@ -195,7 +178,7 @@ local function DragToward(killerRoot)
 end
 
 --==================================================
--- AUTO BLOCK (Vortex block.txt) + BOX FACING CHECK
+-- AUTO BLOCK (Vortex style + facing)
 --==================================================
 _G.HitboxWidth = 5
 _G.HitboxHeight = 6
@@ -214,12 +197,7 @@ _G.BlockAbilityNames = {
     "STAB", "TAG", "SLASH", "ENRAGED SLASH",
 }
 
-local Facing = {
-    enabled = true,
-    required = true,
-    dot = 0.25,
-    maxDist = 40,
-}
+local Facing = { enabled = true, required = true, dot = 0.25, maxDist = 40 }
 
 local BLOCK_NAMES_LOWER = {}
 for _, n in ipairs(_G.BlockAbilityNames) do BLOCK_NAMES_LOWER[n:lower()] = true end
@@ -248,8 +226,7 @@ local function extractAnimIds(v)
     return out
 end
 
-local BLOCK_ANIM_IDS = {}
-local BLOCK_SOUND_IDS = {}
+local BLOCK_ANIM_IDS, BLOCK_SOUND_IDS = {}, {}
 local SOUND_FIELDS = {"Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds"}
 
 local function collectBlockAssets(cfg)
@@ -288,8 +265,7 @@ local function scanFolderForBlockAssets(folder)
 end
 
 local function scanAllKillerAssets()
-    BLOCK_ANIM_IDS = {}
-    BLOCK_SOUND_IDS = {}
+    BLOCK_ANIM_IDS, BLOCK_SOUND_IDS = {}, {}
     local assets = ReplicatedStorage:FindFirstChild("Assets")
     if not assets then return end
     scanFolderForBlockAssets(assets:FindFirstChild("Killers"))
@@ -334,15 +310,13 @@ end
 local function isFacingPlayer(killerRoot, myPos)
     if not Facing.enabled then return true end
     local look = killerRoot.CFrame.LookVector
-    local toMe = (myPos - killerRoot.Position)
-    toMe = Vector3.new(toMe.X, 0, toMe.Z)
+    local toMe = Vector3.new(myPos.X - killerRoot.Position.X, 0, myPos.Z - killerRoot.Position.Z)
     if toMe.Magnitude < 0.01 then return true end
     return look:Dot(toMe.Unit) >= (Facing.dot or 0.25)
 end
 
 local function createSpatialOverlapBox(killerChar, size, onHit)
-    if IsPlayerKiller() then return end
-    if not killerChar or killerChar == LP.Character then return end
+    if IsPlayerKiller() or not killerChar or killerChar == LP.Character then return end
     local root = killerChar:FindFirstChild("HumanoidRootPart") or killerChar:FindFirstChild("RootPart")
     if not root then return end
     local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
@@ -353,6 +327,7 @@ local function createSpatialOverlapBox(killerChar, size, onHit)
     local op = OverlapParams.new()
     op.FilterType = Enum.RaycastFilterType.Exclude
     op.FilterDescendantsInstances = { killerChar }
+
     task.spawn(function()
         local elapsed = 0
         while killerChar.Parent and root.Parent and elapsed < _G.HitboxDuration do
@@ -376,21 +351,17 @@ local function createSpatialOverlapBox(killerChar, size, onHit)
                 sb.Color3 = _G.HitboxColor
                 sb.LineThickness = _G.OutlineThickness
                 sb.Transparency = 0.1
-                sb.Visible = true
                 sb.Parent = Part
             end
             Debris:AddItem(Part, 0.05)
             for _, v in ipairs(Workspace:GetPartsInPart(Part, op)) do
-                local model = v.Parent and v.Parent:FindFirstAncestorOfClass("Model") or v.Parent
+                local model = v.Parent and (v.Parent:FindFirstAncestorOfClass("Model") or v.Parent)
                 local hum = model and model:FindFirstChildOfClass("Humanoid")
                 if not hum and v.Parent then hum = v.Parent:FindFirstChildOfClass("Humanoid") end
-                if hum and hum.Health > 0 then
-                    local plr = Players:GetPlayerFromCharacter(hum.Parent)
-                    if plr == LP then
-                        if _G.BlockDelay > 0 then task.wait(_G.BlockDelay) end
-                        if onHit then onHit() end
-                        return
-                    end
+                if hum and hum.Health > 0 and Players:GetPlayerFromCharacter(hum.Parent) == LP then
+                    if _G.BlockDelay > 0 then task.wait(_G.BlockDelay) end
+                    if onHit then onHit() end
+                    return
                 end
             end
             elapsed = elapsed + RunService.Heartbeat:Wait()
@@ -400,16 +371,11 @@ end
 
 local lastTrigger = 0
 local function triggerBoxCheck(killer)
-    if IsPlayerKiller() then return end
-    if not killer or killer == LP.Character or not killer.Parent then return end
+    if IsPlayerKiller() or not killer or killer == LP.Character or not killer.Parent then return end
     local now = tick()
     if now - lastTrigger < 0.03 then return end
     lastTrigger = now
-    createSpatialOverlapBox(
-        killer,
-        Vector3.new(_G.HitboxWidth, _G.HitboxHeight, _G.HitboxLength),
-        FireBlockBuffer
-    )
+    createSpatialOverlapBox(killer, Vector3.new(_G.HitboxWidth, _G.HitboxHeight, _G.HitboxLength), FireBlockBuffer)
 end
 
 local AB_poll = {
@@ -436,15 +402,11 @@ RunService.PreRender:Connect(function()
     end
 end)
 
-local function getNetworkEvent()
-    return getRE()
-end
-
 local remoteHooked = false
 local function hookAbilityRemote()
     if remoteHooked then return end
     remoteHooked = true
-    local remote = getNetworkEvent()
+    local remote = getRE()
     if not remote then return end
     local function argMatches(arg)
         if type(arg) == "string" then return shouldBlockAbility(arg) end
@@ -491,10 +453,9 @@ local function hookAbilityRemote()
     end)
 end
 
-local hookedKillers = {}
+local hookedKillers, monitoredKillers = {}, {}
 local function hookKillerM1(killer)
-    if not killer or hookedKillers[killer] or not killer:IsA("Model") then return end
-    if killer == LP.Character then return end
+    if not killer or hookedKillers[killer] or not killer:IsA("Model") or killer == LP.Character then return end
     hookedKillers[killer] = true
     local hum = killer:FindFirstChildOfClass("Humanoid")
     local animator = hum and hum:FindFirstChildOfClass("Animator")
@@ -514,13 +475,11 @@ local function hookKillerM1(killer)
         end)
     end
     for _, d in ipairs(killer:GetDescendants()) do hookSound(d) end
-    killer.DescendantAdded:Connect(function(d) hookSound(d) end)
+    killer.DescendantAdded:Connect(hookSound)
 end
 
-local monitoredKillers = {}
 local function monitorKiller(killer)
-    if not killer or monitoredKillers[killer] or not killer:IsA("Model") then return end
-    if killer == LP.Character then return end
+    if not killer or monitoredKillers[killer] or not killer:IsA("Model") or killer == LP.Character then return end
     monitoredKillers[killer] = true
     hookKillerM1(killer)
     local lastAbility = killer:GetAttribute("AbilityLastUsed") or 0
@@ -572,14 +531,14 @@ local function EnableAutoBlock()
 end
 
 --==================================================
--- BACKSTAB (RFS)
+-- BACKSTAB
 --==================================================
 local TT = {
-    enabled=false, normalRange=3, crouchRange=3, duration=0.5, delay=0.05,
-    method="Teleport", speed=100, tpBack=false, pivotTo=false, primaryMode="Character",
+    enabled = false, normalRange = 3, crouchRange = 3, duration = 0.5, delay = 0.05,
+    method = "Teleport", speed = 100, tpBack = false, pivotTo = false, primaryMode = "Character",
 }
-local STAB = { ["106086955212611"]=true, ["100725497418533"]=true }
-local CROUCH = { ["89448354637442"]=true, ["107640065977686"]=true }
+local STAB_IDS = { ["106086955212611"]=true, ["100725497418533"]=true }
+local CROUCH_IDS = { ["89448354637442"]=true, ["107640065977686"]=true }
 
 local function getKillerRoot()
     local k = GetNearestKiller(math.huge)
@@ -615,7 +574,9 @@ local function doLerp(behind)
         if dist > 0.01 then
             local alpha = math.min((TT.speed * task.wait()) / dist, 1)
             hrp.CFrame = CFrame.new(hrp.Position:Lerp(goal, alpha), hrp.Position:Lerp(goal, alpha) + target.CFrame.LookVector)
-        else task.wait() end
+        else
+            task.wait()
+        end
     end
 end
 
@@ -627,7 +588,7 @@ local function doPrimary(behind)
     task.wait(TT.delay)
     local attach = TT.primaryMode == "Character" and char or hrp
     local part = Instance.new("Part")
-    part.Size = Vector3.new(1,1,1)
+    part.Size = Vector3.new(1, 1, 1)
     part.Transparency = 1
     part.Anchored = true
     part.CanCollide = false
@@ -660,8 +621,8 @@ local function onStabAnim(track)
     if not TT.enabled or not track or not track.Animation then return end
     local id = tostring(track.Animation.AnimationId):match("%d+")
     if not id then return end
-    if STAB[id] then task.spawn(runBackstab, TT.normalRange)
-    elseif CROUCH[id] then task.spawn(runBackstab, TT.crouchRange) end
+    if STAB_IDS[id] then task.spawn(runBackstab, TT.normalRange)
+    elseif CROUCH_IDS[id] then task.spawn(runBackstab, TT.crouchRange) end
 end
 
 local function hookCharBackstab(char)
@@ -679,10 +640,12 @@ LP.CharacterAdded:Connect(hookCharBackstab)
 -- AIM
 --==================================================
 local AimCore = { prediction = 1, easing = 0.8, cooldown = false }
+
 local function PredictNext(part)
     if not part then return Vector3.zero end
     return part.Position + part.AssemblyLinearVelocity * AimCore.prediction
 end
+
 local function SyncAimbot(targetPart, duration)
     if not targetPart or AimCore.cooldown then return end
     local char = LP.Character
@@ -714,10 +677,10 @@ getgenv().AimbotValues = {
 }
 getgenv().AnimationData = {
     Guest1337 = {}, Shedlekey = {},
-    TwoTime = { ["100725497418533"]=true,["89448354637442"]=true,["106086955212611"]=true,["107640065977686"]=true },
+    TwoTime = { ["100725497418533"]=true, ["89448354637442"]=true, ["106086955212611"]=true, ["107640065977686"]=true },
     Chance = {}, JaneDoe = {},
 }
-getgenv().ActiveLock = { IsActive=false, Target=nil, StartTime=0, Mode="", Track=nil }
+getgenv().ActiveLock = { IsActive = false, Target = nil, StartTime = 0, Mode = "", Track = nil }
 getgenv().LastFinishedTrack = nil
 getgenv().GlobalAimbotToggle = false
 getgenv().GlobalAimlockMode = "Character Lock"
@@ -847,9 +810,10 @@ RunService.RenderStepped:Connect(function()
 end)
 
 --==================================================
--- SILENT
+-- SILENT AIM
 --==================================================
-local Silent = { crystal=false, crystalPred=2.5, crystalY=1.5, dusk=false, duskPred=0.5, hooked=false }
+local Silent = { crystal = false, crystalPred = 2.5, crystalY = 1.5, dusk = false, duskPred = 0.5, hooked = false }
+
 local function aimCamCF()
     local killer = GetNearestKiller(math.huge)
     local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
@@ -864,6 +828,7 @@ local function aimCamCF()
     if dir.Magnitude < 0.01 then return nil end
     return CFrame.new(cam.CFrame.Position) * CFrame.lookAt(Vector3.zero, dir.Unit).Rotation
 end
+
 local function aimMousePos()
     local killer = GetNearestKiller(math.huge)
     if not killer then return nil end
@@ -874,6 +839,7 @@ local function aimMousePos()
     if hum and hum.MoveDirection.Magnitude > 0.05 then pos = pos + hum.MoveDirection * Silent.duskPred end
     return pos
 end
+
 local function installSilent()
     if Silent.hooked then return true end
     local rf = getRF()
@@ -881,11 +847,11 @@ local function installSilent()
     local ok = pcall(function()
         local old = rf.OnClientInvoke
         rf.OnClientInvoke = function(name, ...)
-            if name=="GetCameraCF" and Silent.crystal and not IsPlayerKiller() then
-                local cf=aimCamCF(); if cf then return cf end
+            if name == "GetCameraCF" and Silent.crystal and not IsPlayerKiller() then
+                local cf = aimCamCF(); if cf then return cf end
             end
-            if name=="GetMousePosition" and Silent.dusk and not IsPlayerKiller() then
-                local p=aimMousePos(); if p then return p end
+            if name == "GetMousePosition" and Silent.dusk and not IsPlayerKiller() then
+                local p = aimMousePos(); if p then return p end
             end
             if old then return old(name, ...) end
         end
@@ -899,15 +865,19 @@ task.defer(installSilent)
 -- ESP
 --==================================================
 local E = {
-    survivor=false, killer=false, generator=false, item=false,
-    minion=false, trap=false, names=true, health=true, maxDist=500,
+    survivor = false, killer = false, generator = false, item = false,
+    minion = false, trap = false, names = true, health = true, maxDist = 500,
     colors = {
-        killer=Color3.fromRGB(255,0,0), survivor=Color3.fromRGB(0,255,0),
-        generator=Color3.fromRGB(0,0,255), item=Color3.fromRGB(255,234,0),
-        minion=Color3.fromRGB(255,122,33), trap=Color3.fromRGB(225,0,255),
+        killer = Color3.fromRGB(255, 0, 0),
+        survivor = Color3.fromRGB(0, 255, 0),
+        generator = Color3.fromRGB(0, 0, 255),
+        item = Color3.fromRGB(255, 234, 0),
+        minion = Color3.fromRGB(255, 122, 33),
+        trap = Color3.fromRGB(225, 0, 255),
     },
     tracked = {},
 }
+
 local function clearOne(inst)
     local t = E.tracked[inst]
     if not t then return end
@@ -915,9 +885,10 @@ local function clearOne(inst)
     pcall(function() if t.bb then t.bb:Destroy() end end)
     E.tracked[inst] = nil
 end
+
 local function ensure(inst, kind, label)
     if not inst or not inst.Parent then return end
-    local col = E.colors[kind] or Color3.new(1,1,1)
+    local col = E.colors[kind] or Color3.new(1, 1, 1)
     local t = E.tracked[inst]
     if not t then
         t = {}
@@ -943,7 +914,7 @@ local function ensure(inst, kind, label)
             local lbl = Instance.new("TextLabel")
             lbl.Name = "Text"
             lbl.BackgroundTransparency = 1
-            lbl.Size = UDim2.fromScale(1,1)
+            lbl.Size = UDim2.fromScale(1, 1)
             lbl.Font = Enum.Font.Code
             lbl.TextScaled = true
             lbl.TextStrokeTransparency = 0.3
@@ -958,12 +929,13 @@ local function ensure(inst, kind, label)
         local hum = inst:FindFirstChildOfClass("Humanoid")
         local parts = {}
         if E.names then table.insert(parts, label or inst.Name) end
-        if E.health and hum then table.insert(parts, math.floor(hum.Health).."HP") end
+        if E.health and hum then table.insert(parts, math.floor(hum.Health) .. "HP") end
         t.lbl.Text = #parts > 0 and table.concat(parts, " | ") or ""
-        t.lbl.TextColor3 = Color3.new(1,1,1)
+        t.lbl.TextColor3 = Color3.new(1, 1, 1)
         t.lbl.Visible = #parts > 0
     end
 end
+
 local function refreshESP()
     local seen = {}
     local pf = Workspace:FindFirstChild("Players")
@@ -974,8 +946,8 @@ local function refreshESP()
         for _, k in ipairs(killers:GetChildren()) do
             if k:IsA("Model") then
                 local r = k:FindFirstChild("HumanoidRootPart")
-                if r and (not my or (r.Position-my.Position).Magnitude <= E.maxDist) then
-                    seen[k]=true; ensure(k,"killer",k.Name)
+                if r and (not my or (r.Position - my.Position).Magnitude <= E.maxDist) then
+                    seen[k] = true; ensure(k, "killer", k.Name)
                 end
             end
         end
@@ -984,8 +956,8 @@ local function refreshESP()
         for _, s in ipairs(survivors:GetChildren()) do
             if s:IsA("Model") and s ~= LP.Character then
                 local r = s:FindFirstChild("HumanoidRootPart")
-                if r and (not my or (r.Position-my.Position).Magnitude <= E.maxDist) then
-                    seen[s]=true; ensure(s,"survivor",s.Name)
+                if r and (not my or (r.Position - my.Position).Magnitude <= E.maxDist) then
+                    seen[s] = true; ensure(s, "survivor", s.Name)
                 end
             end
         end
@@ -995,10 +967,10 @@ local function refreshESP()
     if E.generator or E.item or E.minion or E.trap then
         for _, obj in ipairs(root:GetDescendants()) do
             if obj:IsA("Model") then
-                if E.generator and obj.Name=="Generator" then seen[obj]=true; ensure(obj,"generator")
-                elseif E.item and (obj.Name=="BloxyCola" or obj.Name=="Medkit") then seen[obj]=true; ensure(obj,"item")
-                elseif E.minion and (obj.Name=="PizzaDeliveryRig" or obj.Name=="1x1x1x1Zombie") then seen[obj]=true; ensure(obj,"minion")
-                elseif E.trap and (obj.Name=="SubspaceTripmine" or string.find(obj.Name,"TaphTripwire")) then seen[obj]=true; ensure(obj,"trap")
+                if E.generator and obj.Name == "Generator" then seen[obj] = true; ensure(obj, "generator")
+                elseif E.item and (obj.Name == "BloxyCola" or obj.Name == "Medkit") then seen[obj] = true; ensure(obj, "item")
+                elseif E.minion and (obj.Name == "PizzaDeliveryRig" or obj.Name == "1x1x1x1Zombie") then seen[obj] = true; ensure(obj, "minion")
+                elseif E.trap and (obj.Name == "SubspaceTripmine" or string.find(obj.Name, "TaphTripwire")) then seen[obj] = true; ensure(obj, "trap")
                 end
             end
         end
@@ -1007,44 +979,47 @@ local function refreshESP()
         if not seen[inst] or not inst.Parent then clearOne(inst) end
     end
 end
+
 task.spawn(function()
     while true do pcall(refreshESP); task.wait(0.35) end
 end)
 
 --==================================================
--- STAMINA (expanded)
+-- STAMINA
 --==================================================
-local Stam = {
-    unlimited=false, minS=0, maxS=100, loss=10, gain=20,
-    autoUnsprint=false, unsprintAt=10,
-    lockMax=false, noDrainWhileIdle=false,
+local StamS = {
+    unlimited = false, minS = 0, maxS = 100, loss = 10, gain = 20,
+    autoUnsprint = false, unsprintAt = 10, lockMax = false,
 }
+
 local function getSprint()
     if getgenv()._SharedSprintMod then return getgenv()._SharedSprintMod end
     local ok, S = pcall(function() return require(ReplicatedStorage.Systems.Character.Game.Sprinting) end)
     if ok and S then getgenv()._SharedSprintMod = S; return S end
     return nil
 end
+
 local function applyStam()
     local S = getSprint()
     if not S then return end
     pcall(function()
-        if Stam.unlimited then
+        if StamS.unlimited then
             S.StaminaLoss = 0
             if S.StaminaLossDisabled ~= nil then S.StaminaLossDisabled = true end
             if S.Stamina ~= nil then S.Stamina = math.max(S.Stamina, S.MaxStamina or 100) end
         else
             if S.StaminaLossDisabled ~= nil then S.StaminaLossDisabled = false end
-            S.MinStamina = Stam.minS
-            S.MaxStamina = Stam.maxS
-            S.StaminaLoss = Stam.loss
-            S.StaminaGain = Stam.gain
-            if Stam.lockMax and S.Stamina ~= nil then
-                S.Stamina = math.max(S.Stamina or 0, Stam.maxS)
+            S.MinStamina = StamS.minS
+            S.MaxStamina = StamS.maxS
+            S.StaminaLoss = StamS.loss
+            S.StaminaGain = StamS.gain
+            if StamS.lockMax and S.Stamina ~= nil then
+                S.Stamina = math.max(S.Stamina or 0, StamS.maxS)
             end
         end
     end)
 end
+
 local function readBar()
     local pg = LP:FindFirstChild("PlayerGui")
     local amount = pg and pg:FindFirstChild("TemporaryUI")
@@ -1055,11 +1030,12 @@ local function readBar()
     if not amount then return nil end
     return tonumber(tostring(amount.Text):match("(%d+)%s*/"))
 end
+
 RunService.Heartbeat:Connect(function()
-    if Stam.unlimited or Stam.lockMax then applyStam() end
-    if Stam.autoUnsprint then
+    if StamS.unlimited or StamS.lockMax then applyStam() end
+    if StamS.autoUnsprint then
         local cur = readBar()
-        if cur and cur <= Stam.unsprintAt then
+        if cur and cur <= StamS.unsprintAt then
             local S = getSprint()
             if S and S.IsSprinting then
                 pcall(function()
@@ -1070,34 +1046,39 @@ RunService.Heartbeat:Connect(function()
         end
     end
 end)
+
 task.defer(function()
-    for _=1,30 do if getSprint() then applyStam(); break end; task.wait(0.3) end
+    for _ = 1, 30 do if getSprint() then applyStam(); break end; task.wait(0.3) end
 end)
 
 --==================================================
 -- MIST / GEN
 --==================================================
-local MistS = { fullbright=false, noFog=false, antiSlow=false, saved=nil }
+local MistS = { fullbright = false, noFog = false, saved = nil }
+
 local function setFullbright(on)
     if on then
         if not MistS.saved then
             MistS.saved = {
-                Brightness=Lighting.Brightness, Ambient=Lighting.Ambient,
-                OutdoorAmbient=Lighting.OutdoorAmbient, FogEnd=Lighting.FogEnd,
-                GlobalShadows=Lighting.GlobalShadows,
+                Brightness = Lighting.Brightness,
+                Ambient = Lighting.Ambient,
+                OutdoorAmbient = Lighting.OutdoorAmbient,
+                FogEnd = Lighting.FogEnd,
+                GlobalShadows = Lighting.GlobalShadows,
             }
         end
-        Lighting.Brightness=2
-        Lighting.Ambient=Color3.new(1,1,1)
-        Lighting.OutdoorAmbient=Color3.new(1,1,1)
-        Lighting.FogEnd=100000
-        Lighting.GlobalShadows=false
+        Lighting.Brightness = 2
+        Lighting.Ambient = Color3.new(1, 1, 1)
+        Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+        Lighting.FogEnd = 100000
+        Lighting.GlobalShadows = false
     elseif MistS.saved then
-        for k,v in pairs(MistS.saved) do pcall(function() Lighting[k]=v end) end
+        for k, v in pairs(MistS.saved) do pcall(function() Lighting[k] = v end) end
     end
 end
 
-local GenS = { enabled=false, gen=0, installed=false, startDelay=1.2 }
+local GenS = { enabled = false, gen = 0, installed = false, startDelay = 1.2 }
+
 local function installGen()
     if GenS.installed then return end
     GenS.installed = true
@@ -1112,7 +1093,7 @@ local function installGen()
                 while object and not object.Ended and not GenS.enabled do task.wait(0.05) end
                 if not (object and not object.Ended and GenS.enabled) then return end
                 local t0 = os.clock()
-                while object and not object.Ended and GenS.enabled and os.clock()-t0 < GenS.startDelay do task.wait(0.05) end
+                while object and not object.Ended and GenS.enabled and os.clock() - t0 < GenS.startDelay do task.wait(0.05) end
                 if not board.Blobs then return end
                 for blob in pairs(board.Blobs) do
                     if not GenS.enabled or token ~= GenS.gen or object.Ended then return end
@@ -1132,56 +1113,58 @@ local function installGen()
 end
 
 --==================================================
--- WIRE TABS (Rayfield Gen2)
+-- WIRE ALL TABS
 --==================================================
 
 -- ESP
-Section(ESP, "ESP Controls")
-ESP:CreateToggle({ Name = "Survivors", CurrentValue = false, Flag = "ESP_Surv",
+Section(ESPTab, "ESP Controls")
+ESPTab:CreateToggle({ Name = "Survivors", CurrentValue = false, Flag = "ESP_Surv",
     Callback = function(v) E.survivor = v; refreshESP() end })
-ESP:CreateToggle({ Name = "Killers", CurrentValue = false, Flag = "ESP_Kill",
+ESPTab:CreateToggle({ Name = "Killers", CurrentValue = false, Flag = "ESP_Kill",
     Callback = function(v) E.killer = v; refreshESP() end })
-ESP:CreateToggle({ Name = "Generators", CurrentValue = false, Flag = "ESP_Gen",
+ESPTab:CreateToggle({ Name = "Generators", CurrentValue = false, Flag = "ESP_Gen",
     Callback = function(v) E.generator = v; refreshESP() end })
-ESP:CreateToggle({ Name = "Items", CurrentValue = false, Flag = "ESP_Item",
+ESPTab:CreateToggle({ Name = "Items", CurrentValue = false, Flag = "ESP_Item",
     Callback = function(v) E.item = v; refreshESP() end })
-ESP:CreateToggle({ Name = "Minions", CurrentValue = false, Flag = "ESP_Minion",
+ESPTab:CreateToggle({ Name = "Minions", CurrentValue = false, Flag = "ESP_Minion",
     Callback = function(v) E.minion = v; refreshESP() end })
-ESP:CreateToggle({ Name = "Traps", CurrentValue = false, Flag = "ESP_Trap",
+ESPTab:CreateToggle({ Name = "Traps", CurrentValue = false, Flag = "ESP_Trap",
     Callback = function(v) E.trap = v; refreshESP() end })
-Section(ESP, "Details")
-ESP:CreateToggle({ Name = "Show Names", CurrentValue = true, Flag = "ESP_Names",
+Section(ESPTab, "Details")
+ESPTab:CreateToggle({ Name = "Show Names", CurrentValue = true, Flag = "ESP_Names",
     Callback = function(v) E.names = v end })
-ESP:CreateToggle({ Name = "Show Health", CurrentValue = true, Flag = "ESP_HP",
+ESPTab:CreateToggle({ Name = "Show Health", CurrentValue = true, Flag = "ESP_HP",
     Callback = function(v) E.health = v end })
-ESP:CreateSlider({ Name = "Max Distance", Range = {50, 2000}, Increment = 10, CurrentValue = 500, Flag = "ESP_Dist",
+ESPTab:CreateSlider({ Name = "Max Distance", Range = {50, 2000}, Increment = 10, CurrentValue = 500, Flag = "ESP_Dist",
     Callback = function(v) E.maxDist = v end })
 
--- STAM (expanded)
-Section(Stam, "Core")
-Stam:CreateToggle({ Name = "Unlimited Stamina", CurrentValue = false, Flag = "Stam_Unl",
-    Callback = function(v) Stam.unlimited = v; applyStam() end })
-Stam:CreateToggle({ Name = "Lock Max Stamina", CurrentValue = false, Flag = "Stam_LockMax",
-    Callback = function(v) Stam.lockMax = v; applyStam() end })
-Stam:CreateToggle({ Name = "Auto Unsprint", CurrentValue = false, Flag = "Stam_AutoUn",
-    Callback = function(v) Stam.autoUnsprint = v end })
-Stam:CreateSlider({ Name = "Unsprint At", Range = {0, 50}, Increment = 1, CurrentValue = 10, Flag = "Stam_UnAt",
-    Callback = function(v) Stam.unsprintAt = v end })
-Section(Stam, "Rates")
-Stam:CreateSlider({ Name = "Min Stamina", Range = {0, 100}, Increment = 1, CurrentValue = 0, Flag = "Stam_Min",
-    Callback = function(v) Stam.minS = v; if not Stam.unlimited then applyStam() end end })
-Stam:CreateSlider({ Name = "Max Stamina", Range = {10, 200}, Increment = 1, CurrentValue = 100, Flag = "Stam_Max",
-    Callback = function(v) Stam.maxS = v; if not Stam.unlimited then applyStam() end end })
-Stam:CreateSlider({ Name = "Drain Rate", Range = {0, 50}, Increment = 1, CurrentValue = 10, Flag = "Stam_Loss",
-    Callback = function(v) Stam.loss = v; if not Stam.unlimited then applyStam() end end })
-Stam:CreateSlider({ Name = "Gain Rate", Range = {0, 100}, Increment = 1, CurrentValue = 20, Flag = "Stam_Gain",
-    Callback = function(v) Stam.gain = v; if not Stam.unlimited then applyStam() end end })
-Stam:CreateButton({ Name = "Apply Stamina Now", Callback = function() applyStam()
-    Rayfield:Notify({ Title = HubName, Content = "Stamina applied", Duration = 2 }) end })
+-- STAM
+Section(StamTab, "Core")
+StamTab:CreateToggle({ Name = "Unlimited Stamina", CurrentValue = false, Flag = "Stam_Unl",
+    Callback = function(v) StamS.unlimited = v; applyStam() end })
+StamTab:CreateToggle({ Name = "Lock Max Stamina", CurrentValue = false, Flag = "Stam_LockMax",
+    Callback = function(v) StamS.lockMax = v; applyStam() end })
+StamTab:CreateToggle({ Name = "Auto Unsprint", CurrentValue = false, Flag = "Stam_AutoUn",
+    Callback = function(v) StamS.autoUnsprint = v end })
+StamTab:CreateSlider({ Name = "Unsprint At", Range = {0, 50}, Increment = 1, CurrentValue = 10, Flag = "Stam_UnAt",
+    Callback = function(v) StamS.unsprintAt = v end })
+Section(StamTab, "Rates")
+StamTab:CreateSlider({ Name = "Min Stamina", Range = {0, 100}, Increment = 1, CurrentValue = 0, Flag = "Stam_Min",
+    Callback = function(v) StamS.minS = v; if not StamS.unlimited then applyStam() end end })
+StamTab:CreateSlider({ Name = "Max Stamina", Range = {10, 200}, Increment = 1, CurrentValue = 100, Flag = "Stam_Max",
+    Callback = function(v) StamS.maxS = v; if not StamS.unlimited then applyStam() end end })
+StamTab:CreateSlider({ Name = "Drain Rate", Range = {0, 50}, Increment = 1, CurrentValue = 10, Flag = "Stam_Loss",
+    Callback = function(v) StamS.loss = v; if not StamS.unlimited then applyStam() end end })
+StamTab:CreateSlider({ Name = "Gain Rate", Range = {0, 100}, Increment = 1, CurrentValue = 20, Flag = "Stam_Gain",
+    Callback = function(v) StamS.gain = v; if not StamS.unlimited then applyStam() end end })
+StamTab:CreateButton({ Name = "Apply Stamina Now", Callback = function()
+    applyStam()
+    Rayfield:Notify({ Title = HubName, Content = "Stamina applied", Duration = 2 })
+end })
 
 -- AIM
-Section(Aim, "Aimbot")
-Aim:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "Aim_En",
+Section(AimTab, "Aimbot")
+AimTab:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "Aim_En",
     Callback = function(v)
         if v and IsPlayerKiller() then return end
         getgenv().GlobalAimbotToggle = v
@@ -1191,7 +1174,7 @@ Aim:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "Aim_En"
             if hum then hum.AutoRotate = true end
         end
     end })
-Aim:CreateDropdown({
+AimTab:CreateDropdown({
     Name = "Aimlock Mode",
     Options = { "Character Lock", "Char + Cam Lock" },
     CurrentOption = { "Character Lock" },
@@ -1200,13 +1183,13 @@ Aim:CreateDropdown({
         getgenv().GlobalAimlockMode = type(v) == "table" and v[1] or v
     end,
 })
-Aim:CreateSlider({ Name = "Velocity Prediction", Range = {0, 3}, Increment = 0.1, CurrentValue = 1, Flag = "Aim_Pred",
+AimTab:CreateSlider({ Name = "Velocity Prediction", Range = {0, 3}, Increment = 0.1, CurrentValue = 1, Flag = "Aim_Pred",
     Callback = function(v) AimCore.prediction = v end })
-Aim:CreateSlider({ Name = "Easing", Range = {0.1, 1}, Increment = 0.05, CurrentValue = 0.8, Flag = "Aim_Ease",
+AimTab:CreateSlider({ Name = "Easing", Range = {0.1, 1}, Increment = 0.05, CurrentValue = 0.8, Flag = "Aim_Ease",
     Callback = function(v) AimCore.easing = v end })
-Section(Aim, "Per Survivor")
+Section(AimTab, "Per Survivor")
 for _, key in ipairs({ "Guest1337", "Shedlekey", "TwoTime", "Chance", "JaneDoe" }) do
-    Aim:CreateToggle({
+    AimTab:CreateToggle({
         Name = key,
         CurrentValue = getgenv().AimbotValues[key].Enabled,
         Flag = "Aim_" .. key,
@@ -1215,9 +1198,9 @@ for _, key in ipairs({ "Guest1337", "Shedlekey", "TwoTime", "Chance", "JaneDoe" 
         end,
     })
 end
-Section(Aim, "Durations")
+Section(AimTab, "Durations")
 for _, key in ipairs({ "Guest1337", "Shedlekey", "TwoTime", "Chance" }) do
-    Aim:CreateSlider({
+    AimTab:CreateSlider({
         Name = key .. " Duration",
         Range = {0.1, 3},
         Increment = 0.1,
@@ -1228,22 +1211,22 @@ for _, key in ipairs({ "Guest1337", "Shedlekey", "TwoTime", "Chance" }) do
 end
 
 -- SILENT
-Section(SilentAim, "Crystal Pinch")
-SilentAim:CreateToggle({ Name = "Crystal Silent Aim", CurrentValue = false, Flag = "Crystal_T",
+Section(SilentTab, "Crystal Pinch")
+SilentTab:CreateToggle({ Name = "Crystal Silent Aim", CurrentValue = false, Flag = "Crystal_T",
     Callback = function(v) Silent.crystal = v; if v then installSilent() end end })
-SilentAim:CreateSlider({ Name = "Crystal Prediction", Range = {0, 10}, Increment = 0.1, CurrentValue = 2.5, Flag = "CrystalPred",
+SilentTab:CreateSlider({ Name = "Crystal Prediction", Range = {0, 10}, Increment = 0.1, CurrentValue = 2.5, Flag = "CrystalPred",
     Callback = function(v) Silent.crystalPred = v end })
-SilentAim:CreateSlider({ Name = "Crystal Y Offset", Range = {-2, 5}, Increment = 0.1, CurrentValue = 1.5, Flag = "CrystalY",
+SilentTab:CreateSlider({ Name = "Crystal Y Offset", Range = {-2, 5}, Increment = 0.1, CurrentValue = 1.5, Flag = "CrystalY",
     Callback = function(v) Silent.crystalY = v end })
-Section(SilentAim, "Dusekkar")
-SilentAim:CreateToggle({ Name = "Dusekkar Silent Aim", CurrentValue = false, Flag = "Dusk_T",
+Section(SilentTab, "Dusekkar")
+SilentTab:CreateToggle({ Name = "Dusekkar Silent Aim", CurrentValue = false, Flag = "Dusk_T",
     Callback = function(v) Silent.dusk = v; if v then installSilent() end end })
-SilentAim:CreateSlider({ Name = "Dusekkar Prediction", Range = {0, 5}, Increment = 0.1, CurrentValue = 0.5, Flag = "DuskPred",
+SilentTab:CreateSlider({ Name = "Dusekkar Prediction", Range = {0, 5}, Increment = 0.1, CurrentValue = 0.5, Flag = "DuskPred",
     Callback = function(v) Silent.duskPred = v end })
 
--- AUTO BLOCK (Vortex block.txt + facing)
-Section(AutoBlock, "Auto Block")
-AutoBlock:CreateToggle({ Name = "Enable Auto Block", CurrentValue = false, Flag = "AB_En",
+-- AUTO BLOCK
+Section(BlockTab, "Auto Block")
+BlockTab:CreateToggle({ Name = "Enable Auto Block", CurrentValue = false, Flag = "AB_En",
     Callback = function(v)
         if v and IsPlayerKiller() then
             Rayfield:Notify({ Title = HubName, Content = "Auto-Block disabled (you are Killer)", Duration = 3 })
@@ -1252,52 +1235,52 @@ AutoBlock:CreateToggle({ Name = "Enable Auto Block", CurrentValue = false, Flag 
         _G.AutoBlockEnabled = v
         if v then EnableAutoBlock() end
     end })
-AutoBlock:CreateToggle({ Name = "Show Hitbox", CurrentValue = true, Flag = "AB_Show",
+BlockTab:CreateToggle({ Name = "Show Hitbox", CurrentValue = true, Flag = "AB_Show",
     Callback = function(v) _G.ShowHitboxVisual = v end })
-AutoBlock:CreateToggle({ Name = "Show Outline", CurrentValue = true, Flag = "AB_Outline",
+BlockTab:CreateToggle({ Name = "Show Outline", CurrentValue = true, Flag = "AB_Outline",
     Callback = function(v) _G.ShowOutline = v end })
-Section(AutoBlock, "Box Facing Check")
-AutoBlock:CreateToggle({ Name = "Use Facing Check", CurrentValue = true, Flag = "AB_UseFacing",
+Section(BlockTab, "Box Facing Check")
+BlockTab:CreateToggle({ Name = "Use Facing Check", CurrentValue = true, Flag = "AB_UseFacing",
     Callback = function(v) Facing.enabled = v end })
-AutoBlock:CreateToggle({ Name = "Require Facing", CurrentValue = true, Flag = "AB_FacingReq",
+BlockTab:CreateToggle({ Name = "Require Facing", CurrentValue = true, Flag = "AB_FacingReq",
     Callback = function(v) Facing.required = v end })
-AutoBlock:CreateSlider({ Name = "Facing Dot Threshold", Range = {0, 1}, Increment = 0.05, CurrentValue = 0.25, Flag = "AB_Dot",
+BlockTab:CreateSlider({ Name = "Facing Dot Threshold", Range = {0, 1}, Increment = 0.05, CurrentValue = 0.25, Flag = "AB_Dot",
     Callback = function(v) Facing.dot = v end })
-AutoBlock:CreateSlider({ Name = "Max Detect Distance", Range = {5, 80}, Increment = 1, CurrentValue = 40, Flag = "AB_MaxDist",
+BlockTab:CreateSlider({ Name = "Max Detect Distance", Range = {5, 80}, Increment = 1, CurrentValue = 40, Flag = "AB_MaxDist",
     Callback = function(v) Facing.maxDist = v end })
-Section(AutoBlock, "Hitbox Size")
-AutoBlock:CreateSlider({ Name = "Width", Range = {1, 30}, Increment = 1, CurrentValue = 5, Flag = "AB_W",
+Section(BlockTab, "Hitbox Size")
+BlockTab:CreateSlider({ Name = "Width", Range = {1, 30}, Increment = 1, CurrentValue = 5, Flag = "AB_W",
     Callback = function(v) _G.HitboxWidth = v end })
-AutoBlock:CreateSlider({ Name = "Height", Range = {1, 30}, Increment = 1, CurrentValue = 6, Flag = "AB_H",
+BlockTab:CreateSlider({ Name = "Height", Range = {1, 30}, Increment = 1, CurrentValue = 6, Flag = "AB_H",
     Callback = function(v) _G.HitboxHeight = v end })
-AutoBlock:CreateSlider({ Name = "Length", Range = {1, 40}, Increment = 1, CurrentValue = 8, Flag = "AB_L",
+BlockTab:CreateSlider({ Name = "Length", Range = {1, 40}, Increment = 1, CurrentValue = 8, Flag = "AB_L",
     Callback = function(v) _G.HitboxLength = v end })
-AutoBlock:CreateSlider({ Name = "Offset Z", Range = {-15, 5}, Increment = 1, CurrentValue = -1, Flag = "AB_Off",
+BlockTab:CreateSlider({ Name = "Offset Z", Range = {-15, 5}, Increment = 1, CurrentValue = -1, Flag = "AB_Off",
     Callback = function(v) _G.HitboxOffset = v end })
-AutoBlock:CreateSlider({ Name = "Duration", Range = {0.1, 5}, Increment = 0.05, CurrentValue = 0.5, Flag = "AB_Dur",
+BlockTab:CreateSlider({ Name = "Duration", Range = {0.1, 5}, Increment = 0.05, CurrentValue = 0.5, Flag = "AB_Dur",
     Callback = function(v) _G.HitboxDuration = v end })
-AutoBlock:CreateSlider({ Name = "Block Delay", Range = {0, 1}, Increment = 0.05, CurrentValue = 0, Flag = "AB_Delay",
+BlockTab:CreateSlider({ Name = "Block Delay", Range = {0, 1}, Increment = 0.05, CurrentValue = 0, Flag = "AB_Delay",
     Callback = function(v) _G.BlockDelay = v end })
-AutoBlock:CreateSlider({ Name = "Transparency", Range = {0, 1}, Increment = 0.05, CurrentValue = 0.5, Flag = "AB_Trans",
+BlockTab:CreateSlider({ Name = "Transparency", Range = {0, 1}, Increment = 0.05, CurrentValue = 0.5, Flag = "AB_Trans",
     Callback = function(v) _G.HitboxTransparency = v end })
-Section(AutoBlock, "HDT (Flex)")
-AutoBlock:CreateToggle({ Name = "Enable HDT", CurrentValue = false, Flag = "HDT_En",
+Section(BlockTab, "HDT")
+BlockTab:CreateToggle({ Name = "Enable HDT", CurrentValue = false, Flag = "HDT_En",
     Callback = function(v)
         if v and IsPlayerKiller() then return end
         HDT.enabled = v
     end })
-AutoBlock:CreateSlider({ Name = "HDT Duration", Range = {0.1, 1.5}, Increment = 0.05, CurrentValue = 0.35, Flag = "HDT_Dur",
+BlockTab:CreateSlider({ Name = "HDT Duration", Range = {0.1, 1.5}, Increment = 0.05, CurrentValue = 0.35, Flag = "HDT_Dur",
     Callback = function(v) HDT.duration = v end })
-AutoBlock:CreateSlider({ Name = "HDT Speed", Range = {4, 40}, Increment = 1, CurrentValue = 14, Flag = "HDT_Speed",
+BlockTab:CreateSlider({ Name = "HDT Speed", Range = {4, 40}, Increment = 1, CurrentValue = 14, Flag = "HDT_Speed",
     Callback = function(v) HDT.speed = v end })
-AutoBlock:CreateSlider({ Name = "HDT Range", Range = {5, 80}, Increment = 1, CurrentValue = 30, Flag = "HDT_Range",
+BlockTab:CreateSlider({ Name = "HDT Range", Range = {5, 80}, Increment = 1, CurrentValue = 30, Flag = "HDT_Range",
     Callback = function(v) HDT.range = v end })
-AutoBlock:CreateButton({ Name = "Force Block", Callback = function() FireBlockBuffer() end })
-AutoBlock:CreateButton({ Name = "Rescan Killer Assets", Callback = function()
+BlockTab:CreateButton({ Name = "Force Block", Callback = function() FireBlockBuffer() end })
+BlockTab:CreateButton({ Name = "Rescan Killer Assets", Callback = function()
     scanAllKillerAssets()
-    Rayfield:Notify({ Title = HubName, Content = "Killer anim/sound assets rescanned", Duration = 2 })
+    Rayfield:Notify({ Title = HubName, Content = "Killer assets rescanned", Duration = 2 })
 end })
-AutoBlock:CreateButton({ Name = "Test HDT", Callback = function()
+BlockTab:CreateButton({ Name = "Test HDT", Callback = function()
     HDT.enabled = true
     local k = GetNearestKiller(HDT.range)
     local kr = k and k:FindFirstChild("HumanoidRootPart")
@@ -1305,62 +1288,63 @@ AutoBlock:CreateButton({ Name = "Test HDT", Callback = function()
 end })
 
 -- STAB
-Section(Stab, "Auto Backstab")
-Stab:CreateToggle({ Name = "Enable Auto Backstab", CurrentValue = false, Flag = "TT_En",
+Section(StabTab, "Auto Backstab")
+StabTab:CreateToggle({ Name = "Enable Auto Backstab", CurrentValue = false, Flag = "TT_En",
     Callback = function(v) TT.enabled = v end })
-Stab:CreateDropdown({
+StabTab:CreateDropdown({
     Name = "Method",
     Options = { "Teleport", "Lerp", "PrimaryPart" },
     CurrentOption = { "Teleport" },
     Flag = "TT_Method",
     Callback = function(v) TT.method = type(v) == "table" and v[1] or v end,
 })
-Stab:CreateSlider({ Name = "Normal Stab Range", Range = {1, 10}, Increment = 1, CurrentValue = 3, Flag = "TT_Norm",
+StabTab:CreateSlider({ Name = "Normal Stab Range", Range = {1, 10}, Increment = 1, CurrentValue = 3, Flag = "TT_Norm",
     Callback = function(v) TT.normalRange = v end })
-Stab:CreateSlider({ Name = "Crouch Stab Range", Range = {1, 10}, Increment = 1, CurrentValue = 3, Flag = "TT_Crouch",
+StabTab:CreateSlider({ Name = "Crouch Stab Range", Range = {1, 10}, Increment = 1, CurrentValue = 3, Flag = "TT_Crouch",
     Callback = function(v) TT.crouchRange = v end })
-Stab:CreateSlider({ Name = "Duration", Range = {0.1, 2}, Increment = 0.05, CurrentValue = 0.5, Flag = "TT_Dur",
+StabTab:CreateSlider({ Name = "Duration", Range = {0.1, 2}, Increment = 0.05, CurrentValue = 0.5, Flag = "TT_Dur",
     Callback = function(v) TT.duration = v end })
-Stab:CreateSlider({ Name = "Delay", Range = {0, 0.5}, Increment = 0.01, CurrentValue = 0.05, Flag = "TT_Delay",
+StabTab:CreateSlider({ Name = "Delay", Range = {0, 0.5}, Increment = 0.01, CurrentValue = 0.05, Flag = "TT_Delay",
     Callback = function(v) TT.delay = v end })
-Stab:CreateSlider({ Name = "Lerp/Primary Speed", Range = {10, 200}, Increment = 5, CurrentValue = 100, Flag = "TT_Speed",
+StabTab:CreateSlider({ Name = "Lerp/Primary Speed", Range = {10, 200}, Increment = 5, CurrentValue = 100, Flag = "TT_Speed",
     Callback = function(v) TT.speed = v end })
-Stab:CreateToggle({ Name = "Teleport Back", CurrentValue = false, Flag = "TT_Back",
+StabTab:CreateToggle({ Name = "Teleport Back", CurrentValue = false, Flag = "TT_Back",
     Callback = function(v) TT.tpBack = v end })
-Stab:CreateToggle({ Name = "PivotTo PrimaryPart", CurrentValue = false, Flag = "TT_Pivot",
+StabTab:CreateToggle({ Name = "PivotTo PrimaryPart", CurrentValue = false, Flag = "TT_Pivot",
     Callback = function(v) TT.pivotTo = v end })
 
 -- MIST
-Section(Mist, "Visual")
-Mist:CreateToggle({ Name = "Fullbright", CurrentValue = false, Flag = "Mist_FB",
+Section(MistTab, "Visual")
+MistTab:CreateToggle({ Name = "Fullbright", CurrentValue = false, Flag = "Mist_FB",
     Callback = function(v) MistS.fullbright = v; setFullbright(v) end })
-Mist:CreateToggle({ Name = "No Fog", CurrentValue = false, Flag = "Mist_Fog",
+MistTab:CreateToggle({ Name = "No Fog", CurrentValue = false, Flag = "Mist_Fog",
     Callback = function(v)
         MistS.noFog = v
         if v then Lighting.FogEnd = 100000 end
     end })
-Mist:CreateToggle({ Name = "Anti Slowness", CurrentValue = false, Flag = "Mist_AntiSlow",
-    Callback = function(v) MistS.antiSlow = v end })
 
 -- GEN
-Section(Gen, "Auto Generator")
-Gen:CreateToggle({ Name = "Enable Auto Gen", CurrentValue = false, Flag = "Gen_En",
+Section(GenTab, "Auto Generator")
+GenTab:CreateToggle({ Name = "Enable Auto Gen", CurrentValue = false, Flag = "Gen_En",
     Callback = function(v)
         GenS.enabled = v
         GenS.gen += 1
         if v then installGen() end
     end })
-Gen:CreateSlider({ Name = "Start Delay", Range = {0, 4}, Increment = 0.1, CurrentValue = 1.2, Flag = "Gen_Start",
+GenTab:CreateSlider({ Name = "Start Delay", Range = {0, 4}, Increment = 0.1, CurrentValue = 1.2, Flag = "Gen_Start",
     Callback = function(v) GenS.startDelay = v end })
+GenTab:CreateButton({ Name = "Test Notification", Callback = function()
+    Rayfield:Notify({ Title = HubName, Content = "Notification test successful!", Duration = 4 })
+end })
 
 -- KILLER
-Section(Killer, "Combat")
-Killer:CreateButton({ Name = "Force Punch", Callback = function() FireAbility("Punch") end })
-Killer:CreateButton({ Name = "Force Block", Callback = function() FireBlockBuffer() end })
+Section(KillerTab, "Combat")
+KillerTab:CreateButton({ Name = "Force Punch", Callback = function() FireAbility("Punch") end })
+KillerTab:CreateButton({ Name = "Force Block", Callback = function() FireBlockBuffer() end })
 
 Rayfield:Notify({
     Title = HubName,
-    Content = "Loaded — Rayfield Gen2 + Vortex block + facing check",
+    Content = "All tabs loaded and wired",
     Duration = 5,
 })
-print("[UNSERIOUS HUB] Rayfield Gen2 loaded and wired")
+print("[UNSERIOUS HUB] Loaded — all tabs wired")
