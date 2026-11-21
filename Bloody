@@ -40,6 +40,7 @@ local Icons = {
     Mist = "rbxassetid://120439865325711",
     Gen = "rbxassetid://119328994950296",
     Killer = "rbxassetid://124384535760427",
+    Vee = "rbxassetid://109264730424363",
 }
 
 local WindUI = loadstring(game:HttpGet(
@@ -107,6 +108,7 @@ local TabDefs = {
     { Name = "Silent Aim", Icon = Icons.SilentAim },
     { Name = "Auto Block", Icon = Icons.AutoBlock },
     { Name = "Stab", Icon = Icons.Stab },
+    { Name = "Vee", Icon = Icons.Vee },
     { Name = "Mist", Icon = Icons.Mist },
     { Name = "Gen", Icon = Icons.Gen },
     { Name = "Killer", Icon = Icons.Killer },
@@ -272,7 +274,7 @@ end
 --=====================================================
 -- HDT
 --=====================================================
-local HDT = { enabled = false, duration = 0.35, speed = 14, range = 30, token = 0 }
+local HDT = { enabled = false, duration = 0.35, speed = 14, range = 30, token = 0, lastTrigger = 0, cooldown = 27 }
 
 local function DragToward(killerRoot)
     if not HDT.enabled or not killerRoot then return end
@@ -302,7 +304,7 @@ local function DragToward(killerRoot)
 end
 
 --=====================================================
--- AUTO BLOCK
+-- AUTO BLOCK — name-filtered detection
 --=====================================================
 _G.HitboxWidth = 5
 _G.HitboxHeight = 6
@@ -322,35 +324,40 @@ _G.BlockAbilityNames = {
 }
 
 local Facing = { enabled = true, required = true, dot = 0.25, maxDist = 40 }
+local _ShuttingDown = false
 
 local BLOCK_NAMES_LOWER = {}
 for _, n in ipairs(_G.BlockAbilityNames) do BLOCK_NAMES_LOWER[n:lower()] = true end
 
-local function nameMatchesBlock(rawName)
-    if type(rawName) ~= "string" or rawName == "" then return false end
-    local lname = rawName:lower()
+local function nameMatchesBlock(raw)
+    if type(raw) ~= "string" or raw == "" then return false end
+    local l = raw:lower()
     for bn in pairs(BLOCK_NAMES_LOWER) do
-        if string.find(lname, bn, 1, true) then return true end
+        if string.find(l, bn, 1, true) then return true end
     end
     return false
 end
 
 local function extractAnimIds(v)
     local out = {}
-    if type(v) == "number" then table.insert(out, tostring(math.floor(v)))
+    if type(v) == "number" then
+        table.insert(out, tostring(math.floor(v)))
     elseif type(v) == "string" then
         local id = v:match("%d+")
         if id then table.insert(out, id) end
     elseif type(v) == "table" then
         for _, x in pairs(v) do
-            for _, id in ipairs(extractAnimIds(x)) do table.insert(out, id) end
+            for _, id in ipairs(extractAnimIds(x)) do
+                table.insert(out, id)
+            end
         end
     end
     return out
 end
 
-local BLOCK_ANIM_IDS, BLOCK_SOUND_IDS = {}, {}
-local SOUND_FIELDS = { "Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds" }
+local BLOCK_ANIM_IDS = {}
+local BLOCK_SOUND_IDS = {}
+local BLOCK_SOUND_FIELDS = { "Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds" }
 
 local function collectBlockAssets(cfg)
     if type(cfg) ~= "table" then return end
@@ -361,7 +368,7 @@ local function collectBlockAssets(cfg)
             end
         end
     end
-    for _, field in ipairs(SOUND_FIELDS) do
+    for _, field in ipairs(BLOCK_SOUND_FIELDS) do
         if type(cfg[field]) == "table" then
             for name, v in pairs(cfg[field]) do
                 if nameMatchesBlock(name) then
@@ -372,7 +379,7 @@ local function collectBlockAssets(cfg)
     end
 end
 
-local function scanFolderForBlockAssets(folder)
+local function scanKillerFolder(folder)
     if not folder then return end
     for _, sub in ipairs(folder:GetChildren()) do
         if sub:IsA("Folder") then
@@ -388,30 +395,26 @@ local function scanFolderForBlockAssets(folder)
 end
 
 local function scanAllKillerAssets()
-    BLOCK_ANIM_IDS, BLOCK_SOUND_IDS = {}, {}
+    BLOCK_ANIM_IDS = {}
+    BLOCK_SOUND_IDS = {}
     local assets = ReplicatedStorage:FindFirstChild("Assets")
     if not assets then return end
-    scanFolderForBlockAssets(assets:FindFirstChild("Killers"))
+    scanKillerFolder(assets:FindFirstChild("Killers"))
     local skins = assets:FindFirstChild("Skins")
-    local skinKillers = skins and skins:FindFirstChild("Killers")
-    if skinKillers then
-        for _, base in ipairs(skinKillers:GetChildren()) do
-            if base:IsA("Folder") then scanFolderForBlockAssets(base) end
+    local sk = skins and skins:FindFirstChild("Killers")
+    if sk then
+        for _, base in ipairs(sk:GetChildren()) do
+            if base:IsA("Folder") then scanKillerFolder(base) end
         end
     end
+    local ac, sc = 0, 0
+    for _ in pairs(BLOCK_ANIM_IDS) do ac += 1 end
+    for _ in pairs(BLOCK_SOUND_IDS) do sc += 1 end
+    print(string.format("[UNSERIOUS Block] Loaded %d anims + %d sounds", ac, sc))
 end
 scanAllKillerAssets()
 
-local function shouldBlockAbility(name)
-    if type(name) ~= "string" or name == "" then return false end
-    local upper = string.upper(name)
-    for _, bn in ipairs(_G.BlockAbilityNames) do
-        if string.find(upper, string.upper(bn), 1, true) then return true end
-    end
-    return false
-end
-
-local function getAbilityName(killer)
+local function getBlockAbilityName(killer)
     if not killer then return nil end
     for _, attr in ipairs({ "AbilityName", "LastAbility", "CurrentAbility", "LastAbilityName", "AbilityUsed", "Ability", "CurrentAttack" }) do
         local ok, val = pcall(function() return killer:GetAttribute(attr) end)
@@ -420,14 +423,12 @@ local function getAbilityName(killer)
     return nil
 end
 
-local function FireBlockBuffer()
-    if IsPlayerKiller() then return end
-    if HDT.enabled then
-        local k = GetNearestKiller(HDT.range or 30)
-        local root = k and k:FindFirstChild("HumanoidRootPart")
-        if root then DragToward(root) end
-    end
-    FireAbility("Block")
+local function blockDistanceOK(killer)
+    local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    local kr = killer and killer:FindFirstChild("HumanoidRootPart")
+    if not my or not kr then return false end
+    local maxd = Facing.maxDist or 40
+    return (kr.Position - my.Position).Magnitude < maxd
 end
 
 local function isFacingPlayer(killerRoot, myPos)
@@ -438,41 +439,63 @@ local function isFacingPlayer(killerRoot, myPos)
     return look:Dot(toMe.Unit) >= (Facing.dot or 0.25)
 end
 
-local function createSpatialOverlapBox(killerChar, size, onHit)
-    if IsPlayerKiller() or not killerChar or killerChar == LP.Character then return end
-    local root = killerChar:FindFirstChild("HumanoidRootPart") or killerChar:FindFirstChild("RootPart")
+local function FireBlockBuffer(fromRealBlock)
+    if IsPlayerKiller() then return end
+    FireAbility("Block")
+    if fromRealBlock and HDT.enabled then
+        local now = tick()
+        if now - (HDT.lastTrigger or 0) >= (HDT.cooldown or 27) then
+            local k = GetNearestKiller(HDT.range or 30)
+            local root = k and k:FindFirstChild("HumanoidRootPart")
+            if root then
+                HDT.lastTrigger = now
+                DragToward(root)
+            end
+        end
+    end
+end
+
+local function createBlockBox(killer)
+    if IsPlayerKiller() or not killer or killer == LP.Character or not killer.Parent then return end
+    local root = killer:FindFirstChild("HumanoidRootPart") or killer:FindFirstChild("RootPart")
     if not root then return end
     local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if not my then return end
-    if (root.Position - my.Position).Magnitude > (Facing.maxDist or 40) then return end
+    if not blockDistanceOK(killer) then return end
     if Facing.required and not isFacingPlayer(root, my.Position) then return end
 
+    local size = Vector3.new(_G.HitboxWidth or 5, _G.HitboxHeight or 6, _G.HitboxLength or 8)
     local op = OverlapParams.new()
     op.FilterType = Enum.RaycastFilterType.Exclude
-    op.FilterDescendantsInstances = { killerChar }
+    op.FilterDescendantsInstances = { killer }
 
     task.spawn(function()
         local elapsed = 0
-        while killerChar.Parent and root.Parent and elapsed < _G.HitboxDuration do
+        local duration = _G.HitboxDuration or 0.5
+        while killer.Parent and root.Parent and elapsed < duration do
             if IsPlayerKiller() then return end
             local Part = Instance.new("Part")
             Part.Name = "UH_BlockBox"
-            Part.Transparency = _G.ShowHitboxVisual and _G.HitboxTransparency or 1
+            Part.Transparency = _G.ShowHitboxVisual and (_G.HitboxTransparency or 0.5) or 1
             Part.CanCollide = false
             Part.CanTouch = false
             Part.CanQuery = true
             Part.CastShadow = false
             Part.Anchored = true
             Part.Size = size
-            Part.Color = _G.HitboxColor
+            Part.Color = _G.HitboxColor or Orange
             Part.Material = Enum.Material.ForceField
-            Part.CFrame = root.CFrame * CFrame.new(0, 0, _G.HitboxOffset)
+            -- Always in front of killer
+            local look = root.CFrame.LookVector
+            local halfLen = size.Z * 0.5
+            local center = root.Position + look * halfLen
+            Part.CFrame = CFrame.lookAt(center, center + look)
             Part.Parent = Workspace
             if _G.ShowOutline and _G.ShowHitboxVisual then
                 local sb = Instance.new("SelectionBox")
                 sb.Adornee = Part
-                sb.Color3 = _G.HitboxColor
-                sb.LineThickness = _G.OutlineThickness
+                sb.Color3 = Part.Color
+                sb.LineThickness = _G.OutlineThickness or 0.01
                 sb.Transparency = 0.1
                 sb.Parent = Part
             end
@@ -482,8 +505,8 @@ local function createSpatialOverlapBox(killerChar, size, onHit)
                 local hum = model and model:FindFirstChildOfClass("Humanoid")
                 if not hum and v.Parent then hum = v.Parent:FindFirstChildOfClass("Humanoid") end
                 if hum and hum.Health > 0 and Players:GetPlayerFromCharacter(hum.Parent) == LP then
-                    if _G.BlockDelay > 0 then task.wait(_G.BlockDelay) end
-                    if onHit then onHit() end
+                    if (_G.BlockDelay or 0) > 0 then task.wait(_G.BlockDelay) end
+                    FireBlockBuffer(true)
                     return
                 end
             end
@@ -492,148 +515,65 @@ local function createSpatialOverlapBox(killerChar, size, onHit)
     end)
 end
 
-local lastTrigger = 0
-local function triggerBoxCheck(killer)
-    if IsPlayerKiller() or not killer or killer == LP.Character or not killer.Parent then return end
-    local now = tick()
-    if now - lastTrigger < 0.03 then return end
-    lastTrigger = now
-    createSpatialOverlapBox(killer, Vector3.new(_G.HitboxWidth, _G.HitboxHeight, _G.HitboxLength), FireBlockBuffer)
-end
+local blockHookedKillers = {}
+local function hookKillerFiltered(killer)
+    if not killer or blockHookedKillers[killer] or not killer:IsA("Model") then return end
+    if killer == LP.Character then return end
+    blockHookedKillers[killer] = true
 
-local AB_poll = {
-    lastAbility = setmetatable({}, { __mode = "k" }),
-    lastUsed = setmetatable({}, { __mode = "k" }),
-}
-RunService.PreRender:Connect(function()
-    if not _G.AutoBlockEnabled or IsPlayerKiller() then return end
-    local kf = Workspace:FindFirstChild("Players")
-    kf = kf and kf:FindFirstChild("Killers")
-    if not kf then return end
-    for _, k in ipairs(kf:GetChildren()) do
-        if k:IsA("Model") and k ~= LP.Character then
-            local cur = k:GetAttribute("AbilityLastUsed") or 0
-            local prev = AB_poll.lastAbility[k] or 0
-            if cur > prev then
-                AB_poll.lastAbility[k] = cur
-                local curU = k:GetAttribute("AbilitiesUsed") or 0
-                local prevU = AB_poll.lastUsed[k] or 0
-                AB_poll.lastUsed[k] = curU
-                if curU == prevU then triggerBoxCheck(k) end
-            end
-        end
-    end
-end)
-
-local remoteHooked = false
-local function hookAbilityRemote()
-    if remoteHooked then return end
-    remoteHooked = true
-    local remote = getRE()
-    if not remote then return end
-    local function argMatches(arg)
-        if type(arg) == "string" then return shouldBlockAbility(arg) end
-        if typeof(arg) == "buffer" then
-            local ok, str = pcall(buffer.tostring, arg)
-            if ok and str then return shouldBlockAbility(str) end
-        end
-        return false
-    end
-    local function fireOnMatch(...)
-        for _, arg in ipairs({ ... }) do
-            if argMatches(arg) then
-                local kf = Workspace:FindFirstChild("Players")
-                kf = kf and kf:FindFirstChild("Killers")
-                if kf then
-                    for _, k in ipairs(kf:GetChildren()) do
-                        if k:IsA("Model") and k ~= LP.Character then
-                            triggerBoxCheck(k)
-                            return
-                        end
-                    end
-                end
-                return
-            end
-        end
-    end
-    if getconnections then
-        local ok, conns = pcall(getconnections, remote.OnClientEvent)
-        if ok and conns then
-            for _, conn in pairs(conns) do
-                pcall(function()
-                    local orig = conn.Function
-                    if not orig then return end
-                    conn.Function = function(...)
-                        if _G.AutoBlockEnabled and not IsPlayerKiller() then fireOnMatch(...) end
-                        return orig(...)
-                    end
-                end)
-            end
-        end
-    end
-    remote.OnClientEvent:Connect(function(...)
-        if _G.AutoBlockEnabled and not IsPlayerKiller() then fireOnMatch(...) end
-    end)
-end
-
-local hookedKillers, monitoredKillers = {}, {}
-local function hookKillerM1(killer)
-    if not killer or hookedKillers[killer] or not killer:IsA("Model") or killer == LP.Character then return end
-    hookedKillers[killer] = true
     local hum = killer:FindFirstChildOfClass("Humanoid")
     local animator = hum and hum:FindFirstChildOfClass("Animator")
     if animator then
         animator.AnimationPlayed:Connect(function(track)
             if not _G.AutoBlockEnabled or IsPlayerKiller() then return end
             local id = tostring(track.Animation and track.Animation.AnimationId or ""):match("%d+")
-            if id and BLOCK_ANIM_IDS[id] then triggerBoxCheck(killer) end
+            if not id or not BLOCK_ANIM_IDS[id] then return end
+            if not blockDistanceOK(killer) then return end
+            createBlockBox(killer)
         end)
     end
+
     local function hookSound(s)
         if not s:IsA("Sound") then return end
         s.Played:Connect(function()
             if not _G.AutoBlockEnabled or IsPlayerKiller() then return end
             local sid = tostring(s.SoundId):match("%d+")
-            if sid and BLOCK_SOUND_IDS[sid] then triggerBoxCheck(killer) end
+            if not sid or not BLOCK_SOUND_IDS[sid] then return end
+            if not blockDistanceOK(killer) then return end
+            createBlockBox(killer)
         end)
     end
     for _, d in ipairs(killer:GetDescendants()) do hookSound(d) end
-    killer.DescendantAdded:Connect(hookSound)
-end
+    killer.DescendantAdded:Connect(function(d) hookSound(d) end)
 
-local function monitorKiller(killer)
-    if not killer or monitoredKillers[killer] or not killer:IsA("Model") or killer == LP.Character then return end
-    monitoredKillers[killer] = true
-    hookKillerM1(killer)
     local lastAbility = killer:GetAttribute("AbilityLastUsed") or 0
-    local lastUsed = killer:GetAttribute("AbilitiesUsed") or 0
-    local function onNewAbility()
+    local function onAbilityChange()
         if not _G.AutoBlockEnabled or IsPlayerKiller() then return end
-        local name = getAbilityName(killer)
-        if name == nil or shouldBlockAbility(name) then triggerBoxCheck(killer) end
-    end
-    killer:GetAttributeChangedSignal("AbilityLastUsed"):Connect(function()
         local cur = killer:GetAttribute("AbilityLastUsed") or 0
         if cur == lastAbility then return end
         lastAbility = cur
-        local curUsed = killer:GetAttribute("AbilitiesUsed") or 0
-        if curUsed > lastUsed then lastUsed = curUsed; return end
-        onNewAbility()
-    end)
+        local name = getBlockAbilityName(killer)
+        if name and nameMatchesBlock(name) and blockDistanceOK(killer) then
+            createBlockBox(killer)
+        end
+    end
+    killer:GetAttributeChangedSignal("AbilityLastUsed"):Connect(onAbilityChange)
     for _, attr in ipairs({ "AbilityName", "LastAbility", "CurrentAbility", "LastAbilityName" }) do
-        pcall(function() killer:GetAttributeChangedSignal(attr):Connect(onNewAbility) end)
+        pcall(function() killer:GetAttributeChangedSignal(attr):Connect(onAbilityChange) end)
     end
 end
 
 task.spawn(function()
-    while true do
-        task.wait(0.25)
+    while not _ShuttingDown do
+        task.wait(0.5)
         if _G.AutoBlockEnabled and not IsPlayerKiller() then
             local kf = Workspace:FindFirstChild("Players")
             kf = kf and kf:FindFirstChild("Killers")
             if kf then
                 for _, k in ipairs(kf:GetChildren()) do
-                    if k:IsA("Model") and k ~= LP.Character then monitorKiller(k) end
+                    if k:IsA("Model") and k ~= LP.Character then
+                        hookKillerFiltered(k)
+                    end
                 end
             end
         end
@@ -643,12 +583,13 @@ end)
 local function EnableAutoBlock()
     if IsPlayerKiller() then return end
     scanAllKillerAssets()
-    hookAbilityRemote()
     local kf = Workspace:FindFirstChild("Players")
     kf = kf and kf:FindFirstChild("Killers")
     if kf then
         for _, k in ipairs(kf:GetChildren()) do
-            if k:IsA("Model") and k ~= LP.Character then monitorKiller(k) end
+            if k:IsA("Model") and k ~= LP.Character then
+                hookKillerFiltered(k)
+            end
         end
     end
 end
@@ -977,10 +918,37 @@ local function installSilent()
             if old then return old(name, ...) end
         end
     end)
-    Silent.hooked = ok
-    return ok
+    -- namecall fallback
+    if not ok and hookmetamethod and getnamecallmethod then
+        ok = pcall(function()
+            local oldNc
+            oldNc = hookmetamethod(game, "__namecall", function(self, ...)
+                local method = getnamecallmethod()
+                if self == rf and (method == "InvokeServer" or method == "invokeServer") then
+                    -- client invoke is OnClientInvoke; keep namecall for safety
+                end
+                return oldNc(self, ...)
+            end)
+        end)
+    end
+    Silent.hooked = ok and true or false
+    return Silent.hooked
 end
-task.defer(installSilent)
+task.spawn(function()
+    for _ = 1, 20 do
+        if installSilent() then break end
+        task.wait(0.5)
+    end
+end)
+LP.CharacterAdded:Connect(function()
+    Silent.hooked = false
+    task.defer(function()
+        for _ = 1, 10 do
+            if installSilent() then break end
+            task.wait(0.4)
+        end
+    end)
+end)
 
 --=====================================================
 -- ESP
@@ -1234,6 +1202,301 @@ local function installGen()
 end
 
 --=====================================================
+
+--=====================================================
+-- VEE (Veeronica) — from Cursedsaken patterns
+--=====================================================
+local Vee = {
+    AutoTrick = false,
+    SkateControl = false,
+    AntiRebound = false,
+    UnlimitedSk8 = false,
+    Sk8Turn = 6.5,
+    NormalTurn = 0.65,
+    _trickThread = nil,
+    _module = nil,
+}
+
+local function Vee_GetBehavior()
+    if Vee._module then return Vee._module end
+    local ok, mod = pcall(function()
+        local a = ReplicatedStorage:FindFirstChild("Assets")
+        local s = a and a:FindFirstChild("Survivors")
+        local v = s and s:FindFirstChild("Veeronica")
+        local b = v and v:FindFirstChild("Behavior")
+        if b then return require(b) end
+        return nil
+    end)
+    if ok and type(mod) == "table" then
+        Vee._module = mod
+        return mod
+    end
+    return nil
+end
+
+local function Vee_PatchTurn(value)
+    local mod = Vee_GetBehavior()
+    if mod then
+        pcall(function() mod.Sk8TurnControl = value end)
+    end
+    if getgc then
+        for _, t in pairs(getgc(true)) do
+            if type(t) == "table" then
+                if rawget(t, "Sk8TurnControl") ~= nil then
+                    pcall(function() t.Sk8TurnControl = value end)
+                end
+                if rawget(t, "DisplayName") == "Veeronica" and rawget(t, "Sk8TurnControl") ~= nil then
+                    pcall(function() t.Sk8TurnControl = value end)
+                end
+            end
+        end
+    end
+end
+
+local function Vee_IsSkating()
+    local char = LP.Character
+    if not char then return false end
+    if char:GetAttribute("IsSkating") == true then return true end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local anim = hum and hum:FindFirstChildOfClass("Animator")
+    if not anim then return false end
+    for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+        local name = track.Name or ""
+        local id = tostring(track.Animation and track.Animation.AnimationId or "")
+        if name:lower():find("sk8") or name:lower():find("skate") or id:find("Sk8") then
+            return true
+        end
+    end
+    return false
+end
+
+local function Vee_DoTrick()
+    local vim = game:GetService("VirtualInputManager")
+    if not UIS.TouchEnabled or UIS.MouseEnabled then
+        vim:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+        task.wait(0.05)
+        vim:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+    else
+        local pg = LP:FindFirstChild("PlayerGui")
+        local main = pg and pg:FindFirstChild("MainUI")
+        local btn = main and main:FindFirstChild("SprintingButton")
+        if btn and getconnections then
+            for _, c in pairs(getconnections(btn.MouseButton1Down) or {}) do pcall(function() c:Fire() end) end
+            task.wait(0.05)
+            for _, c in pairs(getconnections(btn.MouseButton1Up) or {}) do pcall(function() c:Fire() end) end
+            for _, c in pairs(getconnections(btn.Activated) or {}) do pcall(function() c:Fire() end) end
+        end
+    end
+end
+
+local function Vee_StartAutoTrick()
+    if Vee._trickThread then
+        pcall(task.cancel, Vee._trickThread)
+        Vee._trickThread = nil
+    end
+    if not Vee.AutoTrick then return end
+    Vee._trickThread = task.spawn(function()
+        while Vee.AutoTrick do
+            if Vee_IsSkating() and not IsPlayerKiller() then
+                pcall(Vee_DoTrick)
+            end
+            task.wait(0.35)
+        end
+    end)
+end
+
+local function Vee_ApplyUnlimited()
+    if not Vee.UnlimitedSk8 then return end
+    local mod = Vee_GetBehavior()
+    if mod then
+        pcall(function()
+            if mod.Sk8StaminaCost ~= nil then mod.Sk8StaminaCost = 0 end
+            if mod.StaminaCost ~= nil then mod.StaminaCost = 0 end
+        end)
+    end
+    if getgc then
+        for _, t in pairs(getgc(true)) do
+            if type(t) == "table" and rawget(t, "DisplayName") == "Veeronica" then
+                pcall(function()
+                    if t.Sk8StaminaCost ~= nil then t.Sk8StaminaCost = 0 end
+                end)
+            end
+        end
+    end
+end
+
+RunService.Heartbeat:Connect(function()
+    if Vee.UnlimitedSk8 then Vee_ApplyUnlimited() end
+    if Vee.SkateControl then Vee_PatchTurn(Vee.Sk8Turn) end
+end)
+
+--=====================================================
+-- KILLER FEATURES (Cursedsaken-style)
+--=====================================================
+local KillerF = {
+    AutoM1 = false,
+    FacingCheck = false,
+    AutoLock = false,
+    AimMethod = "HRP",
+    LockDuration = 0.7,
+    Smoothness = 0.05,
+    Prediction = 0.1,
+    Distance = 15,
+    AutoDodge = false,
+    DodgeRadius = 18,
+    DodgeCooldown = 0.8,
+    lastDodge = 0,
+    HitboxExpander = false,
+    HitboxDistance = 10,
+    HitboxMode = "Distance",
+    lastM1 = 0,
+    m1Cooldown = 0.45,
+}
+
+local function Killer_GetNearestSurvivor(maxDist)
+    local char = LP.Character
+    local my = char and char:FindFirstChild("HumanoidRootPart")
+    if not my then return nil end
+    local sf = Workspace:FindFirstChild("Players")
+    sf = sf and sf:FindFirstChild("Survivors")
+    if not sf then return nil end
+    local best, bd = nil, maxDist or math.huge
+    for _, m in ipairs(sf:GetChildren()) do
+        if m:IsA("Model") and m ~= char then
+            local r = m:FindFirstChild("HumanoidRootPart")
+            local h = m:FindFirstChildOfClass("Humanoid")
+            if r and h and h.Health > 0 then
+                local d = (r.Position - my.Position).Magnitude
+                if d < bd then bd = d; best = m end
+            end
+        end
+    end
+    return best, bd
+end
+
+local function Killer_IsFacing(myRoot, targetPos)
+    local look = myRoot.CFrame.LookVector
+    local to = Vector3.new(targetPos.X - myRoot.Position.X, 0, targetPos.Z - myRoot.Position.Z)
+    if to.Magnitude < 0.01 then return true end
+    return look:Dot(to.Unit) >= 0.35
+end
+
+local function Killer_AimAt(targetRoot, duration)
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not targetRoot then return end
+    local t0 = os.clock()
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        if os.clock() - t0 > (duration or 0.7) or not targetRoot.Parent then
+            if conn then conn:Disconnect() end
+            return
+        end
+        if not hrp.Parent then return end
+        local pos = targetRoot.Position + targetRoot.AssemblyLinearVelocity * (KillerF.Prediction or 0.1)
+        local flat = Vector3.new(pos.X, hrp.Position.Y, pos.Z)
+        local method = KillerF.AimMethod or "HRP"
+        if method == "HRP" or method == "HRP + Camera Lock" then
+            if (flat - hrp.Position).Magnitude > 0.05 then
+                hrp.CFrame = hrp.CFrame:Lerp(CFrame.lookAt(hrp.Position, flat), KillerF.Smoothness or 0.05)
+            end
+        end
+        if method == "Camera Lock" or method == "HRP + Camera Lock" then
+            local cam = Workspace.CurrentCamera
+            if cam then
+                cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, pos), KillerF.Smoothness or 0.05)
+            end
+        end
+    end)
+end
+
+local function Killer_FireM1()
+    FireAbility("Slash")
+    FireAbility("Punch")
+    FireAbility("M1")
+    FireAbility("Attack")
+end
+
+RunService.Heartbeat:Connect(function()
+    if not KillerF.AutoM1 or not IsPlayerKiller() then return end
+    local now = tick()
+    if now - (KillerF.lastM1 or 0) < (KillerF.m1Cooldown or 0.45) then return end
+    local target, dist = Killer_GetNearestSurvivor(KillerF.Distance or 15)
+    if not target then return end
+    local my = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    local tr = target:FindFirstChild("HumanoidRootPart")
+    if not my or not tr then return end
+    if KillerF.FacingCheck and not Killer_IsFacing(my, tr.Position) then return end
+    KillerF.lastM1 = now
+    if KillerF.AutoLock then
+        Killer_AimAt(tr, KillerF.LockDuration or 0.7)
+    end
+    Killer_FireM1()
+end)
+
+-- Auto Raging Pace / 404 on stun sounds nearby
+local DODGE_BUFFERS = {
+    ["John Doe"] = "\3\8\0\0\000404Error",
+    ["JohnDoe"] = "\3\8\0\0\000404Error",
+    ["Slasher"] = "\3\n\0\0\0RagingPace",
+    ["Jason"] = "\3\n\0\0\0RagingPace",
+}
+
+local function Killer_TryDodge()
+    if not KillerF.AutoDodge or not IsPlayerKiller() then return end
+    local now = tick()
+    if now - (KillerF.lastDodge or 0) < (KillerF.DodgeCooldown or 0.8) then return end
+    local char = LP.Character
+    if not char then return end
+    local name = char:GetAttribute("CharacterName") or char.Name
+    local buf = DODGE_BUFFERS[name]
+    local re = getRE()
+    if not re then return end
+    KillerF.lastDodge = now
+    if buf then
+        pcall(function() re:FireServer("UseActorAbility", { buffer.fromstring(buf) }) end)
+    end
+    FireAbility("RagingPace")
+    FireAbility("404Error")
+end
+
+-- simple proximity stun watch: if survivor near and we hear attack-ish, dodge
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        if KillerF.AutoDodge and IsPlayerKiller() then
+            local t, d = Killer_GetNearestSurvivor(KillerF.DodgeRadius or 18)
+            if t and d and d <= (KillerF.DodgeRadius or 18) then
+                -- passive: only auto when very close during survivor stun windows is hard without sound table
+                -- leave manual + close-range optional fire disabled to avoid spam
+            end
+        end
+    end
+end)
+
+-- Hitbox expander visual assist (client-side part size boost on nearest)
+local expandedParts = {}
+RunService.Heartbeat:Connect(function()
+    if not KillerF.HitboxExpander or not IsPlayerKiller() then
+        for part, old in pairs(expandedParts) do
+            if part and part.Parent then pcall(function() part.Size = old end) end
+        end
+        table.clear(expandedParts)
+        return
+    end
+    local target = select(1, Killer_GetNearestSurvivor(KillerF.HitboxDistance or 10))
+    if not target then return end
+    for _, d in ipairs(target:GetDescendants()) do
+        if d:IsA("BasePart") and (d.Name == "HumanoidRootPart" or d.Name == "Head" or d.Name == "Torso" or d.Name == "UpperTorso") then
+            if not expandedParts[d] then
+                expandedParts[d] = d.Size
+                pcall(function() d.Size = d.Size + Vector3.new(2, 2, 2) end)
+            end
+        end
+    end
+end)
+
+
 --=====================================================
 -- WIRE UI (WindUI) — correct API
 -- Slider Value = { Min, Max, Default }
@@ -1281,9 +1544,9 @@ do
     end })
 end
 
--- AIM
+-- AIM (SyncSaken style)
 do
-    local s = Sec(Tabs.Aim, "Aimbot")
+    local s = Sec(Tabs.Aim, "Global")
     s:Toggle({ Title = "Enable Aimbot", Value = false, Callback = function(v)
         if v and IsPlayerKiller() then return end
         getgenv().GlobalAimbotToggle = v
@@ -1304,36 +1567,69 @@ do
     })
     s:Slider({ Title = "Velocity Prediction", Step = 0.1, Value = { Min = 0, Max = 3, Default = 1 }, Callback = function(v) AimCore.prediction = v end })
     s:Slider({ Title = "Easing", Step = 0.05, Value = { Min = 0.1, Max = 1, Default = 0.8 }, Callback = function(v) AimCore.easing = v end })
-    local p = Sec(Tabs.Aim, "Per Survivor")
+
+    -- Per survivor like SyncSaken
     for _, key in ipairs({ "Guest1337", "Shedlekey", "TwoTime", "Chance", "JaneDoe" }) do
-        p:Toggle({
-            Title = key,
+        local sec = Sec(Tabs.Aim, key)
+        sec:Toggle({
+            Title = "Enable " .. key,
             Value = getgenv().AimbotValues[key].Enabled,
             Callback = function(v)
                 if getgenv().AimbotValues[key] then getgenv().AimbotValues[key].Enabled = v end
             end,
         })
-    end
-    local d = Sec(Tabs.Aim, "Durations")
-    for _, key in ipairs({ "Guest1337", "Shedlekey", "TwoTime", "Chance" }) do
-        d:Slider({
-            Title = key .. " Duration",
+        sec:Slider({
+            Title = "Distance",
+            Step = 1,
+            Value = { Min = 10, Max = 120, Default = getgenv().AimbotValues[key].Distance or 50 },
+            Callback = function(v) getgenv().AimbotValues[key].Distance = v end,
+        })
+        sec:Slider({
+            Title = "Lock Duration",
             Step = 0.1,
             Value = { Min = 0.1, Max = 3, Default = getgenv().AimbotValues[key].LockDuration or 1 },
             Callback = function(v) getgenv().AimbotValues[key].LockDuration = v end,
         })
+        sec:Slider({
+            Title = "Prediction",
+            Step = 0.5,
+            Value = { Min = 0, Max = 10, Default = getgenv().AimbotValues[key].Prediction or 0 },
+            Callback = function(v) getgenv().AimbotValues[key].Prediction = v end,
+        })
     end
 end
 
--- SILENT AIM
+-- SILENT AIM (SyncSaken style)
 do
-    local c = Sec(Tabs["Silent Aim"], "Crystal Pinch")
-    c:Toggle({ Title = "Crystal Silent Aim", Value = false, Callback = function(v) Silent.crystal = v; if v then installSilent() end end })
-    c:Slider({ Title = "Crystal Prediction", Step = 0.1, Value = { Min = 0, Max = 10, Default = 2.5 }, Callback = function(v) Silent.crystalPred = v end })
-    c:Slider({ Title = "Crystal Y Offset", Step = 0.1, Value = { Min = -2, Max = 5, Default = 1.5 }, Callback = function(v) Silent.crystalY = v end })
-    local d = Sec(Tabs["Silent Aim"], "Dusekkar")
-    d:Toggle({ Title = "Dusekkar Silent Aim", Value = false, Callback = function(v) Silent.dusk = v; if v then installSilent() end end })
-    d:Slider({ Title = "Dusekkar Prediction", Step = 0.1, Value = { Min = 0, Max = 5, Default = 0.5 }, Callback = function(v) Silent.duskPred = v end })
+    local c = Sec(Tabs["Silent Aim"], "Crystal (Camera CF)")
+    c:Toggle({ Title = "Enable Crystal Silent", Value = false, Callback = function(v)
+        Silent.crystal = v
+        if v then
+            Silent.hooked = false
+            installSilent()
+        end
+    end })
+    c:Slider({ Title = "Prediction", Step = 0.1, Value = { Min = 0, Max = 10, Default = 2.5 }, Callback = function(v) Silent.crystalPred = v end })
+    c:Slider({ Title = "Y Offset", Step = 0.1, Value = { Min = -2, Max = 5, Default = 1.5 }, Callback = function(v) Silent.crystalY = v end })
+    local d = Sec(Tabs["Silent Aim"], "Dusekkar (Mouse Pos)")
+    d:Toggle({ Title = "Enable Dusekkar Silent", Value = false, Callback = function(v)
+        Silent.dusk = v
+        if v then
+            Silent.hooked = false
+            installSilent()
+        end
+    end })
+    d:Slider({ Title = "Prediction", Step = 0.1, Value = { Min = 0, Max = 5, Default = 0.5 }, Callback = function(v) Silent.duskPred = v end })
+    local f = Sec(Tabs["Silent Aim"], "Fix")
+    f:Button({ Title = "Reinstall Silent Hooks", Callback = function()
+        Silent.hooked = false
+        local ok = installSilent()
+        WindUI:Notify({
+            Title = HubName,
+            Content = ok and "Silent aim hooks installed" or "Failed — try again in round",
+            Duration = 3,
+        })
+    end })
 end
 
 -- AUTO BLOCK
@@ -1358,7 +1654,6 @@ do
     h:Slider({ Title = "Width", Step = 1, Value = { Min = 1, Max = 30, Default = 5 }, Callback = function(v) _G.HitboxWidth = v end })
     h:Slider({ Title = "Height", Step = 1, Value = { Min = 1, Max = 30, Default = 6 }, Callback = function(v) _G.HitboxHeight = v end })
     h:Slider({ Title = "Length", Step = 1, Value = { Min = 1, Max = 40, Default = 8 }, Callback = function(v) _G.HitboxLength = v end })
-    h:Slider({ Title = "Offset Z", Step = 1, Value = { Min = -15, Max = 5, Default = -1 }, Callback = function(v) _G.HitboxOffset = v end })
     h:Slider({ Title = "Duration", Step = 0.05, Value = { Min = 0.1, Max = 5, Default = 0.5 }, Callback = function(v) _G.HitboxDuration = v end })
     h:Slider({ Title = "Block Delay", Step = 0.05, Value = { Min = 0, Max = 1, Default = 0 }, Callback = function(v) _G.BlockDelay = v end })
     h:Slider({ Title = "Transparency", Step = 0.05, Value = { Min = 0, Max = 1, Default = 0.5 }, Callback = function(v) _G.HitboxTransparency = v end })
@@ -1429,11 +1724,81 @@ do
     end })
 end
 
+-- VEE
+do
+    local s = Sec(Tabs.Vee, "Veeronica")
+    s:Toggle({ Title = "Auto Trick", Value = false, Callback = function(v)
+        Vee.AutoTrick = v
+        Vee_StartAutoTrick()
+    end })
+    s:Toggle({ Title = "Skate Control", Value = false, Callback = function(v)
+        Vee.SkateControl = v
+        Vee_PatchTurn(v and Vee.Sk8Turn or Vee.NormalTurn)
+    end })
+    s:Slider({
+        Title = "Skate Turn Strength",
+        Step = 0.1,
+        Value = { Min = 0.5, Max = 12, Default = 6.5 },
+        Callback = function(v)
+            Vee.Sk8Turn = v
+            if Vee.SkateControl then Vee_PatchTurn(v) end
+        end,
+    })
+    s:Toggle({ Title = "Unlimited Sk8", Value = false, Callback = function(v)
+        Vee.UnlimitedSk8 = v
+        if v then Vee_ApplyUnlimited() end
+    end })
+    s:Toggle({ Title = "Anti Rebound", Value = false, Callback = function(v)
+        Vee.AntiRebound = v
+    end })
+    s:Button({ Title = "Force Trick", Callback = function() Vee_DoTrick() end })
+end
+
 -- KILLER
 do
-    local s = Sec(Tabs.Killer, "Combat")
-    s:Button({ Title = "Force Punch", Callback = function() FireAbility("Punch") end })
-    s:Button({ Title = "Force Block", Callback = function() FireBlockBuffer() end })
+    local s = Sec(Tabs.Killer, "Auto M1")
+    s:Toggle({ Title = "Enable Auto M1", Value = false, Callback = function(v)
+        KillerF.AutoM1 = v
+    end })
+    s:Toggle({ Title = "Facing Check", Value = false, Callback = function(v) KillerF.FacingCheck = v end })
+    s:Toggle({ Title = "Auto Lock (On Attack)", Value = false, Callback = function(v) KillerF.AutoLock = v end })
+    s:Dropdown({
+        Title = "Aim Method",
+        Values = { "HRP", "Camera Lock", "HRP + Camera Lock" },
+        Value = "HRP",
+        Callback = function(v)
+            if type(v) == "table" then v = v[1] end
+            KillerF.AimMethod = v
+        end,
+    })
+    s:Slider({ Title = "Aim Lock Duration", Step = 0.1, Value = { Min = 0.1, Max = 3, Default = 0.7 }, Callback = function(v) KillerF.LockDuration = v end })
+    s:Slider({ Title = "Aim Smoothness", Step = 0.01, Value = { Min = 0.01, Max = 0.15, Default = 0.05 }, Callback = function(v) KillerF.Smoothness = v end })
+    s:Slider({ Title = "Auto Lock Prediction", Step = 0.05, Value = { Min = 0, Max = 1, Default = 0.1 }, Callback = function(v) KillerF.Prediction = v end })
+    s:Slider({ Title = "Attack Distance", Step = 1, Value = { Min = 5, Max = 30, Default = 15 }, Callback = function(v) KillerF.Distance = v end })
+
+    local d = Sec(Tabs.Killer, "Auto Dodge")
+    d:Toggle({ Title = "Auto Raging Pace / 404", Value = false, Callback = function(v) KillerF.AutoDodge = v end })
+    d:Slider({ Title = "Dodge Radius", Step = 1, Value = { Min = 5, Max = 40, Default = 18 }, Callback = function(v) KillerF.DodgeRadius = v end })
+    d:Slider({ Title = "Dodge Cooldown", Step = 0.1, Value = { Min = 0.2, Max = 3, Default = 0.8 }, Callback = function(v) KillerF.DodgeCooldown = v end })
+    d:Button({ Title = "Force Dodge", Callback = function() Killer_TryDodge() end })
+
+    local h = Sec(Tabs.Killer, "Hitbox Expander")
+    h:Toggle({ Title = "Enable Hitbox Expander", Value = false, Callback = function(v) KillerF.HitboxExpander = v end })
+    h:Dropdown({
+        Title = "Target Priority",
+        Values = { "Distance", "Lowest HP" },
+        Value = "Distance",
+        Callback = function(v)
+            if type(v) == "table" then v = v[1] end
+            KillerF.HitboxMode = v
+        end,
+    })
+    h:Slider({ Title = "Hitbox Distance", Step = 1, Value = { Min = 1, Max = 50, Default = 10 }, Callback = function(v) KillerF.HitboxDistance = v end })
+
+    local c = Sec(Tabs.Killer, "Combat")
+    c:Button({ Title = "Force Punch", Callback = function() FireAbility("Punch") end })
+    c:Button({ Title = "Force Slash", Callback = function() FireAbility("Slash") end })
+    c:Button({ Title = "Force Block", Callback = function() FireBlockBuffer() end })
 end
 
 WindUI:Notify({
