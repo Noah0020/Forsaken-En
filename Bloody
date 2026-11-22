@@ -52,7 +52,7 @@ local DOGGYSAKNE_DEFAULTS = {
     ESP_Survivor=false, ESP_Killer=false, ESP_Generator=false, ESP_Spray=false,
     ESP_ExtendedMinion=false, ESP_ExtendedTrap=false, ESP_ExtendedItem=false, ESP_JaneQuest=false,
     CustomDiamondLength=8, CustomDiamondWidth=4, CustomDiamondOffset=0,
-    AntiBaitRange=15, AntiBaitFacingDot=0.3, HitboxDistance=3, HitboxMultiplier=1,
+    AntiBaitRange=15, AntiBaitFacingDot=0.3, FacingCheckEnabled=false, HitboxDistance=3, HitboxMultiplier=1,
     RectangleDistance=3, RectangleMultiplier=1, HDTDelay=0.05, HDTDuration=0.6, PunchDelay=0.5,
     ABMode="Guest1337", CustomABMode="Guest1337", RectangleABMode="Guest1337",
 }
@@ -415,7 +415,7 @@ function FireAbilityByMode(skipSafety, forcedKiller)
         if _IsKillerSpinning(killer) then return end
     end
     if Settings.WallCheckEnabled and killer and killerRoot and myRoot and myChar then if IsWallBetween(myRoot, killerRoot, myChar, killer) then return end end
-    if Settings.FacingCheckEnabled and killer and killerRoot and myRoot then if not PassesFacingCheck(myRoot, killerRoot) then return end end
+    if mode == "hitbox" and Settings.FacingCheckEnabled and killer and killerRoot and myRoot then if not PassesFacingCheck(myRoot, killerRoot) then return end end
     if mode == "hitbox" then if Settings.RectangleABMode == "007n7" then FireClone() else FireBlock() end
     elseif mode == "zone" then if Settings.CustomABMode == "007n7" then FireClone() else FireBlock() end
     else if Settings.ABMode == "007n7" then FireClone() else FireBlock() end end
@@ -2238,7 +2238,7 @@ local Window = ObsidianLibrary:CreateWindow({
     Size = UDim2.fromOffset(680, 520),
     MinContainerWidth = 250,
     Center = true,
-    AutoShow = true,
+    AutoShow = false,
     Resizable = true,
     AlwaysOnTop = false,
     ShowCustomCursor = false,
@@ -2299,19 +2299,19 @@ local Tabs = {
     Settings = Window:AddTab("Settings", "settings"),
 }
 
--- Obsidian normally lays groupboxes out in two columns. On narrow/mobile screens,
--- expand its own left scrolling column to full width and hide the unused right one.
-local currentCamera = workspace.CurrentCamera
-local useSingleColumn = ObsidianLibrary.IsMobile == true
-    or (currentCamera and currentCamera.ViewportSize.X <= 700)
-if useSingleColumn then
-    for _, tab in pairs(Tabs) do
-        local leftSide, rightSide = tab.Sides[1], tab.Sides[2]
-        if leftSide then leftSide.Size = UDim2.new(1, -4, 1, 0) end
-        if rightSide then
-            rightSide.Visible = false
-            rightSide.Size = UDim2.new(0, 0, 1, 0)
-        end
+-- Keep Obsidian's normal two-column layout on desktop and mobile.
+-- Each tab retains its own independently scrollable left and right columns.
+for _, tab in pairs(Tabs) do
+    local leftSide, rightSide = tab.Sides[1], tab.Sides[2]
+    if leftSide then
+        leftSide.Visible = true
+        leftSide.Size = UDim2.new(0.5, -3, 1, 0)
+    end
+    if rightSide then
+        rightSide.Visible = true
+        rightSide.AnchorPoint = Vector2.new(1, 0)
+        rightSide.Position = UDim2.fromScale(1, 0)
+        rightSide.Size = UDim2.new(0.5, -3, 1, 0)
     end
 end
 
@@ -2323,7 +2323,6 @@ local function safeCall(fn, ...)
 end
 
 local function addGroup(tab, side, name, description, icon)
-    if useSingleColumn then side = "Left" end
     return tab:AddGroupbox({
         Side = side,
         Name = name,
@@ -2389,7 +2388,7 @@ end
 -- ================================================================
 local BlockModes = addGroup(Tabs.Combat, "Left", "Block Modes", "Choose one blocking mode at a time", "shield")
 local BlockConfig = addGroup(Tabs.Combat, "Right", "Block Configuration", "Adjust detection and hitbox settings", "sliders-horizontal")
-local Movement = addGroup(Tabs.Combat, "Right", "Movement & Stamina", "HDT, stamina and punch options", "activity")
+local Movement = addGroup(Tabs.Combat, "Left", "Movement & Stamina", "HDT, stamina and punch options", "activity")
 
 local blockSettingKeys = {
     Default = "AutoBlock",
@@ -2479,12 +2478,9 @@ addSlider(BlockConfig, "Doggysaken_FacingThreshold", "Facing threshold", "AntiBa
 addSlider(BlockConfig, "Doggysaken_CustomZoneLength", "Custom zone length", "CustomDiamondLength", 2, 30, 1, updateActiveBlock)
 addSlider(BlockConfig, "Doggysaken_CustomZoneWidth", "Custom zone width", "CustomDiamondWidth", 1, 20, 1, updateActiveBlock)
 addSlider(BlockConfig, "Doggysaken_CustomZoneOffset", "Custom zone offset", "CustomDiamondOffset", -10, 15, 1, updateActiveBlock)
-addSlider(BlockConfig, "Doggysaken_RectangleDistance", "Rectangle distance", "HitboxDistance", 0, 15, 2, function(value)
-    Settings.RectangleDistance = value
-end)
-addSlider(BlockConfig, "Doggysaken_RectangleMultiplier", "Rectangle multiplier", "HitboxMultiplier", 0.1, 3, 1, function(value)
-    Settings.RectangleMultiplier = value
-end)
+addToggle(BlockConfig, "Doggysaken_HitboxFacingCheck", "Hitbox Facing Check", Settings.FacingCheckEnabled, function(value)
+    Settings.FacingCheckEnabled = value
+end, "Only accept a hitbox block when the killer is facing your character")
 
 addToggle(Movement, "Doggysaken_HDT", "HDT", Settings.HDTEnabled, function(value)
     Settings.HDTEnabled = value
@@ -2622,12 +2618,13 @@ end, "Turns off every extended ESP overlay")
 -- ================================================================
 -- AUTOMATION
 -- ================================================================
-local Minigames = addGroup(Tabs.Automation, "Left", "Character Minigames", "Start and stop the available QTE helpers", "gamepad-2")
-addToggle(Minigames, "Doggysaken_AzureMinigame", "Azure Auto Minigame", Settings.AzureMinigame, function(value)
+local AzureAutomation = addGroup(Tabs.Automation, "Left", "Azure Minigame", "Azure character QTE helper", "gamepad-2")
+local NosferatuAutomation = addGroup(Tabs.Automation, "Right", "Nosferatu Minigame", "Nosferatu character QTE helper", "gamepad-2")
+addToggle(AzureAutomation, "Doggysaken_AzureMinigame", "Azure Auto Minigame", Settings.AzureMinigame, function(value)
     Settings.AzureMinigame = value
     if value then safeCall(StartAzureMinigame) else safeCall(StopAzureMinigame) end
 end)
-addToggle(Minigames, "Doggysaken_NosferatuMinigame", "Nosferatu Auto Minigame", Settings.NosferatuMinigame, function(value)
+addToggle(NosferatuAutomation, "Doggysaken_NosferatuMinigame", "Nosferatu Auto Minigame", Settings.NosferatuMinigame, function(value)
     Settings.NosferatuMinigame = value
     if value then safeCall(StartNosferatuMinigame) else safeCall(StopNosferatuMinigame) end
 end)
@@ -2772,10 +2769,61 @@ Info:AddLabel("Official Obsidian UI Library", true)
 Info:AddLabel("Gold accent  •  Obsidian dark theme", true)
 Info:AddLabel("Logo asset: " .. tostring(DOGGYSAKEN_LOGO_ID), true)
 
+-- Feature definitions and their controller tables are all created before this point.
+-- Check the feature entry points before making the UI visible; this does not turn
+-- gameplay features on automatically.
+local FeatureReadiness = {
+    ["Auto Block"] = type(StartAutoBlock) == "function" and type(StopAutoBlock) == "function",
+    ["HDT"] = type(HDT_StartWatcher) == "function" and type(HDT_StopWatcher) == "function",
+    ["Stamina"] = type(SetDoggysakneStamina) == "function",
+    ["Candy ESP"] = type(StartCandyESP) == "function" and type(StopCandyESP) == "function",
+    ["Gear ESP"] = type(StartGearESP) == "function" and type(StopGearESP) == "function",
+    ["Item ESP"] = type(StartItemESP) == "function" and type(StopItemESP) == "function",
+    ["Trap ESP"] = type(StartAzureTrapESP) == "function" and type(StopAzureTrapESP) == "function",
+    ["Minion ESP"] = type(StartMinionESP) == "function" and type(StopMinionESP) == "function",
+    ["Map ESP"] = type(StartMapESP) == "function" and type(StopMapESP) == "function",
+    ["Azure Automation"] = type(StartAzureMinigame) == "function" and type(StopAzureMinigame) == "function",
+    ["Nosferatu Automation"] = type(StartNosferatuMinigame) == "function" and type(StopNosferatuMinigame) == "function",
+    ["Character Lock"] = type(GH_Aimbot_Start) == "function" and type(GH_Aimbot_Stop) == "function",
+    ["Extended ESP"] = type(DoggysakneESP) == "table" and type(DoggysakneESP.SetEnabled) == "function",
+}
+local readyCount, featureCount = 0, 0
+local missingFeatures = {}
+for featureName, isReady in pairs(FeatureReadiness) do
+    featureCount += 1
+    if isReady then
+        readyCount += 1
+    else
+        table.insert(missingFeatures, featureName)
+        warn("[Doggysaken] Feature not ready: " .. featureName)
+    end
+end
+
 -- Keep a reference for safe reloads and let Obsidian own its ScreenGui lifecycle.
 UIEnv.DoggysakenObsidian = ObsidianLibrary
 
-print("[Doggysaken] Loaded with the official Obsidian UI library")
+-- All tabs, groupboxes, controls and feature callbacks are now built. Only now
+-- reveal the finished UI and display the branded completion notification.
+ObsidianLibrary:Toggle(true)
+if readyCount == featureCount then
+    ObsidianLibrary:Notify({
+        Title = "Doggysaken was loaded successfully",
+        Description = string.format("All %d feature systems are ready.", featureCount),
+        BigIcon = DOGGYSAKEN_LOGO,
+        IconColor = GOLD_BRIGHT,
+        Time = 6,
+    })
+    print("[Doggysaken] Loaded successfully: " .. readyCount .. "/" .. featureCount .. " feature systems")
+else
+    ObsidianLibrary:Notify({
+        Title = "Doggysaken loaded with warnings",
+        Description = string.format("%d/%d feature systems are ready. Check the console for missing features.", readyCount, featureCount),
+        BigIcon = DOGGYSAKEN_LOGO,
+        IconColor = GOLD_BRIGHT,
+        Time = 8,
+    })
+    warn("[Doggysaken] Feature readiness: " .. readyCount .. "/" .. featureCount .. ". Missing: " .. table.concat(missingFeatures, ", "))
+end
 
 -- Best-effort cleanup hook for script reloads.
 function DoggysakneCleanup()
