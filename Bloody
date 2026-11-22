@@ -54,6 +54,9 @@ local DOGGYSAKNE_DEFAULTS = {
     CustomDiamondLength=8, CustomDiamondWidth=4, CustomDiamondOffset=0,
     AntiBaitRange=15, AntiBaitFacingDot=0.3, FacingCheckEnabled=false, HitboxDistance=3, HitboxMultiplier=1,
     RectangleDistance=3, RectangleMultiplier=1, HDTDelay=0.05, HDTDuration=0.6, PunchDelay=0.5,
+    ShowHitboxVisual=true, ShowOutline=true, DoggysakenHitboxVisualConfigured=false,
+    HitboxTransparency=0.64, OutlineTransparency=0.12,
+    HitboxColor=Color3.fromRGB(255, 170, 55),
     ABMode="Guest1337", CustomABMode="Guest1337", RectangleABMode="Guest1337",
 }
 for key, value in pairs(DOGGYSAKNE_DEFAULTS) do
@@ -66,6 +69,14 @@ for key, value in pairs(DOGGYSAKNE_DEFAULTS) do
             Settings[key] = value
         end
     end
+end
+
+-- One-time migration: previous Doggysaken builds had no hitbox visual toggle,
+-- so any stale false value should not silently keep the new visual invisible.
+if not Settings.DoggysakenHitboxVisualConfigured then
+    Settings.ShowHitboxVisual = true
+    Settings.ShowOutline = true
+    Settings.DoggysakenHitboxVisualConfigured = true
 end
 
 -- Resolve the ability remote only when the user's main script has not supplied one.
@@ -423,7 +434,7 @@ end
 function ClearABHitboxSpam()
     pcall(function()
         for _, o in ipairs(Workspace:GetChildren()) do
-            if o:IsA("Part") and (o.Name == "AutoBlockHitbox_Frame" or o.Name == "AutoBlockHitbox_Green") then
+            if o:IsA("Part") and (o.Name == "AutoBlockHitbox_Frame" or o.Name == "AutoBlockHitbox_Query" or o.Name == "AutoBlockHitbox_Green") then
                 pcall(function() o:Destroy() end)
             end
         end
@@ -656,6 +667,11 @@ local function NS_makeHitboxAndCheck(killerModel, onDetected)
     if not killerModel or not killerModel.Parent then return end
     local killerRoot = killerModel:FindFirstChild("HumanoidRootPart") or killerModel:FindFirstChild("RootPart")
     if not killerRoot then return end
+    if Settings.FacingCheckEnabled then
+        local myCharacter = LocalPlayer.Character
+        local myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
+        if not myRoot or not PassesFacingCheck(myRoot, killerRoot) then return end
+    end
     local hbCfg = NS_getKillerHitbox(killerModel.Name)
     -- [v1.6 FIX] đọc HitboxMultiplier alias
     local m = Settings.HitboxMultiplier or Settings.RectangleMultiplier or 1
@@ -678,22 +694,16 @@ local function NS_makeHitboxAndCheck(killerModel, onDetected)
             -- [v1.6 FIX] đọc HitboxDistance alias trước
             local distVal = hbCfg.distance or Settings.HitboxDistance or Settings.RectangleDistance or 3
             local frozenCFrame = ckr.CFrame * CFrame.new(0,0,-distVal)
+            -- This is the invisible overlap-query volume. The visible box is
+            -- drawn independently by NS_UpdateHitboxVisuals so it stays on screen
+            -- instead of flashing for only a fraction of an attack window.
             local hb = Instance.new("Part")
-            hb.Name = "AutoBlockHitbox_Frame"
-            hb.Transparency = Settings.ShowHitboxVisual and Settings.HitboxTransparency or 1
+            hb.Name = "AutoBlockHitbox_Query"
+            hb.Transparency = 1
             hb.CanCollide = false; hb.CanTouch = false; hb.CanQuery = false
             hb.CastShadow = false; hb.Anchored = true
-            hb.Size = size; hb.Color = ParseColor(Settings.HitboxColor, 255, 255, 255)
-            hb.Material = Enum.Material.ForceField
+            hb.Size = size
             hb.CFrame = frozenCFrame; hb.Parent = Workspace
-            local sb
-            if Settings.ShowOutline and Settings.ShowHitboxVisual then
-                sb = Instance.new("SelectionBox")
-                sb.Adornee = hb; sb.Color3 = ParseColor(Settings.HitboxColor, 255, 255, 255)
-                sb.LineThickness = 0.04
-                sb.Transparency = Settings.OutlineTransparency or 0.6
-                sb.Visible = true; sb.Parent = hb
-            end
             Debris:AddItem(hb, hbCfg.life)
             local found = false
             for _, part in ipairs(workspace:GetPartsInPart(hb, op)) do
@@ -740,13 +750,123 @@ local function NS_checkKillerAttackC00l()
     end
 end
 
+-- Persistent hitbox renderer. It follows every live killer while the
+-- rectangle block mode is enabled, and uses the exact same size/offset settings
+-- as the overlap detector above.
+local NS_VISUAL_FOLDER_NAME = "Doggysaken_HitboxVisuals"
+local NS_visualFolder = nil
+local NS_visualParts = {}
+
+local function NS_ClearHitboxVisuals()
+    for killer, part in pairs(NS_visualParts) do
+        if part then pcall(function() part:Destroy() end) end
+        NS_visualParts[killer] = nil
+    end
+    if NS_visualFolder then
+        pcall(function() NS_visualFolder:Destroy() end)
+        NS_visualFolder = nil
+    end
+end
+
+local function NS_GetOrCreateHitboxVisual(killer)
+    local part = NS_visualParts[killer]
+    if part and part.Parent then return part end
+
+    if not NS_visualFolder or not NS_visualFolder.Parent then
+        NS_visualFolder = Instance.new("Folder")
+        NS_visualFolder.Name = NS_VISUAL_FOLDER_NAME
+        NS_visualFolder.Parent = Workspace
+    end
+
+    part = Instance.new("Part")
+    part.Name = "Doggysaken_HitboxVisual"
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.CastShadow = false
+    part.Material = Enum.Material.ForceField
+    part.TopSurface = Enum.SurfaceType.Smooth
+    part.BottomSurface = Enum.SurfaceType.Smooth
+    part.Parent = NS_visualFolder
+
+    local outline = Instance.new("SelectionBox")
+    outline.Name = "Doggysaken_HitboxOutline"
+    outline.Adornee = part
+    outline.LineThickness = 0.055
+    outline.Visible = true
+    outline.Parent = part
+    NS_visualParts[killer] = part
+    return part
+end
+
+local function NS_UpdateHitboxVisuals()
+    if not Settings.AutoBlockRectangle or not Settings.ShowHitboxVisual or KillerState.isKiller then
+        NS_ClearHitboxVisuals()
+        return
+    end
+
+    local playersFolder = Workspace:FindFirstChild("Players")
+    local killersFolder = playersFolder and playersFolder:FindFirstChild("Killers")
+    if not killersFolder then
+        NS_ClearHitboxVisuals()
+        return
+    end
+
+    local active = {}
+    local multiplier = math.clamp(tonumber(Settings.HitboxMultiplier or Settings.RectangleMultiplier) or 1, 0.1, 5)
+    local fillTransparency = math.clamp(tonumber(Settings.HitboxTransparency) or 0.64, 0, 0.95)
+    local outlineTransparency = math.clamp(tonumber(Settings.OutlineTransparency) or 0.12, 0, 1)
+    local boxColor = ParseColor(Settings.HitboxColor, 255, 170, 55)
+
+    for _, killer in ipairs(killersFolder:GetChildren()) do
+        if killer:IsA("Model") then
+            local root = killer:FindFirstChild("HumanoidRootPart") or killer:FindFirstChild("RootPart")
+            if root and root:IsA("BasePart") then
+                local config = NS_getKillerHitbox(killer.Name)
+                local width = (config.width or 6) * multiplier
+                local height = (config.height or 6) * multiplier
+                local length = (config.length or 9) * multiplier
+                local distance = tonumber(config.distance or Settings.HitboxDistance or Settings.RectangleDistance) or 3
+                local part = NS_GetOrCreateHitboxVisual(killer)
+                part.Size = Vector3.new(width, height, length)
+                part.CFrame = root.CFrame * CFrame.new(0, 0, -distance)
+                part.Color = boxColor
+                part.Transparency = fillTransparency
+
+                local outline = part:FindFirstChild("Doggysaken_HitboxOutline")
+                if outline then
+                    outline.Color3 = boxColor
+                    outline.Transparency = outlineTransparency
+                    outline.Visible = Settings.ShowOutline == true
+                end
+                active[killer] = true
+            end
+        end
+    end
+
+    for killer, part in pairs(NS_visualParts) do
+        if not active[killer] then
+            if part then pcall(function() part:Destroy() end) end
+            NS_visualParts[killer] = nil
+        end
+    end
+end
+
 local _ns_loopConn = nil
 function NS_StartHitboxLoop()
     if _ns_loopConn then return end
     _ns_attrStates = {}
     _ns_loopConn = RunService.Heartbeat:Connect(function()
-        if not Settings.AutoBlockRectangle then return end
-        if KillerState.isKiller then return end
+        if not Settings.AutoBlockRectangle or KillerState.isKiller then
+            NS_ClearHitboxVisuals()
+            return
+        end
+        if Settings.ShowHitboxVisual then
+            pcall(NS_UpdateHitboxVisuals)
+        else
+            NS_ClearHitboxVisuals()
+        end
         pcall(NS_checkKillerAttackC00l)
     end)
 end
@@ -754,6 +874,7 @@ function NS_StopHitboxLoop()
     if _ns_loopConn then pcall(function() _ns_loopConn:Disconnect() end); _ns_loopConn = nil end
     if _ns_spamThread then pcall(task.cancel, _ns_spamThread); _ns_spamThread = nil end
     _ns_attrStates = {}
+    pcall(NS_ClearHitboxVisuals)
 end
 
 function ClearKillerVisuals()
@@ -763,7 +884,7 @@ function ClearKillerVisuals()
     pcall(NS_StopHitboxLoop)
     pcall(function()
         for _, o in ipairs(Workspace:GetChildren()) do
-            if o:IsA("Part") and o.Name == "AutoBlockHitbox_Frame" then pcall(function() o:Destroy() end) end
+            if o:IsA("Part") and (o.Name == "AutoBlockHitbox_Frame" or o.Name == "AutoBlockHitbox_Query") then pcall(function() o:Destroy() end) end
         end
     end)
 end
@@ -2292,11 +2413,12 @@ FloatingLogo.ZIndex = FloatingButton.ZIndex + 1
 FloatingLogo.Parent = FloatingButton
 
 local Tabs = {
-    Combat = Window:AddTab("Combat", "shield-check"),
-    Visuals = Window:AddTab("Visuals", "eye"),
-    Automation = Window:AddTab("Automation", "workflow"),
-    Aimbot = Window:AddTab("Aimbot", "crosshair"),
-    Settings = Window:AddTab("Settings", "settings"),
+    ESP = Window:AddTab("ESP", "eye"),
+    Stamina = Window:AddTab("Stamina", "battery-full"),
+    AutoBlock = Window:AddTab("Auto block", "shield-check"),
+    AutoAim = Window:AddTab("Auto aim", "crosshair"),
+    Automatic = Window:AddTab("Automatic", "workflow"),
+    SaveLoad = Window:AddTab("Save and load", "save"),
 }
 
 -- Keep Obsidian's normal two-column layout on desktop and mobile.
@@ -2384,11 +2506,14 @@ local function addButton(group, title, callback, tooltip)
 end
 
 -- ================================================================
--- COMBAT
+-- AUTO BLOCK: left side = block/HDT/punch; right side = hitbox visual/settings.
 -- ================================================================
-local BlockModes = addGroup(Tabs.Combat, "Left", "Block Modes", "Choose one blocking mode at a time", "shield")
-local BlockConfig = addGroup(Tabs.Combat, "Right", "Block Configuration", "Adjust detection and hitbox settings", "sliders-horizontal")
-local Movement = addGroup(Tabs.Combat, "Left", "Movement & Stamina", "HDT, stamina and punch options", "activity")
+local BlockModes = addGroup(Tabs.AutoBlock, "Left", "Auto block", "Choose one blocking mode at a time", "shield")
+local HDTSettings = addGroup(Tabs.AutoBlock, "Left", "HDT", "HDT trigger and timing settings", "activity")
+local AutoPunchSettings = addGroup(Tabs.AutoBlock, "Left", "Auto punch", "Punch after the successful block signal", "zap")
+local BlockTuning = addGroup(Tabs.AutoBlock, "Left", "Other block settings", "Anti-bait and custom-zone tuning", "sliders-horizontal")
+local HitboxVisual = addGroup(Tabs.AutoBlock, "Right", "Hitbox visual", "Live 3D display of the rectangle detection volume", "box")
+local BoxSettings = addGroup(Tabs.AutoBlock, "Right", "Box settings", "Adjust the visible box and detection volume", "sliders-horizontal")
 
 local blockSettingKeys = {
     Default = "AutoBlock",
@@ -2446,7 +2571,7 @@ addToggle(BlockModes, blockToggleKeys.Custom, "Custom Zone Block", Settings.Auto
 end, "Uses the custom zone configuration")
 addToggle(BlockModes, blockToggleKeys.Rectangle, "Rectangle / Hitbox Block", Settings.AutoBlockRectangle, function(value)
     setBlockMode("Rectangle", value)
-end, "Uses the rectangle hitbox mode")
+end, "Uses the rectangle hitbox detector and live box visual")
 
 local function updateActiveBlock()
     if Settings.AutoBlock or Settings.AutoBlockCustom or Settings.AutoBlockRectangle then
@@ -2457,37 +2582,80 @@ local function updateActiveBlock()
     end
 end
 
-addDropdown(BlockConfig, "Doggysaken_DefaultAbility", "Default ability", {"Guest 1337", "007n7"},
+addDropdown(BlockModes, "Doggysaken_DefaultAbility", "Default ability", {"Guest 1337", "007n7"},
     Settings.ABMode == "007n7" and "007n7" or "Guest 1337", function(value)
         Settings.ABMode = value == "007n7" and "007n7" or "Guest1337"
         updateActiveBlock()
     end)
-addDropdown(BlockConfig, "Doggysaken_CustomZoneAbility", "Custom-zone ability", {"Guest 1337", "007n7"},
+addDropdown(BlockModes, "Doggysaken_CustomZoneAbility", "Custom-zone ability", {"Guest 1337", "007n7"},
     Settings.CustomABMode == "007n7" and "007n7" or "Guest 1337", function(value)
         Settings.CustomABMode = value == "007n7" and "007n7" or "Guest1337"
         updateActiveBlock()
     end)
-addDropdown(BlockConfig, "Doggysaken_RectangleAbility", "Rectangle ability", {"Guest 1337", "007n7"},
+addDropdown(BlockModes, "Doggysaken_RectangleAbility", "Rectangle ability", {"Guest 1337", "007n7"},
     Settings.RectangleABMode == "007n7" and "007n7" or "Guest 1337", function(value)
         Settings.RectangleABMode = value == "007n7" and "007n7" or "Guest1337"
         updateActiveBlock()
     end)
 
-addSlider(BlockConfig, "Doggysaken_AntiBaitRange", "Anti-Bait range", "AntiBaitRange", 1, 35, 0)
-addSlider(BlockConfig, "Doggysaken_FacingThreshold", "Facing threshold", "AntiBaitFacingDot", -1, 1, 2)
-addSlider(BlockConfig, "Doggysaken_CustomZoneLength", "Custom zone length", "CustomDiamondLength", 2, 30, 1, updateActiveBlock)
-addSlider(BlockConfig, "Doggysaken_CustomZoneWidth", "Custom zone width", "CustomDiamondWidth", 1, 20, 1, updateActiveBlock)
-addSlider(BlockConfig, "Doggysaken_CustomZoneOffset", "Custom zone offset", "CustomDiamondOffset", -10, 15, 1, updateActiveBlock)
-addToggle(BlockConfig, "Doggysaken_HitboxFacingCheck", "Hitbox Facing Check", Settings.FacingCheckEnabled, function(value)
+addToggle(HitboxVisual, "Doggysaken_ShowHitboxVisual", "Show hitbox visual", Settings.ShowHitboxVisual, function(value)
+    Settings.ShowHitboxVisual = value
+    if not value then pcall(NS_ClearHitboxVisuals) end
+end, "Displays a live 3D box around the killer's hitbox during Rectangle / Hitbox mode")
+addToggle(HitboxVisual, "Doggysaken_ShowHitboxOutline", "Show box outline", Settings.ShowOutline, function(value)
+    Settings.ShowOutline = value
+end, "Shows the bright outline around the hitbox")
+HitboxVisual:AddLabel("The visual only appears while Rectangle / Hitbox Block is enabled and a killer is present.")
+HitboxVisual:AddLabel("The detection box and its visual use the same size and offset.")
+
+addSlider(BoxSettings, "Doggysaken_HitboxDistance", "Box distance", "HitboxDistance", 0, 12, 1, function(value)
+    Settings.RectangleDistance = value
+end, " studs")
+addSlider(BoxSettings, "Doggysaken_HitboxSize", "Box size", "HitboxMultiplier", 0.5, 3, 2, function(value)
+    Settings.RectangleMultiplier = value
+end, "x")
+addSlider(BoxSettings, "Doggysaken_HitboxTransparency", "Box fill transparency", "HitboxTransparency", 0.1, 0.95, 2)
+addSlider(BoxSettings, "Doggysaken_HitboxOutlineTransparency", "Outline transparency", "OutlineTransparency", 0, 1, 2)
+addToggle(BoxSettings, "Doggysaken_HitboxFacingCheck", "Hitbox Facing Check", Settings.FacingCheckEnabled, function(value)
     Settings.FacingCheckEnabled = value
 end, "Only accept a hitbox block when the killer is facing your character")
+BoxSettings:AddLabel("Hitbox colour"):AddColorPicker("Doggysaken_HitboxColor", {
+    Default = Settings.HitboxColor,
+    Title = "Hitbox colour",
+    Callback = function(color) Settings.HitboxColor = color end,
+})
 
-addToggle(Movement, "Doggysaken_HDT", "HDT", Settings.HDTEnabled, function(value)
+addToggle(HDTSettings, "Doggysaken_HDT", "HDT", Settings.HDTEnabled, function(value)
     Settings.HDTEnabled = value
     if HDT then HDT.enabled = value end
     if value then safeCall(HDT_StartWatcher) else safeCall(HDT_StopWatcher) end
 end, "Enable or disable the HDT watcher")
-addToggle(Movement, "Doggysaken_InfiniteStamina", "Infinite Stamina", Settings.InfiniteStamina, function(value)
+addSlider(HDTSettings, "Doggysaken_HDTDelay", "HDT delay", "HDTDelay", 0, 1, 2, function(value)
+    if HDT then HDT.delay = value end
+end, "s")
+addSlider(HDTSettings, "Doggysaken_HDTDuration", "HDT duration", "HDTDuration", 0.1, 2, 2, function(value)
+    if HDT then HDT.duration = value end
+end, "s")
+
+addToggle(AutoPunchSettings, "Doggysaken_AimPunch", "Auto punch", Settings.AimPunch, function(value)
+    Settings.AimPunch = value
+end, "Punch after a successful block signal")
+addSlider(AutoPunchSettings, "Doggysaken_PunchDelay", "Delay", "PunchDelay", 0, 2, 2, nil, "s")
+
+addSlider(BlockTuning, "Doggysaken_AntiBaitRange", "Anti-bait range", "AntiBaitRange", 1, 35, 0)
+addSlider(BlockTuning, "Doggysaken_FacingThreshold", "Facing threshold", "AntiBaitFacingDot", -1, 1, 2, function(value)
+    Settings.FacingDot = value
+end)
+addSlider(BlockTuning, "Doggysaken_CustomZoneLength", "Custom zone length", "CustomDiamondLength", 2, 30, 1, updateActiveBlock)
+addSlider(BlockTuning, "Doggysaken_CustomZoneWidth", "Custom zone width", "CustomDiamondWidth", 1, 20, 1, updateActiveBlock)
+addSlider(BlockTuning, "Doggysaken_CustomZoneOffset", "Custom zone offset", "CustomDiamondOffset", -10, 15, 1, updateActiveBlock)
+
+-- ================================================================
+-- STAMINA
+-- ================================================================
+local StaminaControls = addGroup(Tabs.Stamina, "Left", "Stamina", "Movement stamina controls", "battery-full")
+local StaminaInfo = addGroup(Tabs.Stamina, "Right", "Status", "Stamina feature information", "activity")
+addToggle(StaminaControls, "Doggysaken_InfiniteStamina", "Infinite Stamina", Settings.InfiniteStamina, function(value)
     Settings.InfiniteStamina = value
     if type(SetDoggysakneStamina) == "function" then
         local ok, result = pcall(SetDoggysakneStamina, value)
@@ -2502,22 +2670,14 @@ addToggle(Movement, "Doggysaken_InfiniteStamina", "Infinite Stamina", Settings.I
         warn("[Doggysaken] Stamina module is unavailable.")
     end
 end, "Keeps the sprinting module's stamina drain disabled")
-addToggle(Movement, "Doggysaken_AimPunch", "Aim Punch", Settings.AimPunch, function(value)
-    Settings.AimPunch = value
-end, "Punch after a successful block signal")
-addSlider(Movement, "Doggysaken_HDTDelay", "HDT delay", "HDTDelay", 0, 1, 2, function(value)
-    if HDT then HDT.delay = value end
-end, "s")
-addSlider(Movement, "Doggysaken_HDTDuration", "HDT duration", "HDTDuration", 0.1, 2, 2, function(value)
-    if HDT then HDT.duration = value end
-end, "s")
-addSlider(Movement, "Doggysaken_PunchDelay", "Punch delay", "PunchDelay", 0, 2, 2, nil, "s")
+StaminaInfo:AddLabel("Infinite Stamina is separate from HDT.")
+StaminaInfo:AddLabel("HDT controls are inside the Auto block tab, on the left.")
 
 -- ================================================================
 -- VISUALS
 -- ================================================================
-local OriginalESP = addGroup(Tabs.Visuals, "Left", "Doggysaken ESP", "Original item, gear, candy and map overlays", "scan-eye")
-local ExtendedESPBox = addGroup(Tabs.Visuals, "Right", "Extended ESP", "Additional character, generator, trap and quest overlays", "radar")
+local OriginalESP = addGroup(Tabs.ESP, "Left", "Doggysaken ESP", "Original item, gear, candy and map overlays", "scan-eye")
+local ExtendedESPBox = addGroup(Tabs.ESP, "Right", "Extended ESP", "Additional character, generator, trap and quest overlays", "radar")
 
 addToggle(OriginalESP, "Doggysaken_CandyESP", "Candy ESP", Settings.ESP_Candy, function(value)
     Settings.ESP_Candy = value
@@ -2618,8 +2778,8 @@ end, "Turns off every extended ESP overlay")
 -- ================================================================
 -- AUTOMATION
 -- ================================================================
-local AzureAutomation = addGroup(Tabs.Automation, "Left", "Azure Minigame", "Azure character QTE helper", "gamepad-2")
-local NosferatuAutomation = addGroup(Tabs.Automation, "Right", "Nosferatu Minigame", "Nosferatu character QTE helper", "gamepad-2")
+local AzureAutomation = addGroup(Tabs.Automatic, "Left", "Azure Minigame", "Azure character QTE helper", "gamepad-2")
+local NosferatuAutomation = addGroup(Tabs.Automatic, "Right", "Nosferatu Minigame", "Nosferatu character QTE helper", "gamepad-2")
 addToggle(AzureAutomation, "Doggysaken_AzureMinigame", "Azure Auto Minigame", Settings.AzureMinigame, function(value)
     Settings.AzureMinigame = value
     if value then safeCall(StartAzureMinigame) else safeCall(StopAzureMinigame) end
@@ -2632,8 +2792,8 @@ end)
 -- ================================================================
 -- AIMBOT
 -- ================================================================
-local AimControls = addGroup(Tabs.Aimbot, "Left", "GH Character Lock", "Open the character dropdown to choose one or more targets", "crosshair")
-local AimTuning = addGroup(Tabs.Aimbot, "Right", "Character Tuning", "Per-character lock and prediction settings", "sliders-horizontal")
+local AimControls = addGroup(Tabs.AutoAim, "Left", "GH Character Lock", "Open the character dropdown to choose one or more targets", "crosshair")
+local AimTuning = addGroup(Tabs.AutoAim, "Right", "Character Tuning", "Per-character lock and prediction settings", "sliders-horizontal")
 local ghNames = {"Guest1337", "Shedlekey", "TwoTime", "Chance", "Pizza", "JaneDoe"}
 
 local function selectedArray(value)
@@ -2734,10 +2894,125 @@ for _, characterName in ipairs(ghNames) do
 end
 
 -- ================================================================
--- SETTINGS
+-- SAVE AND LOAD
 -- ================================================================
-local Interface = addGroup(Tabs.Settings, "Left", "Interface", "Window controls and mobile-friendly settings", "settings")
-local Info = addGroup(Tabs.Settings, "Right", "About Doggysaken", "UI library and branding", "info")
+local ConfigControls = addGroup(Tabs.SaveLoad, "Left", "Save and load", "Store your Doggysaken settings in an executor config file", "save")
+local Interface = addGroup(Tabs.SaveLoad, "Right", "Interface", "Window controls and mobile-friendly settings", "settings")
+local Info = addGroup(Tabs.SaveLoad, "Right", "About Doggysaken", "UI library and branding", "info")
+
+local HttpService = game:GetService("HttpService")
+local DOGGYSAKEN_CONFIG_FOLDER = "Doggysaken"
+local DOGGYSAKEN_CONFIG_PATH = type(makefolder) == "function"
+    and (DOGGYSAKEN_CONFIG_FOLDER .. "/config.json")
+    or "Doggysaken_config.json"
+
+local function configSafeValue(value, depth)
+    depth = depth or 0
+    if depth > 8 then return nil end
+    if typeof(value) == "Color3" then
+        return {__doggysakenType = "Color3", r = value.R, g = value.G, b = value.B}
+    end
+    local valueType = type(value)
+    if valueType == "string" or valueType == "number" or valueType == "boolean" then
+        return value
+    end
+    if valueType == "table" then
+        local result = {}
+        for key, child in pairs(value) do
+            if type(key) == "string" or type(key) == "number" then
+                local safeChild = configSafeValue(child, depth + 1)
+                if safeChild ~= nil then result[key] = safeChild end
+            end
+        end
+        return result
+    end
+    return nil
+end
+
+local function configRestoreValue(value)
+    if type(value) ~= "table" then return value end
+    if value.__doggysakenType == "Color3" then
+        return Color3.new(
+            math.clamp(tonumber(value.r) or 1, 0, 1),
+            math.clamp(tonumber(value.g) or 1, 0, 1),
+            math.clamp(tonumber(value.b) or 1, 0, 1)
+        )
+    end
+    local result = {}
+    for key, child in pairs(value) do result[key] = configRestoreValue(child) end
+    return result
+end
+
+local function configNotify(title, description)
+    ObsidianLibrary:Notify({Title = title, Description = description, BigIcon = DOGGYSAKEN_LOGO, Time = 5})
+end
+
+local function saveDoggysakenConfig()
+    if type(writefile) ~= "function" then
+        configNotify("Save unavailable", "This executor does not expose writefile.")
+        return
+    end
+    local ok, err = pcall(function()
+        if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(DOGGYSAKEN_CONFIG_FOLDER) then
+            makefolder(DOGGYSAKEN_CONFIG_FOLDER)
+        elseif type(makefolder) == "function" and type(isfolder) ~= "function" then
+            pcall(makefolder, DOGGYSAKEN_CONFIG_FOLDER)
+        end
+        local payload = configSafeValue(Settings)
+        local encoded = HttpService:JSONEncode(payload)
+        writefile(DOGGYSAKEN_CONFIG_PATH, encoded)
+    end)
+    if ok then
+        configNotify("Config saved", DOGGYSAKEN_CONFIG_PATH)
+    else
+        configNotify("Save failed", tostring(err))
+        warn("[Doggysaken] Config save failed: " .. tostring(err))
+    end
+end
+
+local function syncLoadedControls()
+    syncBlockToggles()
+    local mapping = {
+        {"Doggysaken_ShowHitboxVisual", "ShowHitboxVisual"},
+        {"Doggysaken_ShowHitboxOutline", "ShowOutline"},
+        {"Doggysaken_HitboxFacingCheck", "FacingCheckEnabled"},
+        {"Doggysaken_HDT", "HDTEnabled"},
+        {"Doggysaken_AimPunch", "AimPunch"},
+        {"Doggysaken_InfiniteStamina", "InfiniteStamina"},
+        {"Doggysaken_GlobalAimbot", "GlobalAimbotEnabled"},
+        {"Doggysaken_AzureMinigame", "AzureMinigame"},
+        {"Doggysaken_NosferatuMinigame", "NosferatuMinigame"},
+    }
+    for _, pair in ipairs(mapping) do
+        local control = Toggles[pair[1]]
+        if control then pcall(function() control:SetValue(Settings[pair[2]] == true) end) end
+    end
+    pcall(NS_UpdateHitboxVisuals)
+end
+
+local function loadDoggysakenConfig()
+    if type(readfile) ~= "function" or type(isfile) ~= "function" or not isfile(DOGGYSAKEN_CONFIG_PATH) then
+        configNotify("Config not found", "Save a config first, or check executor file API support.")
+        return
+    end
+    local ok, err = pcall(function()
+        local decoded = HttpService:JSONDecode(readfile(DOGGYSAKEN_CONFIG_PATH))
+        local restored = configRestoreValue(decoded)
+        ApplyLoadedConfig(restored)
+        syncLoadedControls()
+    end)
+    if ok then
+        configNotify("Config loaded", DOGGYSAKEN_CONFIG_PATH)
+    else
+        configNotify("Load failed", tostring(err))
+        warn("[Doggysaken] Config load failed: " .. tostring(err))
+    end
+end
+
+addButton(ConfigControls, "SAVE CONFIG", saveDoggysakenConfig, "Writes your settings to Doggysaken/config.json")
+addButton(ConfigControls, "LOAD CONFIG", loadDoggysakenConfig, "Loads Doggysaken/config.json and reapplies supported settings")
+ConfigControls:AddLabel("File: " .. DOGGYSAKEN_CONFIG_PATH)
+ConfigControls:AddLabel("Save and Load require executor file APIs.")
 
 addToggle(Interface, "Doggysaken_AlwaysOnTop", "Always On Top", Window.AlwaysOnTop, function(value)
     Window:SetAlwaysOnTop(value)
@@ -2774,6 +3049,7 @@ Info:AddLabel("Logo asset: " .. tostring(DOGGYSAKEN_LOGO_ID), true)
 -- gameplay features on automatically.
 local FeatureReadiness = {
     ["Auto Block"] = type(StartAutoBlock) == "function" and type(StopAutoBlock) == "function",
+    ["Hitbox Visual"] = type(NS_UpdateHitboxVisuals) == "function" and type(NS_ClearHitboxVisuals) == "function",
     ["HDT"] = type(HDT_StartWatcher) == "function" and type(HDT_StopWatcher) == "function",
     ["Stamina"] = type(SetDoggysakneStamina) == "function",
     ["Candy ESP"] = type(StartCandyESP) == "function" and type(StopCandyESP) == "function",
@@ -2830,6 +3106,7 @@ function DoggysakneCleanup()
     pcall(function() SetDoggysakneStamina(false) end)
     pcall(function() DoggysakneESP.Destroy() end)
     pcall(function() StopAutoBlock() end)
+    pcall(function() NS_StopHitboxLoop() end)
     pcall(function() StopCandyESP() end)
     pcall(function() StopGearESP() end)
     pcall(function() StopItemESP() end)
