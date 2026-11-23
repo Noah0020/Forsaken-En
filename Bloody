@@ -152,16 +152,50 @@ local Window = ObsidianLibrary:CreateWindow({
     TabButtonsStyle = { Gap = 5, Padding = 5, CornerRadius = 8, Indicator = true, IndicatorWidth = 3, IndicatorHeight = 22 },
 })
 
-local FloatingToggle = ObsidianLibrary:AddDraggableButton("D", function()
-    ObsidianLibrary:Toggle()
-end, true)
-local FloatingButton = FloatingToggle.Button
+-- Obsidian has no AddDraggableButton method. Build the floating toggle
+-- ourselves and call the official Window:Toggle() method.
+local FloatingGui = Instance.new("ScreenGui")
+FloatingGui.Name = "DoggysakenFloatingToggle"
+FloatingGui.ResetOnSpawn = false
+FloatingGui.IgnoreGuiInset = true
+FloatingGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local floatingParent = PlayerGui
+pcall(function()
+    if type(gethui) == "function" then
+        floatingParent = gethui()
+    else
+        floatingParent = CoreGui
+    end
+end)
+for _, existing in ipairs(floatingParent:GetChildren()) do
+    if existing.Name == "DoggysakenFloatingToggle" then
+        pcall(function() existing:Destroy() end)
+    end
+end
+FloatingGui.Parent = floatingParent
+
+local FloatingButton = Instance.new("TextButton")
 FloatingButton.Name = "DoggysakenOpenClose"
-FloatingButton.Size = UDim2.fromOffset(52, 52)
-FloatingButton.Text = ""
+FloatingButton.Size = UDim2.fromOffset(54, 54)
+FloatingButton.Position = UDim2.new(0, 18, 0.5, -27)
 FloatingButton.BackgroundColor3 = OBSIDIAN
+FloatingButton.BackgroundTransparency = 0.04
+FloatingButton.Text = ""
 FloatingButton.AutoButtonColor = false
-FloatingButton.ClipsDescendants = true
+FloatingButton.Active = true
+FloatingButton.ZIndex = 50
+FloatingButton.Parent = FloatingGui
+
+local FloatingCorner = Instance.new("UICorner")
+FloatingCorner.CornerRadius = UDim.new(1, 0)
+FloatingCorner.Parent = FloatingButton
+local FloatingStroke = Instance.new("UIStroke")
+FloatingStroke.Color = GOLD
+FloatingStroke.Thickness = 2
+FloatingStroke.Transparency = 0.05
+FloatingStroke.Parent = FloatingButton
+
 local FloatingLogo = Instance.new("ImageLabel")
 FloatingLogo.Name = "DoggysakenIcon"
 FloatingLogo.BackgroundTransparency = 1
@@ -172,6 +206,40 @@ FloatingLogo.ScaleType = Enum.ScaleType.Fit
 FloatingLogo.Active = false
 FloatingLogo.ZIndex = FloatingButton.ZIndex + 1
 FloatingLogo.Parent = FloatingButton
+
+local floatingDragInput, floatingDragStart, floatingStartPosition
+local floatingMoved = false
+FloatingButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        floatingDragInput = input
+        floatingDragStart = input.Position
+        floatingStartPosition = FloatingButton.Position
+        floatingMoved = false
+    end
+end)
+FloatingButton.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        floatingDragInput = input
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if floatingDragInput and input == floatingDragInput and floatingDragStart and floatingStartPosition then
+        local delta = input.Position - floatingDragStart
+        if math.abs(delta.X) + math.abs(delta.Y) > 6 then floatingMoved = true end
+        FloatingButton.Position = UDim2.new(
+            floatingStartPosition.X.Scale, floatingStartPosition.X.Offset + delta.X,
+            floatingStartPosition.Y.Scale, floatingStartPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if floatingDragInput and (input == floatingDragInput or input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+        if not floatingMoved then
+            Window:Toggle()
+        end
+        floatingDragInput, floatingDragStart, floatingStartPosition = nil, nil, nil
+    end
+end)
 
 local Toggles = ObsidianLibrary.Toggles
 local Options = ObsidianLibrary.Options
