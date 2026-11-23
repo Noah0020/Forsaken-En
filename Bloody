@@ -58,6 +58,8 @@ local DOGGYSAKNE_DEFAULTS = {
     RectangleDistance=3, RectangleMultiplier=1, HDTDelay=0.05, HDTDuration=0.6, PunchDelay=0.5,
     ShowHitboxVisual=true, ShowOutline=true, DoggysakenHitboxVisualConfigured=false,
     HitboxTransparency=0.64, OutlineTransparency=0.12,
+    SyncESPBoxWidth=133, SyncESPBoxHeight=15, SyncESPBoxOffset=3,
+    SyncESPBoxMaxDistance=2000, SyncESPFillTransparency=0.7,
     HitboxColor=Color3.fromRGB(255, 170, 55),
     ABMode="Guest1337", CustomABMode="Guest1337", RectangleABMode="Guest1337",
 }
@@ -2122,7 +2124,7 @@ local Window = ObsidianLibrary:CreateWindow({
     Size = UDim2.fromOffset(680, 520),
     MinContainerWidth = 250,
     Center = true,
-    AutoShow = false,
+    AutoShow = true,
     Resizable = true,
     AlwaysOnTop = false,
     ShowCustomCursor = false,
@@ -2180,6 +2182,7 @@ local Tabs = {
     Stamina = Window:AddTab("Stam", "battery-full"),
     AutoBlock = Window:AddTab("Block", "shield-check"),
     Tools = Window:AddTab("Tools", "wrench"),
+    Aim = Window:AddTab("Aim", "crosshair"),
     Automatic = Window:AddTab("Auto", "workflow"),
     SaveLoad = Window:AddTab("Config", "save"),
 }
@@ -2598,7 +2601,7 @@ Info:AddLabel("Logo asset: " .. tostring(DOGGYSAKEN_LOGO_ID), true)
 -- ================================================================
 -- SYNCSAKEN FEATURE PORT (NO KEY SYSTEM / NO PREMIUM GATES)
 -- ================================================================
-do
+local SyncPortOK, SyncPortError = xpcall(function()
 local identifyexecutor_ = (identifyexecutor and string.lower(tostring(identifyexecutor()))) or "unknown"
 local veeronicaAddedConnection, veeronicaRemovedConnection
 local veeronicaAdorneeConnection, ghostburgerConnection
@@ -3730,7 +3733,7 @@ local t7 = {
 }
 
 t7.highlighter.Name = "__SESP"
-t7.highlighter.FillTransparency = 0.7
+t7.highlighter.FillTransparency = tonumber(Settings.SyncESPFillTransparency) or 0.7
 t7.highlighter.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 t7.defaultColors = {
 	killer = Color3.fromRGB(255, 0, 0),
@@ -3762,10 +3765,10 @@ local function createBillboardGui(p42, p43)
 	BillboardGui.Parent = p42
 	BillboardGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	BillboardGui.Active = true
-	BillboardGui.MaxDistance = 2000
+	BillboardGui.MaxDistance = tonumber(Settings.SyncESPBoxMaxDistance) or 2000
 	BillboardGui.AlwaysOnTop = true
-	BillboardGui.Size = UDim2.new(0, 133, 0, 15)
-	BillboardGui.StudsOffset = Vector3.new(0, 3, 0)
+	BillboardGui.Size = UDim2.fromOffset(tonumber(Settings.SyncESPBoxWidth) or 133, tonumber(Settings.SyncESPBoxHeight) or 15)
+	BillboardGui.StudsOffset = Vector3.new(0, tonumber(Settings.SyncESPBoxOffset) or 3, 0)
 	TextLabel.Parent = BillboardGui
 	TextLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	TextLabel.BackgroundTransparency = 1
@@ -4135,7 +4138,90 @@ local function v199(p54)
 	end)
 end
 
--- Syncsaken aim/attack prediction helper omitted.
+-- Syncsaken aim/attack prediction helper.
+local t11
+
+t11 = {
+	aimPrediction = 1,
+	aimEasing = 0.8,
+	lookAngle = 0.5,
+	aimCooldown = false,
+	GetBehindCFrame = function(p55, p56, p57)
+		return (CFrame.lookAt((p56 * CFrame.new(0, 0, p57)).Position, p56.Position))
+	end,
+	GetDistanceFrom = function(p58, p59)
+		if Character then
+			if Character.PrimaryPart then
+				return (Character.PrimaryPart.Position - p59.Position).Magnitude
+			end
+		end
+
+		return math.huge
+	end,
+	GetDirectionFrom = function(p60, p61, p62)
+		if Character and Character.PrimaryPart then
+			return ((p62 and p61.Position or Character.PrimaryPart.Position) - (p62 and Character.PrimaryPart.Position or p61.Position)).Unit
+		end
+
+		return -1
+	end,
+	PredictNextPosition = function(p63, p64)
+		local AssemblyLinearVelocity = p64.AssemblyLinearVelocity
+		local Position = p64.Position
+
+		p63:GetDistanceFrom(p64)
+
+		return Position + AssemblyLinearVelocity * t11.aimPrediction
+	end,
+	PartLookingAtUser = function(p65, p66, p67)
+		if not Character or not Character.PrimaryPart then
+			return false
+		end
+
+		local directionFrom = p65:GetDirectionFrom(p66, p67)
+
+		return (p67 and Character.PrimaryPart.CFrame.LookVector or p66.CFrame.LookVector):Dot(directionFrom) >= p65.lookAngle
+	end,
+	Aimbot = function(p68, p69, p70)
+		if not Character or not Character.PrimaryPart then
+			return
+		end
+
+		if not p69 or not p70 then
+			return
+		end
+
+		if p68.aimCooldown then
+			return
+		end
+
+		p68.aimCooldown = true
+
+		local now2 = os.clock()
+		local PrimaryPart = Character.PrimaryPart
+		local aimEasing = p68.aimEasing
+		local connection
+
+		connection = RunService.PostSimulation:Connect(function()
+			if os.clock() - now2 >= p70 or not p69 or not p69.Parent then
+				p68.aimCooldown = false
+				connection:Disconnect()
+			end
+
+			local J = p68:PredictNextPosition(p69)
+			local B = vector.create(J.X, PrimaryPart.Position.Y, J.Z)
+			local J = CFrame.lookAt(PrimaryPart.Position, B)
+
+			if PrimaryPart.Position == B then
+				return
+			end
+
+			PrimaryPart.CFrame = PrimaryPart.CFrame:Lerp(J, aimEasing)
+		end)
+	end
+}
+UIEnv.DoggysakenSyncReadiness = UIEnv.DoggysakenSyncReadiness or {}
+UIEnv.DoggysakenSyncReadiness.Aim = type(t11) == "table" and type(t11.Aimbot) == "function"
 
 local t12 = {
 	Tasks = {},
@@ -4269,6 +4355,8 @@ local SyncTabConfig = {
     Blatant = { tab = Tabs.Tools, group = "Movement", side = "Right", icon = "move" },
     Visual = { tab = Tabs.ESP, group = "Sync ESP", side = "Right", icon = "eye" },
     Other = { tab = Tabs.Tools, group = "Utilities", side = "Left", icon = "wrench" },
+    Aimbot = { tab = Tabs.Aim, group = "Character Aim", side = "Left", icon = "crosshair" },
+    Prediction = { tab = Tabs.Aim, group = "Aim Tuning", side = "Right", icon = "sliders-horizontal" },
     Credits = { tab = Tabs.SaveLoad, group = "Credits", side = "Right", icon = "info" },
 }
 local function MakeSyncTab(category)
@@ -4439,6 +4527,8 @@ local Player = v246:CreateTab("Player")
 local Blatant = v246:CreateTab("Blatant")
 local Visual = v246:CreateTab("Visual")
 local Other = v246:CreateTab("Other")
+local Aimbot = v246:CreateTab("Aimbot")
+local Prediction = v246:CreateTab("Prediction")
 local Credits = v246:CreateTab("Credits")
 
 Generators:CreateLabel("Best used with invisibility")
@@ -4842,6 +4932,313 @@ Player:CreateToggle({
 
 -- Syncsaken Auto Block removed; Doggysaken Auto Block is the only blocker.
 
+local u391 = false
+
+local function v392()
+	return Character and string.find(Character.Name, "TwoTime") or false
+end
+local function v393(p157)
+	return vector.magnitude(Character.HumanoidRootPart.Position - p157.Position)
+end
+local function v394(p158)
+	local LookVector = p158.CFrame.LookVector
+	local LookVector2 = Character.HumanoidRootPart.CFrame.LookVector
+	local v397 = vector.normalize(p158.Position - Character.HumanoidRootPart.Position)
+	local v398 = LookVector2:Dot(LookVector)
+	local v399 = LookVector2:Dot(v397)
+
+	if v398 < 0.5 then
+		return false
+	end
+
+	if v399 < 0.7 then
+		return false
+	end
+
+	return true
+end
+
+_syncEnv.thereisnowhatifiampregnant = RunService.Heartbeat:Connect(function()
+	if not u391 then
+		return
+	end
+
+	if not v392() then
+		return
+	end
+
+	if not Killers:GetChildren()[1] then
+		return
+	end
+
+	local v400 = Killers:GetChildren()[1]
+	local HumanoidRootPart = v400 and v400:FindFirstChild("HumanoidRootPart")
+
+	if not HumanoidRootPart or HumanoidRootPart.Anchored then
+		return
+	end
+
+	if v393(HumanoidRootPart) > 6 then
+		return
+	end
+
+	if v394(HumanoidRootPart) then
+		v65("Dagger")
+
+		return
+	end
+end)
+Aimbot:CreateDivider()
+Aimbot:CreateLabel("Two Time", "star")
+Aimbot:CreateToggle({
+	Name = "Auto backstab",
+	Flag = "TwoTimeAutoBackstabFlag",
+	Callback = function(p159)
+		u391 = p159
+	end
+})
+Aimbot:CreateDivider()
+Aimbot:CreateLabel("Chance", "hand-coins")
+
+if t1.requiring then
+	local function v402()
+		local v403 = workspace.Players.Killers:GetChildren()[1]
+
+		return v403 and v403.PrimaryPart
+	end
+
+	Aimbot:CreateToggle({
+		Name = "Chance",
+		Flag = "ChanceAimbotFlag",
+		Callback = function(p160)
+			if p160 then
+				t12:AddTask("ChanceAimbotFlag", function(p161)
+					if p161[2] == "UseActorAbility" and p161[4] == "Shoot" then
+						local v404 = v402()
+
+						if not v404 then
+							return
+						end
+
+						task.spawn(function()
+							t11:Aimbot(v404, 1.5)
+						end)
+					end
+				end)
+			else
+				t12:RemoveTask("ChanceAimbotFlag")
+			end
+		end
+	})
+else
+	Aimbot:CreateLabel("Your executor (" .. identifyexecutor_ .. ") doesn't support requiring, which is necessary for chance aimbot")
+end
+
+Aimbot:CreateDivider()
+Aimbot:CreateLabel("Dusekkar", "wand-sparkles")
+
+if t1.hooking then
+	local GetPlayerMousePosition = require(ReplicatedStorage:WaitForChild("Systems"):WaitForChild("Player"):WaitForChild("Miscellaneous"):WaitForChild("GetPlayerMousePosition"))
+	local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Assets"):WaitForChild("Survivors"):WaitForChild("Dusekkar"):WaitForChild("Config"))
+	local GetMousePos = GetPlayerMousePosition.GetMousePos
+
+	local function v408(...)
+		if Character and Character.Parent == Survivors and Character.Name == "Dusekkar" and Killers and #Killers:GetChildren() > 0 and Character then
+			local v409 = Killers:GetChildren()[1]
+			local PrimaryPart = v409 and v409.PrimaryPart
+
+			if PrimaryPart then
+				return t11:PredictNextPosition(PrimaryPart)
+			end
+		end
+
+		return GetMousePos(...)
+	end
+
+	local IsOnScreen = Util.IsOnScreen
+
+	local function v412()
+		if Character and Character.Parent == Survivors then
+			if Character.Name == "Dusekkar" then
+				return true
+			end
+		end
+	end
+
+	local SpawnProtectionEffectMaxDistance = Config.SpawnProtectionEffectMaxDistance
+
+	Aimbot:CreateToggle({
+		Name = "Silent aim",
+		Flag = "DusekkarAimbotFlag",
+		Callback = function(p162)
+			GetPlayerMousePosition.GetMousePos = p162 and v408 or GetMousePos
+		end
+	})
+
+	if setreadonly then
+		Aimbot:CreateToggle({
+			Name = "Wallbang",
+			Flag = "DusekkarWallbang",
+			Callback = function(p163)
+				setreadonly(Util, false)
+				Util.IsOnScreen = p163 and v412 or IsOnScreen
+				setreadonly(Util, true)
+			end
+		})
+	end
+
+	Aimbot:CreateToggle({
+		Name = "Infinite distance",
+		Flag = "DusekkarInfiniteDistance",
+		Callback = function(p164)
+			Config.SpawnProtectionEffectMaxDistance = p164 and math.huge or SpawnProtectionEffectMaxDistance
+		end
+	})
+else
+	Aimbot:CreateLabel("Your executor does not support hooking.")
+end
+
+Aimbot:CreateDivider()
+Aimbot:CreateLabel("Shedletsky", "sword")
+
+if t1.requiring then
+	local u414 = false
+
+	local function v415()
+		if u414 or not Character or not Character.PrimaryPart then
+			return
+		end
+
+		u414 = true
+
+		local ok, result = pcall(function()
+			local v418 = Killers:GetChildren()[1]
+
+			if not v418 then
+				u414 = false
+
+				return
+			end
+
+			local HumanoidRootPart = v418:FindFirstChild("HumanoidRootPart")
+
+			if not v418:FindFirstChildOfClass("Humanoid"):FindFirstChild("Animator") then
+				u414 = false
+
+				return
+			end
+
+			local HumanoidRootPart2 = Character:FindFirstChild("HumanoidRootPart")
+			local CFrame_ = HumanoidRootPart2.CFrame
+			local now2 = os.clock()
+
+			t11:Aimbot(HumanoidRootPart, 0.7)
+			task.wait(0.125)
+
+			while os.clock() - now2 < 0.7 and HumanoidRootPart and HumanoidRootPart2 do
+				task.wait()
+				HumanoidRootPart2.CFrame = CFrame.new(t11:PredictNextPosition(HumanoidRootPart), HumanoidRootPart.Position * vector.create(1.001, 1.001, 1.001))
+			end
+
+			HumanoidRootPart2.CFrame = CFrame_
+		end)
+
+		if not ok then
+			v13(result, 4222)
+		end
+
+		u414 = false
+	end
+
+	Aimbot:CreateToggle({
+		Name = "TP slash",
+		Flag = "TPSlashFlag",
+		Callback = function(p165)
+			if p165 then
+				t12:AddTask("TPSlash", function(p166)
+					if u414 then
+						return
+					end
+
+					if Character then
+						if Character.Parent ~= Killers and p166[2] == "UseActorAbility" and p166[4] == "Slash" then
+							task.spawn(v415)
+						end
+					end
+				end)
+			else
+				t12:RemoveTask("TPSlash")
+			end
+		end
+	})
+else
+	Aimbot:CreateLabel("Your executor (" .. identifyexecutor_ .. ") does not support requiring.")
+end
+
+Aimbot:CreateDivider()
+Aimbot:CreateLabel("1x1x1x1", "shield-alert")
+
+if t1.requiring then
+	local function v423(p167)
+		return 1 / (t11:GetDistanceFrom(p167) + 0.01) * (t11:PartLookingAtUser(p167, true) and 3 or 1)
+	end
+	local function v424()
+		local v425 = -math.huge
+		local v426
+
+		for _, child in pairs(Survivors:GetChildren()) do
+			if child and child ~= Character and child.PrimaryPart then
+				local v429 = v423(child.PrimaryPart)
+
+				if v425 < v429 then
+					v425 = v429
+					v426 = child
+				end
+			end
+		end
+
+		return v426 and v426.PrimaryPart
+	end
+
+	Aimbot:CreateToggle({
+		Name = "Entanglement & Mass Infection aimbot",
+		Flag = "1x1x1x1Aimbot",
+		Callback = function(p168)
+			if p168 then
+				t12:AddTask("1x1x1x1Aimbot", function(p169)
+					if Character.Parent ~= Killers then
+						return
+					end
+
+					if p169[2] ~= "UseActorAbility" then
+						return
+					end
+
+					local v430 = p169[4]
+
+					if v430 == "Entanglement" or v430 == "MassInfection" then
+						task.spawn(function()
+							local v431 = v424()
+
+							if v430 == "MassInfection" then
+								t11:Aimbot(v431, 3)
+							elseif v430 == "Entanglement" then
+								t11:Aimbot(v431, 0.8)
+							end
+						end)
+
+						return
+					end
+				end)
+			else
+				t12:RemoveTask("1x1x1x1Aimbot")
+			end
+		end
+	})
+else
+	Aimbot:CreateLabel("Your executor doesn't support requiring.")
+end
+
 local s3 = "enig124ma"
 local s4 = "gag124124a"
 local connection4
@@ -5111,6 +5508,55 @@ Blatant:CreateKeybind({
 	end
 })
 Blatant:CreateDivider()
+Prediction:CreateSection("Only use this if you have terrible ping")
+Prediction:CreateSlider({
+	Name = "Look-ahead prediction",
+	Range = {
+		0,
+		5
+	},
+	Increment = 0.1,
+	Suffix = "x",
+	Flag = "AimbotPrediction",
+	CurrentValue = 0.3,
+	Callback = function(p122)
+		t11.aimPrediction = p122
+	end
+})
+Prediction:CreateSlider({
+	Name = "Easing",
+	Range = {
+		0.01,
+		1
+	},
+	Increment = 0.01,
+	Suffix = "x",
+	Flag = "AimbotEasing",
+	CurrentValue = 0.95,
+	Callback = function(p123)
+		t11.aimEasing = p123
+	end
+})
+Prediction:CreateSection("0 degrees is directly looking at something, 90 degrees is looking perpendicular to something (it's on your left/right)")
+Prediction:CreateSlider({
+	Name = "Minimum angle for looking at something",
+	Range = {
+		0,
+		90
+	},
+	Increment = 1,
+	Suffix = "°",
+	CurrentValue = 45,
+	Flag = "LookAtAngleBee",
+	Callback = function(p124)
+		if p124 == 90 then
+			t11.lookAngle = 0
+		else
+			t11.lookAngle = math.cos(math.rad(p124))
+		end
+	end
+})
+
 local connection6
 
 Visual:CreateToggle({
@@ -5517,6 +5963,31 @@ Visual:CreateToggle({
 	end
 })
 
+-- Syncsaken ESP box editor: controls the __SBB BillboardGui and __SESP Highlight visuals.
+local SyncESPBoxSettings = addGroup(Tabs.ESP, "Right", "Sync ESP Box Editor", "Resize and position Syncsaken ESP labels", "box")
+local function UpdateSyncESPBoxSettings()
+    local width = math.clamp(tonumber(Settings.SyncESPBoxWidth) or 133, 60, 320)
+    local height = math.clamp(tonumber(Settings.SyncESPBoxHeight) or 15, 10, 60)
+    local offset = math.clamp(tonumber(Settings.SyncESPBoxOffset) or 3, 0, 12)
+    local maxDistance = math.clamp(tonumber(Settings.SyncESPBoxMaxDistance) or 2000, 50, 5000)
+    local fillTransparency = math.clamp(tonumber(Settings.SyncESPFillTransparency) or 0.7, 0, 1)
+    if t7 and t7.highlighter then t7.highlighter.FillTransparency = fillTransparency end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("BillboardGui") and obj.Name == "__SBB" then
+            obj.Size = UDim2.fromOffset(width, height)
+            obj.StudsOffset = Vector3.new(0, offset, 0)
+            obj.MaxDistance = maxDistance
+        elseif obj:IsA("Highlight") and obj.Name == "__SESP" then
+            obj.FillTransparency = fillTransparency
+        end
+    end
+end
+addSlider(SyncESPBoxSettings, "SyncESP_BoxWidth", "Box width", "SyncESPBoxWidth", 60, 320, 0, UpdateSyncESPBoxSettings, "px")
+addSlider(SyncESPBoxSettings, "SyncESP_BoxHeight", "Box height", "SyncESPBoxHeight", 10, 60, 0, UpdateSyncESPBoxSettings, "px")
+addSlider(SyncESPBoxSettings, "SyncESP_BoxOffset", "Vertical offset", "SyncESPBoxOffset", 0, 12, 1, UpdateSyncESPBoxSettings, "studs")
+addSlider(SyncESPBoxSettings, "SyncESP_BoxDistance", "Max display distance", "SyncESPBoxMaxDistance", 50, 5000, 0, UpdateSyncESPBoxSettings, "studs")
+addSlider(SyncESPBoxSettings, "SyncESP_FillTransparency", "Highlight transparency", "SyncESPFillTransparency", 0, 1, 2, UpdateSyncESPBoxSettings)
+
 -- Syncsaken target-lock, backstab, and attack automation omitted.
 
 local connection7
@@ -5631,6 +6102,7 @@ UIEnv.DoggysakenSyncReadiness = {
     Generator = type(t2) == "table" and type(v111) == "function",
     ESP = type(t7) == "table" and type(v178) == "function",
     Player = type(t5) == "table" and type(t6) == "table",
+    Aim = type(t11) == "table" and type(t11.Aimbot) == "function",
 }
 
 UIEnv.DoggysakenSyncCleanup = function()
@@ -5657,6 +6129,18 @@ UIEnv.DoggysakenSyncCleanup = function()
         _syncEnv.NSDC = nil
     end)
     pcall(function()
+        local aimConnection = _syncEnv.thereisnowhatifiampregnant
+        if aimConnection and typeof(aimConnection) == "RBXScriptConnection" and aimConnection.Connected then
+            aimConnection:Disconnect()
+        end
+        _syncEnv.thereisnowhatifiampregnant = nil
+        if t12 and t12.RemoveTask then
+            t12:RemoveTask("ChanceAimbotFlag")
+            t12:RemoveTask("TPSlash")
+            t12:RemoveTask("1x1x1x1Aimbot")
+        end
+    end)
+    pcall(function()
         if syncSprintingModule then syncSprintingModule.StaminaLossDisabled = false end
     end)
     pcall(function()
@@ -5678,7 +6162,11 @@ UIEnv.DoggysakenSyncCleanup = function()
     end)
 end
 
-end -- Syncsaken feature port
+end, debug.traceback)
+if not SyncPortOK then
+    warn("[Doggysaken] Syncsaken feature initialization failed: " .. tostring(SyncPortError))
+    pcall(function() ObsidianLibrary:Notify({Title = "Sync features unavailable", Description = "The main Doggysaken UI loaded, but an imported feature failed. Check the executor console.", Time = 7}) end)
+end
 
 
 -- Obsidian-native configuration management for every merged control.
@@ -5725,6 +6213,7 @@ local FeatureReadiness = {
     ["Sync Generator Automation"] = UIEnv.DoggysakenSyncReadiness and UIEnv.DoggysakenSyncReadiness.Generator == true,
     ["Sync ESP"] = UIEnv.DoggysakenSyncReadiness and UIEnv.DoggysakenSyncReadiness.ESP == true,
     ["Sync Player Utilities"] = UIEnv.DoggysakenSyncReadiness and UIEnv.DoggysakenSyncReadiness.Player == true,
+    ["Sync Aim Engine"] = UIEnv.DoggysakenSyncReadiness and UIEnv.DoggysakenSyncReadiness.Aim == true,
 }
 local readyCount, featureCount = 0, 0
 local missingFeatures = {}
@@ -5743,7 +6232,7 @@ UIEnv.DoggysakenObsidian = ObsidianLibrary
 
 -- All tabs, groupboxes, controls and feature callbacks are now built. Only now
 -- reveal the finished UI and display the branded completion notification.
-ObsidianLibrary:Toggle(true)
+-- AutoShow=true makes the window available immediately; do not toggle it a second time.
 if readyCount == featureCount then
     ObsidianLibrary:Notify({
         Title = "Doggysaken was loaded successfully",
