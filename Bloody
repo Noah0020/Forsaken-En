@@ -1,6 +1,6 @@
 --[[
     DOGGYSAKEN | SYNCSAKEN FEATURE IMPORT
-    Imported feature modules: Syncsaken ESP, stamina, aim, prediction and utilities.
+    Imported feature modules: Syncsaken ESP, stamina, aim/prediction and utilities.
     Auto Block: one Doggysaken box-overlap check with a visible check volume.
     Removed: unrelated generators/movement extras, premium-key code, telemetry and webhooks.
 ]]
@@ -181,7 +181,6 @@ local Tabs = {
     Stamina = Window:AddTab("Stamina", "battery-full"),
     AutoBlock = Window:AddTab("Auto Block", "shield-check"),
     Aim = Window:AddTab("Aim", "crosshair"),
-    Prediction = Window:AddTab("Prediction", "sliders-horizontal"),
     Utilities = Window:AddTab("Utilities", "wrench"),
     Config = Window:AddTab("Save / Load", "save"),
 }
@@ -278,7 +277,7 @@ end
 local SyncTabConfig = {
     Visual = { tab = Tabs.ESP, group = "Syncsaken ESP", side = "Left", icon = "eye" },
     Aimbot = { tab = Tabs.Aim, group = "Syncsaken Aim", side = "Left", icon = "crosshair" },
-    Prediction = { tab = Tabs.Prediction, group = "Aim Prediction", side = "Left", icon = "sliders-horizontal" },
+    Prediction = { tab = Tabs.Aim, group = "Aim Prediction", side = "Right", icon = "sliders-horizontal" },
     Other = { tab = Tabs.Utilities, group = "Syncsaken Utilities", side = "Left", icon = "wrench" },
 }
 local function MakeSyncTab(category)
@@ -1320,21 +1319,30 @@ if t1.requiring then
 		return v230
 	end
 
+	-- Hooking is optional. Some executors expose the Network module as a
+	-- read-only/frozen table, so never let that prevent the UI from loading.
 	for k, v in pairs(Network) do
 		t12.originalFunctions[k] = v
 	end
 
-	for k in pairs(Network) do
-		Network[k] = function(...)
-			local t13 = { ... }
+	for k, original in pairs(t12.originalFunctions) do
+		local originalFunction = original
+		local hookOk, hookError = pcall(function()
+			Network[k] = function(...)
+				local t13 = { ... }
 
-			if t12:ExecuteTasks(t13) then
-				return
+				if t12:ExecuteTasks(t13) then
+					return
+				end
+
+				return originalFunction(table.unpack(t13))
 			end
-
-			return t12.originalFunctions[k](table.unpack(t13))
+		end)
+		if hookOk then
+			v15("Hooked " .. tostring(k))
+		else
+			warn("[Doggysaken/Sync] Could not hook Network." .. tostring(k) .. ": " .. tostring(hookError))
 		end
-		v15("Hooked " .. tostring(k))
 	end
 end
 
@@ -1640,21 +1648,13 @@ addToggle(AutoBlockGroup, "Doggysaken_AutoBlock", "Auto Block", false, function(
         for killer in pairs(activeCheckBoxes) do destroyCheckBox(killer) end
     end
 end, "Uses one attack-box overlap check. No rectangle, zone, or anti-bait modes.")
-addSlider(AutoBlockGroup, "Doggysaken_BlockCooldown", "Block cooldown", 0.25, 0, 2, 2, function(value)
-    AutoBlockState.Cooldown = value
-end, " s")
-
-addToggle(AutoPunchGroup, "Doggysaken_AutoPunch", "Auto Punch after successful block", false, function(value)
+addToggle(AutoPunchGroup, "Doggysaken_AutoPunch", "Auto Punch", false, function(value)
     AutoBlockState.AutoPunch = value
-end)
-addSlider(AutoPunchGroup, "Doggysaken_PunchDelay", "Block-to-punch delay", 0.1, 0, 1, 2, function(value)
-    AutoBlockState.PunchDelay = value
-end, " s")
+end, "Punch after a successful block.")
 
-addToggle(BoxSettingsGroup, "Doggysaken_ShowBlockBox", "Show check box", true, function(value)
-    AutoBlockState.BoxVisible = value
-    for _, record in pairs(activeCheckBoxes) do setCheckBoxVisible(record) end
-end, "The visible box is the same volume used by the overlap check.")
+-- The box is always visible while Auto Block is enabled; there is no separate
+-- rectangle/visibility mode that can accidentally hide the live check volume.
+AutoBlockState.BoxVisible = true
 addSlider(BoxSettingsGroup, "Doggysaken_BoxDistance", "Distance in front of killer", 3, 0, 10, 1, function(value)
     AutoBlockState.BoxDistance = value
 end, " studs")
