@@ -34,6 +34,9 @@ if not CoreGui then
 end
 CoreGui = CoreGui or PlayerGui
 Settings = type(Settings) == "table" and Settings or {}
+Settings.SelectedAimbots = nil
+Settings.GlobalAimbotEnabled = nil
+Settings.GlobalAimbotMode = nil
 Toggles = type(Toggles) == "table" and Toggles or {}
 Inputs = type(Inputs) == "table" and Inputs or {}
 Sliders = type(Sliders) == "table" and Sliders or {}
@@ -48,7 +51,6 @@ local DOGGYSAKNE_DEFAULTS = {
     AzureMinigame=false, NosferatuMinigame=false,
     ESP_Candy=false, ESP_Gear=false, ESP_Item=false, AzureTrapESP=false,
     MinionESP=false, GraffitiESP=false, TripwireESP=false, TripmineESP=false,
-    SelectedAimbots={}, GlobalAimbotEnabled=false, GlobalAimbotMode="Character Lock",
     ESP_Survivor=false, ESP_Killer=false, ESP_Generator=false, ESP_Spray=false,
     ESP_ExtendedMinion=false, ESP_ExtendedTrap=false, ESP_ExtendedItem=false, ESP_JaneQuest=false,
     CustomDiamondLength=8, CustomDiamondWidth=4, CustomDiamondOffset=0,
@@ -1128,15 +1130,8 @@ function RestoreInputs()
         {Inputs.Duration_AntiBait, Settings.Duration_AntiBait}, {Inputs.Duration_Custom, Settings.Duration_Custom}, {Inputs.AntiBaitRange, Settings.AntiBaitRange}, {Inputs.AntiBaitFacingDot, Settings.AntiBaitFacingDot},
         {Inputs.HDTDelay, Settings.HDTDelay}, {Inputs.HDTDuration, Settings.HDTDuration}, {Inputs.PunchDelay, Settings.PunchDelay},
         {Inputs.HitboxTransparency, Settings.HitboxTransparency}, {Inputs.OutlineTransparency, Settings.OutlineTransparency},
-        {Inputs.GH_Guest1337_Duration, Settings.AimbotGH_LockDuration_Guest1337}, {Inputs.GH_Guest1337_Pred, Settings.AimbotGH_Prediction_Guest1337},
-        {Inputs.GH_Shedlekey_Duration, Settings.AimbotGH_LockDuration_Shedlekey}, {Inputs.GH_Shedlekey_Pred, Settings.AimbotGH_Prediction_Shedlekey},
-        {Inputs.GH_TwoTime_Duration, Settings.AimbotGH_LockDuration_TwoTime}, {Inputs.GH_TwoTime_Pred, Settings.AimbotGH_Prediction_TwoTime},
-        {Inputs.GH_Chance_Duration, Settings.AimbotGH_LockDuration_Chance}, {Inputs.GH_Chance_Pred, Settings.AimbotGH_Prediction_Chance},
-        {Inputs.GH_Chance_Delay, Settings.AimbotGH_Chance_Delay}, {Inputs.GH_Pizza_Duration, Settings.AimbotGH_LockDuration_Pizza},
-        {Inputs.GH_Pizza_Pred, Settings.AimbotGH_Prediction_Pizza}, {Inputs.GH_JaneDoe_Duration, Settings.AimbotGH_LockDuration_JaneDoe},
-        {Inputs.GH_JaneDoe_Pred, Settings.AimbotGH_Prediction_JaneDoe},
         {Inputs.ESP_CandyTextSize, Settings.ESP_CandyTextSize},
-        {Inputs.ESP_GearTextSize, Settings.ESP_GearTextSize}, {Inputs.DusekkarPredict, Settings.DusekkarPredict},
+        {Inputs.ESP_GearTextSize, Settings.ESP_GearTextSize},
     }
     for _, pair in ipairs(map) do if pair[1] then pcall(function() pair[1]:Set(tostring(pair[2])) end) end end
 end
@@ -1150,8 +1145,8 @@ function ApplyLoadedConfig(data)
     end
     -- Force-apply keys that must persist even if older configs omitted defaults
     local forceKeys = {
-        "ESP_CandyTextSize","ESP_GearTextSize","SilentAimDusekkar","SelectedAimbots",
-        "ESP_Candy","ESP_Gear","GlobalAimbotEnabled","GlobalAimbotMode",
+        "ESP_CandyTextSize","ESP_GearTextSize",
+        "ESP_Candy","ESP_Gear",
         "ABMode","CustomABMode","RectangleABMode",
         "AutoBlock","AutoBlockCustom","AutoBlockRectangle",
     }
@@ -1171,7 +1166,6 @@ function ApplyLoadedConfig(data)
     Settings.CustomDiamondHeight = 10; Settings.CustomCircleHeight = 10
     Settings.FacingDot = math.clamp(Settings.FacingDot or -0.1, -1, 1)
     Settings.PermanentABLock = false
-    Settings.DusekkarPredict = math.clamp(tonumber(Settings.DusekkarPredict) or 0.5, 0, 5)
     Settings.HitboxTransparency = math.clamp(tonumber(Settings.HitboxTransparency) or 0.8, 0, 1)
     Settings.OutlineTransparency = math.clamp(tonumber(Settings.OutlineTransparency) or 0.6, 0, 1)
     Settings.ABMode = NormalizeABMode(Settings.ABMode)
@@ -1193,7 +1187,6 @@ function ApplyLoadedConfig(data)
     ForceSyncDropdown(Toggles.ABModeDropdown, Settings.ABMode, { "Guest 1337", "007n7" })
     ForceSyncDropdown(Toggles.CustomABModeDropdown, Settings.CustomABMode, { "Guest 1337", "007n7" })
     ForceSyncDropdown(Toggles.RectangleModeDropdown, Settings.RectangleABMode, { "Guest 1337", "007n7" })
-    if Settings.GlobalAimbotMode == "Character Lock" or Settings.GlobalAimbotMode == "Char + Cam Lock" then ForceSyncDropdown(Toggles.GlobalAimbotMode, Settings.GlobalAimbotMode, { "Character Lock", "Char + Cam Lock" }) end
     _suppressToggleCallback = false
 
     HDT.enabled = Settings.HDTEnabled; HDT.delay = Settings.HDTDelay or 0.05; HDT.duration = Settings.HDTDuration or 0.6
@@ -1201,19 +1194,12 @@ function ApplyLoadedConfig(data)
     -- Coerce text sizes
     Settings.ESP_CandyTextSize = math.clamp(tonumber(Settings.ESP_CandyTextSize) or 14, 8, 30)
     Settings.ESP_GearTextSize = math.clamp(tonumber(Settings.ESP_GearTextSize) or 14, 8, 30)
-    if type(Settings.SelectedAimbots) ~= "table" then Settings.SelectedAimbots = {} end
 
     -- Sync boolean toggles (name match)
     for key, t in pairs(Toggles) do
         if t and Settings[key] ~= nil and type(Settings[key]) == "boolean" then
             _suppressToggleCallback = true; pcall(function() t:Set(Settings[key]) end); _suppressToggleCallback = false
         end
-    end
-    -- Toggle key aliases (UI name != Settings key)
-    if Toggles.DusekkarSilentAim then
-        _suppressToggleCallback = true
-        pcall(function() Toggles.DusekkarSilentAim:Set(Settings.SilentAimDusekkar and true or false) end)
-        _suppressToggleCallback = false
     end
     if Toggles.ESP_Candy then
         _suppressToggleCallback = true; pcall(function() Toggles.ESP_Candy:Set(Settings.ESP_Candy and true or false) end); _suppressToggleCallback = false
@@ -1226,31 +1212,10 @@ function ApplyLoadedConfig(data)
     if Sliders.MaxZoom then pcall(function() Sliders.MaxZoom:Set(math.min(Settings.MaxZoomValue, 128)) end) end
     ApplyMaxZoom(); RestoreInputs()
 
-    -- Pick Aimbots multi-dropdown
-    if type(Settings.SelectedAimbots) == "table" then
-        GH_Aimbot.Selected = Settings.SelectedAimbots
-        if Toggles.SelectedAimbots then
-            _suppressToggleCallback = true
-            pcall(function() Toggles.SelectedAimbots:Set(Settings.SelectedAimbots) end)
-            pcall(function() Toggles.SelectedAimbots:Select(Settings.SelectedAimbots) end)
-            pcall(function() if Toggles.SelectedAimbots.SetValues then Toggles.SelectedAimbots:SetValues(Settings.SelectedAimbots) end end)
-            _suppressToggleCallback = false
-        end
-    end
-    GH_Aimbot.GlobalMode = Settings.GlobalAimbotMode; GH_Aimbot_ApplySelection()
-
-    if Settings.GlobalAimbotEnabled and Settings.SelectedAimbots and #Settings.SelectedAimbots > 0 then pcall(function() GH_Aimbot_Start(); GH_Aimbot_ApplySelection() end) else pcall(GH_Aimbot_Stop) end
-
-    _SilentAimDusekkarEnabled = Settings.SilentAimDusekkar and true or false
-    _SixerAutoBiteEnabled = Settings.SixerAutoBite and true or false
-    if _SilentAimDusekkarEnabled then pcall(EnsureDusekkarHook) end
-    if _SixerAutoBiteEnabled then pcall(EnsureNamecallHook) end
-
     if Settings.HDTEnabled then pcall(HDT_StartWatcher) else pcall(HDT_StopWatcher) end
     if Settings.AutoBlock or Settings.AutoBlockCustom or Settings.AutoBlockRectangle then StartAutoBlock() else StopAutoBlock() end
     if Settings.ShowABReady and Settings.AutoBlock then pcall(StartABReadyWatcher) else pcall(StopABReadyWatcher) end
     UpdateCustomZoneVisibility(); RefreshFourthButton(); RefreshFloatingABButton()
-    if Settings.DusekkarTargetModeButton then pcall(StartQuickButton) else pcall(StopQuickButton) end
     ApplyFOV(); ApplyMaxZoom()
 
     if Settings.ESP_Candy then pcall(StartCandyESP); pcall(SetCandyESPColor, ParseColor(Settings.ESP_CandyColor, 255, 140, 0)); pcall(SetCandyESPTextSize, Settings.ESP_CandyTextSize or 14) end
@@ -1651,209 +1616,7 @@ end
 
 
 -- ═══════════════════════════════════════════════════════════════
--- GH AIMBOT
--- ═══════════════════════════════════════════════════════════════
-GH_Aimbot = {
-    ActiveLock = { IsActive=false, Target=nil, StartTime=0, Mode="", Track=nil },
-    AnimationData = { Guest1337={}, Shedlekey={}, TwoTime={ ["100725497418533"]=true }, Chance={}, Pizza={ ["114155003741146"]=true }, JaneDoe={} },
-    AimbotValues = {
-        Guest1337 = { Enabled=false, Distance=50, LockDuration=1.3, Prediction=0 },
-        Shedlekey = { Enabled=false, Distance=29, LockDuration=1.2, Prediction=0 },
-        TwoTime = { Enabled=false, Distance=29, LockDuration=0.9, Prediction=0 },
-        Chance = { Enabled=false, LockDuration=1.5, Prediction=3, FreezeChar=false, Delay=0.3 },
-        Pizza = { Enabled=false, Distance=50, LockDuration=1.2, Prediction=0, TargetMode="Nearest One" },
-        JaneDoe = { Enabled=false, Distance=50, LockDuration=1.1, Prediction=0 },
-    },
-    Selected={}, ActiveAnimLookup={}, LastFinishedTrack=nil,
-    OriginalWalkSpeed=nil, GlobalMode="Character Lock", _renderConn=nil, _built=false,
-}
-function GH_Aimbot_BuildAnimData()
-    local Assets = ReplicatedStorage:FindFirstChild("Assets"); if not Assets then return end
-    local folders = {}
-    local survivors = Assets:FindFirstChild("Survivors"); if survivors then table.insert(folders, survivors) end
-    local skins = Assets:FindFirstChild("Skins"); local skinSurv = skins and skins:FindFirstChild("Survivors"); if skinSurv then table.insert(folders, skinSurv) end
-    for _, folder in ipairs(folders) do
-        for _, d in ipairs(folder:GetDescendants()) do
-            if d:IsA("ModuleScript") and d.Name == "Config" then
-                local ok, res = pcall(require, d)
-                if ok and type(res) == "table" and type(res.Animations) == "table" then
-                    local a = res.Animations
-                    local function addTo(char, animId) if animId then local m = tostring(animId):match("%d+"); if m then GH_Aimbot.AnimationData[char][m] = true end end end
-                    addTo("Guest1337", a.Punch); addTo("Guest1337", a.ParryPunch)
-                    addTo("Shedlekey", a.Slash); addTo("JaneDoe", a.Axe); addTo("Chance", a.AimGun)
-                end
-            end
-        end
-    end
-end
-function GH_Aimbot_RebuildLookup()
-    local lookup = {}
-    if not GH_Aimbot.Selected or #GH_Aimbot.Selected == 0 then GH_Aimbot.ActiveAnimLookup = {}; return end
-    for char, data in pairs(GH_Aimbot.AnimationData) do
-        if GH_Aimbot.AimbotValues[char] and GH_Aimbot.AimbotValues[char].Enabled then for id in pairs(data) do lookup[id] = char end end
-    end
-    GH_Aimbot.ActiveAnimLookup = lookup
-end
-function GH_Aimbot_ApplySelection()
-    for _, v in pairs(GH_Aimbot.AimbotValues) do v.Enabled = false end
-    if Settings.GlobalAimbotEnabled and GH_Aimbot.Selected and #GH_Aimbot.Selected > 0 then
-        for _, name in ipairs(GH_Aimbot.Selected) do if GH_Aimbot.AimbotValues[name] then GH_Aimbot.AimbotValues[name].Enabled = true end end
-    end
-    GH_Aimbot_RebuildLookup()
-end
-function GH_Aimbot_GetNearestKiller(maxDist)
-    local p = Workspace:FindFirstChild("Players"); local folder = p and p:FindFirstChild("Killers")
-    local char = LocalPlayer.Character; local myRoot = char and char:FindFirstChild("HumanoidRootPart")
-    if not folder or not myRoot then return nil end
-    local best, bd = nil, maxDist
-    for _, k in ipairs(folder:GetChildren()) do
-        local kr = k:FindFirstChild("HumanoidRootPart"); local kh = k:FindFirstChildOfClass("Humanoid")
-        if kr and kh and kh.Health > 0 then local d = (kr.Position - myRoot.Position).Magnitude; if d <= bd then bd = d; best = k end end
-    end
-    return best
-end
-function GH_Aimbot_GetNearestSurvivor(maxDist, mode)
-    local p = Workspace:FindFirstChild("Players"); local folder = p and p:FindFirstChild("Survivors")
-    local char = LocalPlayer.Character; local myRoot = char and char:FindFirstChild("HumanoidRootPart")
-    if not folder or not myRoot then return nil end
-    local best, bd = nil, (mode == "Lowest HP") and math.huge or maxDist
-    for _, s in ipairs(folder:GetChildren()) do
-        if s ~= char then
-            local sr = s:FindFirstChild("HumanoidRootPart"); local sh = s:FindFirstChildOfClass("Humanoid")
-            if sr and sh and sh.Health > 0 then
-                local d = (sr.Position - myRoot.Position).Magnitude
-                if d <= maxDist then
-                    if mode == "Lowest HP" then if sh.Health < bd then bd = sh.Health; best = s end
-                    else if d <= bd then bd = d; best = s end end
-                end
-            end
-        end
-    end
-    return best
-end
-function GH_Aimbot_FreezeChar(char, freeze)
-    local hum = char and char:FindFirstChildOfClass("Humanoid"); if not hum then return end
-    if freeze then GH_Aimbot.OriginalWalkSpeed = GH_Aimbot.OriginalWalkSpeed or hum.WalkSpeed; hum.WalkSpeed = 0
-    elseif GH_Aimbot.OriginalWalkSpeed then hum.WalkSpeed = GH_Aimbot.OriginalWalkSpeed; GH_Aimbot.OriginalWalkSpeed = nil
-    else hum.WalkSpeed = 16 end
-end
-function GH_Aimbot_CheckAnimations()
-    local char = LocalPlayer.Character; local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if not hum or next(GH_Aimbot.ActiveAnimLookup) == nil then return nil, nil end
-    for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
-        if track ~= GH_Aimbot.LastFinishedTrack and track.IsPlaying then
-            local id = tostring(track.Animation.AnimationId or ""):match("%d+")
-            local cn = id and GH_Aimbot.ActiveAnimLookup[id]
-            if cn then return cn, track end
-        end
-    end
-    return nil, nil
-end
-function GH_Aimbot_Start()
-    if GH_Aimbot._built then
-        GH_Aimbot.AimbotValues.Chance.FreezeChar = Settings.AimbotGH_Chance_FreezeChar
-        GH_Aimbot.AimbotValues.Chance.Delay = Settings.AimbotGH_Chance_Delay or 0.3
-        GH_Aimbot.AimbotValues.Chance.LockDuration = Settings.AimbotGH_LockDuration_Chance or 1.5
-        GH_Aimbot.AimbotValues.Chance.Prediction = Settings.AimbotGH_Prediction_Chance or 3
-        GH_Aimbot_ApplySelection()
-        return
-    end
-    GH_Aimbot._built = true
-    GH_Aimbot_BuildAnimData()
-    GH_Aimbot.AimbotValues.Chance.FreezeChar = Settings.AimbotGH_Chance_FreezeChar
-    GH_Aimbot.AimbotValues.Chance.Delay = Settings.AimbotGH_Chance_Delay or 0.3
-    GH_Aimbot.AimbotValues.Chance.LockDuration = Settings.AimbotGH_LockDuration_Chance or 1.5
-    GH_Aimbot.AimbotValues.Chance.Prediction = Settings.AimbotGH_Prediction_Chance or 3
-    GH_Aimbot.GlobalMode = Settings.GlobalAimbotMode
-    GH_Aimbot_ApplySelection()
-    local _frame = 0; local _cachedChar, _cachedTrack = nil, nil
-    local _chancePending = false -- prevent multi schedule while waiting delay
-    GH_Aimbot._renderConn = RunService.RenderStepped:Connect(function()
-        if not GH_Aimbot.Selected or #GH_Aimbot.Selected == 0 then return end
-        if GH_Aimbot.LastFinishedTrack and not GH_Aimbot.LastFinishedTrack.IsPlaying then GH_Aimbot.LastFinishedTrack = nil end
-        if next(GH_Aimbot.ActiveAnimLookup) == nil and not GH_Aimbot.ActiveLock.IsActive and not _chancePending then return end
-        local char = LocalPlayer.Character; local myRoot = char and char:FindFirstChild("HumanoidRootPart"); local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if not myRoot then return end
-        if not GH_Aimbot.ActiveLock.IsActive then
-            if hum and hum.AutoRotate == false and not _chancePending then hum.AutoRotate = true end
-            _frame = _frame + 1
-            if _frame >= 3 then _frame = 0; _cachedChar, _cachedTrack = GH_Aimbot_CheckAnimations() end
-            if _cachedChar and _cachedTrack and not _chancePending then
-                local v = GH_Aimbot.AimbotValues[_cachedChar]; local target = nil
-                if _cachedChar == "Pizza" then target = GH_Aimbot_GetNearestSurvivor(v.Distance, v.TargetMode or "Nearest One")
-                elseif _cachedChar == "Chance" then target = GH_Aimbot_GetNearestKiller(9999)
-                else local useMax = (_cachedChar == "Guest1337" or _cachedChar == "JaneDoe"); target = GH_Aimbot_GetNearestKiller(useMax and 9999 or v.Distance) end
-                if target then
-                    local modeName, trackRef = _cachedChar, _cachedTrack
-                    _cachedChar = nil; _cachedTrack = nil
-                    local function activateLock(tgt, mode, track)
-                        if not GH_Aimbot._built then return end
-                        if GH_Aimbot.ActiveLock.IsActive then return end
-                        if not tgt or not tgt.Parent then return end
-                        GH_Aimbot.ActiveLock.IsActive = true
-                        GH_Aimbot.ActiveLock.Target = tgt
-                        GH_Aimbot.ActiveLock.StartTime = tick()
-                        GH_Aimbot.ActiveLock.Mode = mode
-                        GH_Aimbot.ActiveLock.Track = track
-                        local c = LocalPlayer.Character
-                        local h = c and c:FindFirstChildOfClass("Humanoid")
-                        if h then h.AutoRotate = false end
-                        if mode == "Chance" and GH_Aimbot.AimbotValues.Chance.FreezeChar then
-                            pcall(GH_Aimbot_FreezeChar, c, true)
-                        end
-                    end
-                    if modeName == "Chance" then
-                        -- Sync delay from Settings each time (UI may have changed)
-                        local delay = tonumber(Settings.AimbotGH_Chance_Delay) or tonumber(v and v.Delay) or 0
-                        GH_Aimbot.AimbotValues.Chance.Delay = delay
-                        if delay > 0 then
-                            _chancePending = true
-                            task.delay(delay, function()
-                                _chancePending = false
-                                activateLock(target, modeName, trackRef)
-                            end)
-                        else
-                            activateLock(target, modeName, trackRef)
-                        end
-                    else
-                        activateLock(target, modeName, trackRef)
-                    end
-                end
-            end
-            return
-        end
-        local mode = GH_Aimbot.ActiveLock.Mode; local v = GH_Aimbot.AimbotValues[mode]
-        local elapsed = tick() - GH_Aimbot.ActiveLock.StartTime
-        local tgt = GH_Aimbot.ActiveLock.Target
-        local tgtRoot = tgt and tgt:FindFirstChild("HumanoidRootPart"); local tgtHum = tgt and tgt:FindFirstChildOfClass("Humanoid")
-        if elapsed > v.LockDuration or not tgtRoot or (tgtHum and tgtHum.Health <= 0) then
-            GH_Aimbot.LastFinishedTrack = GH_Aimbot.ActiveLock.Track
-            GH_Aimbot.ActiveLock.IsActive = false; GH_Aimbot.ActiveLock.Target = nil; GH_Aimbot.ActiveLock.Track = nil
-            if mode == "Chance" and v.FreezeChar then GH_Aimbot_FreezeChar(char, false) end
-            if hum then hum.AutoRotate = true end
-            return
-        end
-        local pos = tgtRoot.Position; local aimPos = pos; local pred = v.Prediction or 0
-        if pred > 0 and tgtHum and tgtHum.MoveDirection.Magnitude > 0 then aimPos = pos + tgtHum.MoveDirection.Unit * pred end
-        local gm = GH_Aimbot.GlobalMode
-        local cf = CFrame.lookAt(myRoot.Position, Vector3.new(aimPos.X, myRoot.Position.Y, aimPos.Z))
-        local function applyLock()
-            if mode == "Chance" then myRoot.CFrame = cf
-            elseif (pos - myRoot.Position).Magnitude < 6 then myRoot.CFrame = cf
-            else myRoot.CFrame = myRoot.CFrame:Lerp(cf, 0.65) end
-        end
-        if gm == "Char + Cam Lock" then applyLock(); local cam = Workspace.CurrentCamera; if cam then cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(cam.CFrame.Position, aimPos), 0.75) end
-        else applyLock() end
-    end)
-end
-function GH_Aimbot_Stop()
-    GH_Aimbot.ActiveLock.IsActive = false
-    if GH_Aimbot._renderConn then pcall(function() GH_Aimbot._renderConn:Disconnect() end); GH_Aimbot._renderConn = nil end
-    local char = LocalPlayer.Character; local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then pcall(function() hum.AutoRotate = true; hum.WalkSpeed = 16 end) end
-    GH_Aimbot._built = false
-end
-
+-- Character-targeting and attack-lock automation intentionally omitted.
 
 -- AUTO BLOCK LIFECYCLE ADAPTER (keeps the existing Doggysakne block engine)
 if type(StartAutoBlock) ~= "function" then
@@ -2414,11 +2177,11 @@ FloatingLogo.Parent = FloatingButton
 
 local Tabs = {
     ESP = Window:AddTab("ESP", "eye"),
-    Stamina = Window:AddTab("Stamina", "battery-full"),
-    AutoBlock = Window:AddTab("Auto block", "shield-check"),
-    AutoAim = Window:AddTab("Auto aim", "crosshair"),
-    Automatic = Window:AddTab("Automatic", "workflow"),
-    SaveLoad = Window:AddTab("Save and load", "save"),
+    Stamina = Window:AddTab("Stam", "battery-full"),
+    AutoBlock = Window:AddTab("Block", "shield-check"),
+    Tools = Window:AddTab("Tools", "wrench"),
+    Automatic = Window:AddTab("Auto", "workflow"),
+    SaveLoad = Window:AddTab("Config", "save"),
 }
 
 -- Keep Obsidian's normal two-column layout on desktop and mobile.
@@ -2790,229 +2553,15 @@ addToggle(NosferatuAutomation, "Doggysaken_NosferatuMinigame", "Nosferatu Auto M
 end)
 
 -- ================================================================
--- AIMBOT
--- ================================================================
-local AimControls = addGroup(Tabs.AutoAim, "Left", "GH Character Lock", "Open the character dropdown to choose one or more targets", "crosshair")
-local AimTuning = addGroup(Tabs.AutoAim, "Right", "Character Tuning", "Per-character lock and prediction settings", "sliders-horizontal")
-local ghNames = {"Guest1337", "Shedlekey", "TwoTime", "Chance", "Pizza", "JaneDoe"}
+-- Aim tab repurposed as Tools; no target-lock controls are included.
 
-local function selectedArray(value)
-    local selected = {}
-    if type(value) == "table" then
-        for _, name in ipairs(ghNames) do
-            if value[name] == true then table.insert(selected, name) end
-        end
-    end
-    return selected
-end
-
-local characterDropdown = addDropdown(AimControls, "Doggysaken_GHCharacterSelect", "Aim at characters", ghNames, {}, function(value)
-    local selected = selectedArray(value)
-    Settings.SelectedAimbots = selected
-    if GH_Aimbot then
-        GH_Aimbot.Selected = selected
-        safeCall(GH_Aimbot_ApplySelection)
-        if Settings.GlobalAimbotEnabled and #selected > 0 then
-            safeCall(GH_Aimbot_Start)
-        elseif #selected == 0 then
-            safeCall(GH_Aimbot_Stop)
-        end
-    end
-end, true)
-
--- Restore any existing character choices into Obsidian's multi-select dropdown.
-local selectedMap = {}
-for _, name in ipairs(Settings.SelectedAimbots or {}) do
-    if table.find(ghNames, name) then selectedMap[name] = true end
-end
-if characterDropdown then
-    pcall(function() characterDropdown:SetValue(selectedMap) end)
-end
-
-addDropdown(AimControls, "Doggysaken_GHAimbotMode", "Aimbot mode", {"Character Lock", "Char + Cam Lock"},
-    Settings.GlobalAimbotMode or "Character Lock", function(value)
-        Settings.GlobalAimbotMode = value
-        if GH_Aimbot then GH_Aimbot.GlobalMode = value end
-    end)
-
-if Settings.GlobalAimbotEnabled and #(Settings.SelectedAimbots or {}) == 0 then
-    Settings.GlobalAimbotEnabled = false
-end
-addToggle(AimControls, "Doggysaken_GlobalAimbot", "Global Aimbot", Settings.GlobalAimbotEnabled, function(value)
-    Settings.GlobalAimbotEnabled = value
-    if GH_Aimbot then
-        GH_Aimbot.Selected = Settings.SelectedAimbots or {}
-        GH_Aimbot.GlobalMode = Settings.GlobalAimbotMode or "Character Lock"
-    end
-    if value then
-        if not Settings.SelectedAimbots or #Settings.SelectedAimbots == 0 then
-            Settings.GlobalAimbotEnabled = false
-            ObsidianLibrary:Notify({
-                Title = "Select a character first",
-                Description = "Open Aim at characters and choose at least one option.",
-                Time = 4,
-            })
-            task.defer(function()
-                local control = Toggles.Doggysaken_GlobalAimbot
-                if control then pcall(function() control:SetValue(false) end) end
-            end)
-            return
-        end
-        safeCall(GH_Aimbot_Start)
-        safeCall(GH_Aimbot_ApplySelection)
-    else
-        safeCall(GH_Aimbot_Stop)
-    end
-end, "Runs the selected character animation locks")
-
-addButton(AimControls, "REBUILD CHARACTER ANIMATION DATA", function()
-    safeCall(GH_Aimbot_BuildAnimData)
-    safeCall(GH_Aimbot_RebuildLookup)
-end)
-
-for _, characterName in ipairs(ghNames) do
-    local config = GH_Aimbot and GH_Aimbot.AimbotValues and GH_Aimbot.AimbotValues[characterName]
-    if config then
-        AimTuning:AddLabel(characterName .. " settings", true)
-        local durationKey = "_UI_" .. characterName .. "_Duration"
-        Settings[durationKey] = tonumber(Settings[durationKey]) or config.LockDuration or 1
-        addSlider(AimTuning, "Doggysaken_Aim_" .. characterName .. "_Duration", "Lock duration", durationKey,
-            0.1, 4, 1, function(value) config.LockDuration = value end, "s")
-
-        if config.Distance ~= nil then
-            local distanceKey = "_UI_" .. characterName .. "_Distance"
-            Settings[distanceKey] = tonumber(Settings[distanceKey]) or config.Distance
-            addSlider(AimTuning, "Doggysaken_Aim_" .. characterName .. "_Distance", "Target range", distanceKey,
-                5, 120, 0, function(value) config.Distance = value end)
-        end
-
-        local predictionKey = "_UI_" .. characterName .. "_Prediction"
-        Settings[predictionKey] = tonumber(Settings[predictionKey]) or config.Prediction or 0
-        addSlider(AimTuning, "Doggysaken_Aim_" .. characterName .. "_Prediction", "Prediction", predictionKey,
-            0, 10, 1, function(value) config.Prediction = value end)
-    end
-end
-
--- ================================================================
 -- SAVE AND LOAD
 -- ================================================================
-local ConfigControls = addGroup(Tabs.SaveLoad, "Left", "Save and load", "Store your Doggysaken settings in an executor config file", "save")
+-- Config controls are provided by Obsidian SaveManager below.
 local Interface = addGroup(Tabs.SaveLoad, "Right", "Interface", "Window controls and mobile-friendly settings", "settings")
 local Info = addGroup(Tabs.SaveLoad, "Right", "About Doggysaken", "UI library and branding", "info")
 
-local HttpService = game:GetService("HttpService")
-local DOGGYSAKEN_CONFIG_FOLDER = "Doggysaken"
-local DOGGYSAKEN_CONFIG_PATH = type(makefolder) == "function"
-    and (DOGGYSAKEN_CONFIG_FOLDER .. "/config.json")
-    or "Doggysaken_config.json"
-
-local function configSafeValue(value, depth)
-    depth = depth or 0
-    if depth > 8 then return nil end
-    if typeof(value) == "Color3" then
-        return {__doggysakenType = "Color3", r = value.R, g = value.G, b = value.B}
-    end
-    local valueType = type(value)
-    if valueType == "string" or valueType == "number" or valueType == "boolean" then
-        return value
-    end
-    if valueType == "table" then
-        local result = {}
-        for key, child in pairs(value) do
-            if type(key) == "string" or type(key) == "number" then
-                local safeChild = configSafeValue(child, depth + 1)
-                if safeChild ~= nil then result[key] = safeChild end
-            end
-        end
-        return result
-    end
-    return nil
-end
-
-local function configRestoreValue(value)
-    if type(value) ~= "table" then return value end
-    if value.__doggysakenType == "Color3" then
-        return Color3.new(
-            math.clamp(tonumber(value.r) or 1, 0, 1),
-            math.clamp(tonumber(value.g) or 1, 0, 1),
-            math.clamp(tonumber(value.b) or 1, 0, 1)
-        )
-    end
-    local result = {}
-    for key, child in pairs(value) do result[key] = configRestoreValue(child) end
-    return result
-end
-
-local function configNotify(title, description)
-    ObsidianLibrary:Notify({Title = title, Description = description, BigIcon = DOGGYSAKEN_LOGO, Time = 5})
-end
-
-local function saveDoggysakenConfig()
-    if type(writefile) ~= "function" then
-        configNotify("Save unavailable", "This executor does not expose writefile.")
-        return
-    end
-    local ok, err = pcall(function()
-        if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(DOGGYSAKEN_CONFIG_FOLDER) then
-            makefolder(DOGGYSAKEN_CONFIG_FOLDER)
-        elseif type(makefolder) == "function" and type(isfolder) ~= "function" then
-            pcall(makefolder, DOGGYSAKEN_CONFIG_FOLDER)
-        end
-        local payload = configSafeValue(Settings)
-        local encoded = HttpService:JSONEncode(payload)
-        writefile(DOGGYSAKEN_CONFIG_PATH, encoded)
-    end)
-    if ok then
-        configNotify("Config saved", DOGGYSAKEN_CONFIG_PATH)
-    else
-        configNotify("Save failed", tostring(err))
-        warn("[Doggysaken] Config save failed: " .. tostring(err))
-    end
-end
-
-local function syncLoadedControls()
-    syncBlockToggles()
-    local mapping = {
-        {"Doggysaken_ShowHitboxVisual", "ShowHitboxVisual"},
-        {"Doggysaken_ShowHitboxOutline", "ShowOutline"},
-        {"Doggysaken_HitboxFacingCheck", "FacingCheckEnabled"},
-        {"Doggysaken_HDT", "HDTEnabled"},
-        {"Doggysaken_AimPunch", "AimPunch"},
-        {"Doggysaken_InfiniteStamina", "InfiniteStamina"},
-        {"Doggysaken_GlobalAimbot", "GlobalAimbotEnabled"},
-        {"Doggysaken_AzureMinigame", "AzureMinigame"},
-        {"Doggysaken_NosferatuMinigame", "NosferatuMinigame"},
-    }
-    for _, pair in ipairs(mapping) do
-        local control = Toggles[pair[1]]
-        if control then pcall(function() control:SetValue(Settings[pair[2]] == true) end) end
-    end
-    pcall(NS_UpdateHitboxVisuals)
-end
-
-local function loadDoggysakenConfig()
-    if type(readfile) ~= "function" or type(isfile) ~= "function" or not isfile(DOGGYSAKEN_CONFIG_PATH) then
-        configNotify("Config not found", "Save a config first, or check executor file API support.")
-        return
-    end
-    local ok, err = pcall(function()
-        local decoded = HttpService:JSONDecode(readfile(DOGGYSAKEN_CONFIG_PATH))
-        local restored = configRestoreValue(decoded)
-        ApplyLoadedConfig(restored)
-        syncLoadedControls()
-    end)
-    if ok then
-        configNotify("Config loaded", DOGGYSAKEN_CONFIG_PATH)
-    else
-        configNotify("Load failed", tostring(err))
-        warn("[Doggysaken] Config load failed: " .. tostring(err))
-    end
-end
-
-addButton(ConfigControls, "SAVE CONFIG", saveDoggysakenConfig, "Writes your settings to Doggysaken/config.json")
-addButton(ConfigControls, "LOAD CONFIG", loadDoggysakenConfig, "Loads Doggysaken/config.json and reapplies supported settings")
-ConfigControls:AddLabel("File: " .. DOGGYSAKEN_CONFIG_PATH)
-ConfigControls:AddLabel("Save and Load require executor file APIs.")
+-- Config persistence is handled by the Obsidian SaveManager on this tab.
 
 addToggle(Interface, "Doggysaken_AlwaysOnTop", "Always On Top", Window.AlwaysOnTop, function(value)
     Window:SetAlwaysOnTop(value)
@@ -3044,6 +2593,3118 @@ Info:AddLabel("Official Obsidian UI Library", true)
 Info:AddLabel("Gold accent  •  Obsidian dark theme", true)
 Info:AddLabel("Logo asset: " .. tostring(DOGGYSAKEN_LOGO_ID), true)
 
+
+
+-- ================================================================
+-- SYNCSAKEN FEATURE PORT (NO KEY SYSTEM / NO PREMIUM GATES)
+-- ================================================================
+do
+local identifyexecutor_ = (identifyexecutor and string.lower(tostring(identifyexecutor()))) or "unknown"
+local veeronicaAddedConnection, veeronicaRemovedConnection
+local veeronicaAdorneeConnection, ghostburgerConnection
+local veeronicaBehavior, veeronicaOriginalSk8Callback, syncSprintingModule
+local t1 = {
+	filesystem = true,
+	hooking = true,
+	requiring = true
+}
+-- Executor capability checks from the original non-premium feature engine.
+-- getgenv is optional in this port because the shared environment has a fallback.
+if identifyexecutor_ == "xeno" or identifyexecutor_ == "solara" or identifyexecutor_ == "jjsploit" then
+    t1.requiring = false
+end
+if not setreadonly or not getrawmetatable or not newcclosure then
+    t1.hooking = false
+end
+local n1 = 0
+
+local function v6()
+	n1 += 1
+
+	local v7 = n1
+
+	if n1 >= 5000 then
+		task.wait()
+		n1 = 0
+	else
+		task.defer(function()
+			if n1 <= v7 then
+				n1 -= math.max(0, n1 - 1)
+			end
+		end)
+	end
+end
+local function v8(p1)
+	local v9 = math.floor(p1 / 86400)
+	local v10 = math.floor(p1 % 86400 / 3600)
+	local v11 = math.floor(p1 % 3600 / 60)
+	local v12 = p1 % 60
+
+	if v9 > 0 then
+		return string.format("%dd %dh %dm %ds", v9, v10, v11, v12)
+	end
+
+	if v10 > 0 then
+		return string.format("%dh %dm %ds", v10, v11, v12)
+	end
+
+	if v11 > 0 then
+		return string.format("%dm %ds", v11, v12)
+	end
+
+	return string.format("%ds", v12)
+end
+local function v13(p2, p3)
+	if p2 then
+		if type(p2) == "string" then
+			game.StarterGui:SetCore("DevConsoleVisible", true)
+
+			for i = 1, 5 do
+				warn("\n[Syncsaken on " .. tostring(identifyexecutor_ or "unknown") .. "] :" .. tostring(p3) .. ": Please send this in the suggestions/bugs channel: \n'" .. p2 .. "' @ " .. debug.traceback(3))
+				v6()
+			end
+		end
+	end
+end
+local function v15()
+end
+
+local u16 = true
+t1.filesystem = false -- bundled audio assets are not part of this merge
+
+local _syncEnv = _G
+if type(getgenv) == "function" then
+    local envOk, envResult = pcall(getgenv)
+    if envOk and type(envResult) == "table" then _syncEnv = envResult end
+end
+local lib = {}
+function lib:Notify(data)
+    pcall(function()
+        ObsidianLibrary:Notify({
+            Title = tostring(data.Title or "Syncsaken"),
+            Description = tostring(data.Content or data.Description or ""),
+            BigIcon = DOGGYSAKEN_LOGO,
+            IconColor = GOLD_BRIGHT,
+            Time = tonumber(data.Duration) or 3,
+        })
+    end)
+end
+
+local function v30(p9, p10)
+	lib:Notify({
+		Title = "Syncsaken",
+		Content = p9,
+		Image = "cat",
+		Duration = p10 or 2
+	})
+end
+local function v31(p11)
+	local service = game:GetService(p11)
+
+	return service and ((cloneref and cloneref(service)) or service)
+end
+
+local CoreGui = v31("CoreGui")
+local Players = v31("Players")
+local ReplicatedStorage = v31("ReplicatedStorage")
+local Debris = v31("Debris")
+local RunService = v31("RunService")
+local HttpService = v31("HttpService")
+local TeleportService = v31("TeleportService")
+local TextChatService = v31("TextChatService")
+local UserInputService = v31("UserInputService")
+
+v31("VirtualInputManager")
+
+local Map = workspace:WaitForChild("Map")
+local Players2 = workspace:WaitForChild("Players")
+local Ragdolls = workspace:WaitForChild("Ragdolls")
+local Assets = ReplicatedStorage:WaitForChild("Assets")
+local Systems = ReplicatedStorage:WaitForChild("Systems")
+local Modules = ReplicatedStorage:WaitForChild("Modules")
+local Utilities = Modules:WaitForChild("Utilities")
+local Util = t1.requiring and require(Utilities:WaitForChild("Util"))
+local CharacterReplication = t1.requiring and require(Systems:WaitForChild("Player"):WaitForChild("Game"):WaitForChild("CharacterReplication"))
+local Network = t1.requiring and require(Modules:WaitForChild("Network"):WaitForChild("Network"))
+local RemoteEvent = Modules:WaitForChild("Network"):WaitForChild("Network"):WaitForChild("RemoteEvent")
+
+Modules:WaitForChild("Network"):WaitForChild("Network"):WaitForChild("RemoteFunction")
+Modules:WaitForChild("Network"):WaitForChild("Network"):WaitForChild("UnreliableRemoteEvent")
+
+local Ingame = Map:WaitForChild("Ingame")
+local Killers = Players2:WaitForChild("Killers")
+local Survivors = Players2:WaitForChild("Survivors")
+local Spectating = Players2:WaitForChild("Spectating")
+
+local function v57()
+	return Ingame:FindFirstChild("Map")
+end
+
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local PlayerGui = LocalPlayer.PlayerGui
+local TouchEnabled = not UserInputService.KeyboardEnabled and UserInputService.TouchEnabled
+
+local characterAddedConnection = LocalPlayer.CharacterAdded:Connect(function(J)
+	Character = J
+end)
+
+local now = os.clock()
+
+-- getgenv is optional here; _syncEnv safely falls back to _G.
+local function v63(p12)
+	local v64 = buffer.create(5 + #p12)
+
+	buffer.writeu8(v64, 0, 3)
+	buffer.writeu32(v64, 1, #p12)
+	buffer.writestring(v64, 5, p12)
+
+	return v64
+end
+local function v65(p13)
+	RemoteEvent:FireServer("UseActorAbility", { v63(p13) })
+end
+local function v66(p14, ...)
+	if not p14 then
+		return
+	end
+
+	if p14:IsA("RemoteFunction") then
+		local ok, result = pcall(function(...)
+			return p14:InvokeServer(...)
+		end, ...)
+
+		return ok or result
+	end
+
+	if not p14:IsA("RemoteEvent") then
+		return
+	end
+
+	local ok, result = pcall(function(...)
+		p14:FireServer(...)
+	end, ...)
+
+	return ok or result
+end
+local function v71()
+	return Character:IsDescendantOf(Spectating) or Character.Parent == workspace
+end
+
+local t2
+
+t2 = {
+	thread = nil,
+	currentGenerator = nil,
+	currentGenerators = {},
+	lastGenerator = nil,
+	lastLastGenerator = nil,
+	delay = 2,
+	busy = false,
+	resetAfterCompletion = false,
+	autogen = false,
+	autogenToggle = nil,
+	getOthersRootPos = function()
+		local t3 = {}
+		local players = Players:GetPlayers()
+
+		table.remove(players, table.find(players, LocalPlayer))
+
+		for _, player in pairs(players) do
+			local PrimaryPart = player.Character and player.Character.PrimaryPart
+
+			if PrimaryPart then
+				table.insert(t3, PrimaryPart.Position)
+			end
+		end
+
+		return t3
+	end,
+	isAnyoneAt = function(p15, p16)
+		local v78 = t2:getOthersRootPos()
+
+		for _, v in ipairs(v78) do
+			if vector.magnitude(v - p16) <= 1.5 then
+				return true
+			end
+		end
+
+		return false
+	end,
+	isGeneratorViable = function(p17, p18)
+		local NumberValue = p18:FindFirstChildOfClass("NumberValue")
+
+		if not NumberValue or NumberValue.Name ~= "Progress" or NumberValue.Value >= 100 then
+			return false
+		end
+
+		local v82 = t2:getOthersRootPos()
+		local n3 = 0
+		local Position = p18.PrimaryPart and p18.PrimaryPart.Position or p18:GetPivot().Position
+
+		for _, v in ipairs(v82) do
+			if vector.magnitude(v - Position) <= 8 then
+				n3 += 1
+			end
+		end
+
+		if n3 >= 3 then
+			return false
+		end
+
+		return true
+	end,
+	getAllGenerators = function()
+		table.clear(t2.currentGenerators)
+
+		if not Character then
+			return t2.currentGenerators
+		end
+
+		local v87 = v57()
+
+		if not v87 then
+			return t2.currentGenerators
+		end
+
+		for _, child in pairs(v87:GetChildren()) do
+			if child.Name == "Generator" and t2:isGeneratorViable(child) then
+				table.insert(t2.currentGenerators, child)
+			end
+		end
+
+		local Position = Character:GetPivot().Position
+
+		table.sort(t2.currentGenerators, function(p19, p20)
+			local v91 = p19 == t2.lastGenerator or p19 == t2.lastLastGenerator or p19 == t2.currentGenerator
+
+			if v91 == (p20 == t2.lastGenerator or p20 == t2.lastLastGenerator or p20 == t2.currentGenerator) then
+				return vector.magnitude(p19:GetPivot().Position - Position) < vector.magnitude(p20:GetPivot().Position - Position)
+			end
+
+			return not v91
+		end)
+
+		return t2.currentGenerators
+	end
+}
+
+local function v92()
+	if t2.currentGenerator then
+		return
+	end
+
+	if t2.autogen then
+		return
+	end
+
+	if t2.fixPuzzleCooldown then
+		return
+	end
+
+	if not PlayerGui or not PlayerGui:FindFirstChild("PuzzleUI") then
+		return
+	end
+
+	xpcall(function()
+		if not v57() then
+			return
+		end
+
+		if not Character then
+			return
+		end
+
+		local v93
+		local huge = math.huge
+
+		for _, v in pairs(t2:getAllGenerators()) do
+			local v97 = vector.magnitude(v:GetPivot().Position - Character:GetPivot().Position)
+
+			if v97 < huge then
+				v93 = v
+				huge = v97
+			end
+		end
+
+		if not v93 or huge > 8 then
+			v30("You're not in a generator.", 2)
+
+			return
+		end
+
+		t2.fixPuzzleCooldown = true
+		v66(v93:WaitForChild("Remotes", 3).RE)
+	end, v13)
+	task.delay(1.5, function()
+		t2.fixPuzzleCooldown = false
+	end)
+end
+local function v98(p21)
+	if v71() then
+		v30("You're in the lobby. How did we get here?", 2)
+
+		return
+	end
+
+	task.wait(math.random() / 100)
+
+	local PrimaryPart = Character and Character.PrimaryPart
+	local CollisionHitbox = Character and Character:FindFirstChild("CollisionHitbox")
+
+	if not PrimaryPart or not CollisionHitbox then
+		return
+	end
+
+	if PrimaryPart.Anchored then
+		repeat
+			task.wait()
+		until not PrimaryPart.Anchored
+	end
+
+	local Positions = p21:WaitForChild("Positions", 3)
+	local Progress = p21:WaitForChild("Progress", 3)
+	local Remotes = p21:WaitForChild("Remotes", 3)
+	local RF = Remotes and Remotes:FindFirstChild("RF")
+	local RE = Remotes and Remotes:FindFirstChild("RE")
+
+	if not Progress or not Remotes or not RF or not RE or not Positions then
+		return
+	end
+
+	local t4 = {
+		Positions:FindFirstChild("Left").Position,
+		Positions:FindFirstChild("Right").Position,
+		Positions:FindFirstChild("Center").Position
+	}
+	local v107
+
+	for _, v in ipairs(t4) do
+		if not t2:isAnyoneAt(v) then
+			v107 = v
+
+			break
+		end
+	end
+
+	if not v107 then
+		return
+	end
+
+	local CanCollide = CollisionHitbox.CanCollide
+
+	PrimaryPart.CanCollide = false
+	CollisionHitbox.CanCollide = false
+	PrimaryPart.CFrame = CFrame.new(v107 + vector.create(math.random() / 10, 0, math.random() / 10))
+	task.wait(0.2)
+
+	if Progress.Value >= 80 then
+		return
+	end
+
+	if not v66(RF, "Enter") then
+		return false
+	end
+
+	if p21 == t2.lastGenerator or p21 == t2.lastLastGenerator then
+		task.wait(0.9)
+	end
+
+	task.wait(0.02)
+	PrimaryPart.CanCollide = CanCollide
+	CollisionHitbox.CanCollide = CanCollide
+	v66(RE)
+	task.wait(0.02)
+	v66(RF, "Leave")
+	task.wait(0.02)
+end
+local function v111()
+	task.wait()
+
+	if t2.autogen then
+		if t2.busy then
+			print("busy bee")
+
+			return
+		end
+
+		t2.busy = true
+
+		while t2.autogen do
+			if Character then
+				if v71() or Character and Character.Parent == Killers then
+					v30(v71() and "You're in the lobby. Waiting till next round..." or "You're a murderer :( Waiting till you're a survivor!", 3)
+				elseif #t2:getAllGenerators() < 1 then
+					v30("There are no more generators to complete. Waiting till next round...")
+				else
+					while true do
+						task.wait()
+						xpcall(function()
+							for _, v in ipairs(t2:getAllGenerators()) do
+								if not Killers:GetChildren()[1] then
+									break
+								end
+
+								if not t2.autogen or v71() then
+									t2.currentGenerator = nil
+									t2.lastGenerator = nil
+									t2.lastLastGenerator = nil
+
+									break
+								end
+
+								if not Character or Character.Parent ~= Killers then
+									if t2:isGeneratorViable(v) then
+										v30("Doing a generator")
+										t2.lastLastGenerator = t2.lastGenerator
+										t2.lastGenerator = t2.currentGenerator
+										t2.currentGenerator = v
+										v98(v)
+									end
+
+									continue
+								end
+
+								Character:FindFirstChildOfClass("Humanoid").Health = 0
+
+								break
+							end
+
+							if tonumber(t2.delay) then
+								task.wait(t2.delay)
+							end
+						end, v13)
+
+						if not t2.autogen then
+							break
+						elseif #t2:getAllGenerators() < 1 then
+							break
+						end
+					end
+
+					t2.lastLastGenerator = nil
+					t2.currentGenerator = nil
+					t2.lastGenerator = nil
+				end
+
+				t2.busy = false
+
+				if t2:getAllGenerators()[1] then
+					while true do
+						task.wait()
+
+						if not Character then
+							continue
+						end
+
+						if Character.Parent ~= Killers and not v71() and t2:getAllGenerators()[1] then
+							break
+						end
+					end
+				else
+					if t2.resetAfterCompletion and Character and not v71() then
+						local PrimaryPart = Character.PrimaryPart
+
+						PrimaryPart.CFrame -= vector.create(0, 100, 0)
+						task.wait(0.1)
+						Character.Humanoid.Health = 0
+					end
+
+					if t2.disableAfterCompletion and t2.autogenToggle then
+						t2.autogenToggle:Set(false)
+
+						break
+					else
+						while true do
+							task.wait()
+
+							if not Character then
+								continue
+							end
+
+							if Character.Parent ~= Killers and not v71() and t2:getAllGenerators()[1] then
+								break
+							end
+						end
+					end
+				end
+			else
+				task.wait()
+			end
+		end
+	else
+		if t2.currentGenerator then
+			if t2.currentGenerator:FindFirstChild("Remotes") then
+				if t2.currentGenerator.Remotes:FindFirstChild("RF") then
+					v66(t2.currentGenerator.Remotes.RF, "leave")
+				end
+			end
+		end
+
+		t2.currentGenerator = nil
+		t2.currentGenerators = {}
+		t2.lastGenerator = nil
+		t2.lastLastGenerator = nil
+	end
+end
+local function v115(p22)
+	p22.threads += 1
+
+	while not p22.ended do
+		task.wait()
+
+		if p22.running and not p22.ended then
+			task.wait(math.random() + tonumber(t2.puzzleLoopCooldown or 3))
+
+			if p22.running and not p22.ended then
+				v92()
+			end
+		end
+	end
+
+	p22.threads -= 1
+end
+
+local t5 = {
+	enabled = false,
+	invisCharacterConnection = nil,
+	currentLoaded = nil,
+	animation = Instance.new("Animation")
+}
+
+t5.animation.Name = "Wаlking"
+t5.animation.AnimationId = "rbxassetid://75804462760596"
+t5.ghostface = false
+t5.toggleInvisible = function(p23)
+	t5.enabled = p23
+
+	if not Character then
+		Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+	end
+
+	local Humanoid = Character:WaitForChild("Humanoid")
+	local PrimaryPart = Character.PrimaryPart
+
+	if not Humanoid or not PrimaryPart then
+		return
+	end
+
+	if p23 then
+		if not t5.invisCharacterConnection then
+			t5.invisCharacterConnection = LocalPlayer.CharacterAdded:Connect(function(character)
+				if t5.currentLoaded then
+					t5.currentLoaded:Stop()
+					t5.currentLoaded:Destroy()
+					t5.currentLoaded = nil
+				end
+
+				repeat
+					task.wait()
+				until character.PrimaryPart
+
+				t5.toggleInvisible(p23)
+			end)
+		end
+
+		if v71() then
+			v30("You're in the lobby. Waiting till a round starts...")
+
+			return
+		end
+
+		if Character.Parent ~= Killers or Character.Parent == Killers and t5.ghostface then
+			v30("Attention! Killers see your character underground with their tracking ability, and people with the \"Visible Hitboxes\" toggled on will see your hitbox.", 8)
+			PrimaryPart.Transparency = 0.2
+
+			local Animator = Humanoid:FindFirstChildOfClass("Animator")
+
+			if not Animator then
+				warn("No a...")
+
+				return
+			end
+
+			t5.currentLoaded = Animator:LoadAnimation(t5.animation)
+			t5.currentLoaded.Priority = Enum.AnimationPriority.Action4
+			t5.currentLoaded:Play()
+			t5.currentLoaded:AdjustSpeed(0)
+		end
+	else
+		PrimaryPart.Transparency = 1
+
+		if t5.currentLoaded then
+			t5.currentLoaded:Stop()
+			t5.currentLoaded:Destroy()
+			t5.currentLoaded = nil
+		end
+
+		if t5.invisCharacterConnection then
+			t5.invisCharacterConnection:Disconnect()
+			t5.invisCharacterConnection = nil
+		end
+	end
+end
+
+local t6 = {
+	sounds = {
+		["rbxassetid://75467546215199"] = true,
+		["rbxassetid://131123355704017"] = true,
+		["rbxassetid://106368806396221"] = true,
+		["rbxassetid://140242176732868"] = true,
+		["rbxassetid://128367348686124"] = true,
+		["rbxassetid://129697992204296"] = true,
+		["rbxassetid://112395455254818"] = true,
+		["rbxassetid://75330693422988"] = true,
+		["rbxassetid://109348678063422"] = true,
+		["rbxassetid://430285057"] = true,
+		["rbxassetid://12222208"] = true,
+		["rbxassetid://119583605486352"] = true,
+		["rbxassetid://105204810054381"] = true,
+		["rbxassetid://124903763333174"] = true,
+		["rbxassetid://121954639447247"] = true,
+		["rbxassetid://109431876587852"] = true,
+		["rbxassetid://100452671741436"] = true,
+		["rbxassetid://74842815979546"] = true,
+		["rbxassetid://79391273191671"] = true,
+		["rbxassetid://121369993837377"] = true,
+		["rbxassetid://82221759983649"] = true,
+		["rbxassetid://86174610237192"] = true,
+		["rbxassetid://125427128221522"] = true,
+		["rbxassetid://85853080745515"] = true,
+		["rbxassetid://108610718831698"] = true,
+		["rbxassetid://91556333696690"] = true,
+		["rbxassetid://128195973631079"] = true,
+		["rbxassetid://140412278320643"] = true,
+		["rbxassetid://117173212095661"] = true,
+		["rbxassetid://92356939985984"] = true,
+		["rbxassetid://106647770195831"] = true,
+		["rbxassetid://128856426573270"] = true,
+		["rbxassetid://115026634746636"] = true,
+		["rbxassetid://107345261604889"] = true,
+		["rbxassetid://84557540779385"] = true,
+		["rbxassetid://106836941416453"] = true,
+		["rbxassetid://97538628232564"] = true,
+		["rbxassetid://119089145505438"] = true,
+		["rbxassetid://106300477136129"] = true,
+		["rbxassetid://127557531826290"] = true,
+		["rbxassetid://108901210586307"] = true,
+		["rbxassetid://89004992452376"] = true,
+		["rbxassetid://71834552297085"] = true,
+		["rbxassetid://81702359653578"] = true,
+		["rbxassetid://112809109188560"] = true,
+		["rbxassetid://128028377470509"] = true,
+		["rbxassetid://101553872555606"] = true,
+		["rbxassetid://101698569375359"] = true,
+		["rbxassetid://84307400688050"] = true,
+		["rbxassetid://98675142200448"] = true,
+		["rbxassetid://131406927389838"] = true,
+		["rbxassetid://95079963655241"] = true,
+		["rbxassetid://116581754553533"] = true,
+		["rbxassetid://94317217837143"] = true,
+		["rbxassetid://108651070773439"] = true,
+		["rbxassetid://101199185291628"] = true,
+		["rbxassetid://12222216"] = true,
+		["rbxassetid://107444859834748"] = true,
+		["rbxassetid://114742322778642"] = true,
+		["rbxassetid://136323728355613"] = true,
+		["rbxassetid://83336588073857"] = true,
+		["rbxassetid://4953447383"] = true,
+		["rbxassetid://79980897195554"] = true,
+		["rbxassetid://80516583309685"] = true,
+		["rbxassetid://105200830849301"] = true,
+		["rbxassetid://119942598489800"] = true,
+		["rbxassetid://108907358619313"] = true,
+		["rbxassetid://77156677598720"] = true,
+		["rbxassetid://125213046326879"] = true,
+		["rbxassetid://92121159431865"] = true,
+		["rbxassetid://71805956520207"] = true,
+		["rbxassetid://117231507259853"] = true,
+		["rbxassetid://105840448036441"] = true,
+		["rbxassetid://98111231282218"] = true,
+		["rbxassetid://96594507550917"] = true,
+		["rbxassetid://139996647355899"] = true,
+		["rbxassetid://102228729296384"] = true,
+		["rbxassetid://75006340803049"] = true
+	},
+	blocks = {
+		["rbxassetid://120748030255574"] = true,
+		["rbxassetid://88557287105521"] = true,
+		["rbxassetid://72182155407310"] = true,
+		["rbxassetid://72722244508749"] = true,
+		["rbxassetid://115706752305794"] = true,
+		["rbxassetid://95802026624883"] = true,
+		["rbxassetid://100926346851492"] = true,
+		["rbxassetid://82036084568393"] = true,
+		["rbxassetid://140671644163156"] = true,
+		["rbxassetid://82605295530067"] = true,
+		["rbxassetid://96959123077498"] = true,
+		["rbxassetid://88287038085804"] = true
+	},
+	blockSuccess = {
+		["rbxassetid://132211359858351"] = true,
+		["rbxassetid://423041300"] = true,
+		["rbxassetid://117216912143451"] = true,
+		["rbxassetid://135209101640984"] = true,
+		["rbxassetid://102808968188291"] = true,
+		["rbxassetid://423041356"] = true,
+		["rbxassetid://125854302746190"] = true,
+		["rbxassetid://117828699507982"] = true,
+		["rbxassetid://18568553101"] = true,
+		["rbxassetid://132298811847315"] = true,
+		["rbxassetid://123825742002486"] = true,
+		["rbxassetid://116616310968045"] = true,
+		["rbxassetid://423041325"] = true,
+		["rbxassetid://91165993312513"] = true,
+		["rbxassetid://82772022662025"] = true,
+		["rbxassetid://81114852524420"] = true
+	},
+	Generator = {
+		["rbxassetid://107756518054855"] = true,
+		["rbxassetid://82691533602949"] = true
+	},
+	animations = {
+		["rbxassetid://135884061951801"] = true,
+		["rbxassetid://131642454238375"] = true,
+		["rbxassetid://109486609489179"] = true,
+		["rbxassetid://82113744478546"] = true,
+		["rbxassetid://93284670378212"] = true,
+		["rbxassetid://127722376204558"] = true,
+		["rbxassetid://132221505301108"] = true,
+		["rbxassetid://138390711856189"] = true,
+		["rbxassetid://106776364623742"] = true,
+		["rbxassetid://132243194360714"] = true,
+		["rbxassetid://123345437821399"] = true,
+		["rbxassetid://91477520856852"] = true,
+		["rbxassetid://114126519127454"] = true,
+		["rbxassetid://70948173568515"] = true,
+		["rbxassetid://122940209716028"] = true,
+		["rbxassetid://97024645987283"] = true,
+		["rbxassetid://99135633258223"] = true,
+		["rbxassetid://99824350842479"] = true,
+		["rbxassetid://129717107332668"] = true,
+		["rbxassetid://124724779362675"] = true,
+		["rbxassetid://86204001129974"] = true,
+		["rbxassetid://130958529065375"] = true,
+		["rbxassetid://126727756047566"] = true,
+		["rbxassetid://126171487400618"] = true,
+		["rbxassetid://103966608894027"] = true,
+		["rbxassetid://81803417290685"] = true,
+		["rbxassetid://135283134632311"] = true,
+		["rbxassetid://73780217577707"] = true,
+		["rbxassetid://126681776859538"] = true,
+		["rbxassetid://124705663396411"] = true,
+		["rbxassetid://131219306779772"] = true,
+		["rbxassetid://128414736976503"] = true,
+		["rbxassetid://88451353906104"] = true,
+		["rbxassetid://70371667919898"] = true,
+		["rbxassetid://94634594529334"] = true,
+		["rbxassetid://81299297965542"] = true,
+		["rbxassetid://121043188582126"] = true,
+		["rbxassetid://139613699193400"] = true,
+		["rbxassetid://110702884830060"] = true,
+		["rbxassetid://93316899246221"] = true,
+		["rbxassetid://118298475669935"] = true,
+		["rbxassetid://94958041603347"] = true,
+		["rbxassetid://18885909645"] = true,
+		["rbxassetid://105458270463374"] = true,
+		["rbxassetid://81255669374177"] = true,
+		["rbxassetid://77154853064447"] = true,
+		["rbxassetid://129260077168659"] = true,
+		["rbxassetid://116618003477002"] = true,
+		["rbxassetid://101736016625776"] = true,
+		["rbxassetid://83829782357897"] = true,
+		["rbxassetid://114506382930939"] = true,
+		["rbxassetid://121086746534252"] = true,
+		["rbxassetid://133637207919863"] = true,
+		["rbxassetid://98456918873918"] = true,
+		["rbxassetid://100767584148154"] = true,
+		["rbxassetid://88970503168421"] = true,
+		["rbxassetid://109265284421152"] = true,
+		["rbxassetid://80208162053146"] = true,
+		["rbxassetid://126654961540956"] = true,
+		["rbxassetid://137403501678727"] = true,
+		["rbxassetid://120416070237663"] = true,
+		["rbxassetid://125403313786645"] = true,
+		["rbxassetid://139309647473555"] = true,
+		["rbxassetid://118919403162061"] = true,
+		["rbxassetid://106860049270347"] = true,
+		["rbxassetid://109667959938617"] = true,
+		["rbxassetid://98855072995209"] = true,
+		["rbxassetid://114356208094580"] = true,
+		["rbxassetid://74707328554358"] = true,
+		["rbxassetid://135853087227453"] = true,
+		["rbxassetid://110600532843914"] = true,
+		["rbxassetid://131543461321709"] = true,
+		["rbxassetid://126355327951215"] = true,
+		["rbxassetid://139835501033932"] = true,
+		["rbxassetid://120112897026015"] = true,
+		["rbxassetid://107032335460679"] = true,
+		["rbxassetid://137314737492715"] = true,
+		["rbxassetid://18885939653"] = true,
+		["rbxassetid://84069821282466"] = true,
+		["rbxassetid://93069721274110"] = true,
+		["rbxassetid://97167027849946"] = true,
+		["rbxassetid://83446441317389"] = true,
+		["rbxassetid://70483423693126"] = true,
+		["rbxassetid://129976080405072"] = true,
+		["rbxassetid://127846074966393"] = true,
+		["rbxassetid://109172760478577"] = true,
+		["rbxassetid://129002299536917"] = true,
+		["rbxassetid://81639435858902"] = true,
+		["rbxassetid://84449964607732"] = true,
+		["rbxassetid://133336594357903"] = true,
+		["rbxassetid://100358581940485"] = true,
+		["rbxassetid://96805324783377"] = true,
+		["rbxassetid://132054193746940"] = true,
+		["rbxassetid://83340833895310"] = true,
+		["rbxassetid://18885932392"] = true,
+		["rbxassetid://112135252467978"] = true,
+		["rbxassetid://118901677478609"] = true,
+		["rbxassetid://130254228409927"] = true,
+		["rbxassetid://125739772965796"] = true,
+		["rbxassetid://133272285191941"] = true,
+		["rbxassetid://98590570796574"] = true,
+		["rbxassetid://89561536350250"] = true,
+		["rbxassetid://138938529389204"] = true,
+		["rbxassetid://123019923277556"] = true,
+		["rbxassetid://99829427721752"] = true,
+		["rbxassetid://126896426760253"] = true,
+		["rbxassetid://106847695270773"] = true,
+		["rbxassetid://87989533095285"] = true,
+		["rbxassetid://109845134167647"] = true,
+		["rbxassetid://122709416391891"] = true,
+		["rbxassetid://90620531468240"] = true,
+		["rbxassetid://113440898787986"] = true,
+		["rbxassetid://124269076578545"] = true,
+		["rbxassetid://110153465553223"] = true,
+		["rbxassetid://140125695162370"] = true,
+		["rbxassetid://137679730950847"] = true,
+		["rbxassetid://126830014841198"] = true,
+		["rbxassetid://121293883585738"] = true,
+		["rbxassetid://76501992854604"] = true,
+		["rbxassetid://82823860303750"] = true,
+		["rbxassetid://81413767933929"] = true,
+		["rbxassetid://121080480916189"] = true
+	},
+	Tools = {
+		BloxyCola = {
+			Using = {
+				["rbxassetid://80985800957964"] = true,
+				["rbxassetid://102123566838185"] = true
+			},
+			Equipped = {}
+		},
+		Medkit = {
+			Equipped = {
+				["rbxassetid://71859852303349"] = true
+			},
+			Using = {
+				["rbxassetid://76937407515711"] = true
+			}
+		}
+	}
+}
+
+local function v121(p24, p25)
+	local s2 = "{\n"
+	local v123 = p25 and p25 + 4 or 4
+
+	for k, v in pairs(p24) do
+		local v126 = string.rep(" ", v123)
+
+		string.rep(" ", v123)
+
+		if type(k) == "number" then
+			v126 ..= "[" .. k .. "] = "
+		elseif type(k) == "string" then
+			v126 ..= "[\"" .. k .. "\"] = "
+		end
+
+		local v127
+
+		if type(v) == "table" then
+			v127 = v121(v, v123) .. ",\n"
+		elseif type(v) == "string" then
+			v127 = "\"" .. v .. "\",\n"
+		else
+			v127 = tostring(v) .. ",\n"
+		end
+
+		s2 ..= v126 .. v127
+	end
+
+	if #s2 > 2 then
+		s2 = string.sub(s2, 1, -3) .. "\n"
+	end
+
+	return s2 .. string.rep(" ", v123 - 4) .. "}"
+end
+
+if t1.requiring then
+	local function v128(p26, p27, p28, p29)
+		if string.find(p29, "Stunned") or string.find(p29, "Execution") then
+			return
+		end
+
+		for k, v in pairs(p27) do
+			if k ~= "Walk" then
+				if (string.find(p26, k) or string.find(p26, p29)) and not p28[v] then
+					v15("[" .. tostring(p28 == t6.sounds and "Sounds" or "Animations") .. "] Found " .. tostring(k) .. " by " .. tostring(p29))
+
+					if type(v) ~= "table" then
+						if type(v) == "string" then
+							p28[v] = true
+						end
+					elseif v.SoundId then
+						p28[v.SoundId] = true
+					else
+						v128(p26, v, p28, k)
+					end
+				elseif type(v) == "table" then
+					v128(p26, v, p28, k)
+				end
+			end
+		end
+
+		v6()
+	end
+	local function v131(p30, p31)
+		if p30:FindFirstChild("Config") then
+			local Config = require(p30.Config)
+
+			if p31 then
+				if Config.Sounds then
+					v128("BlockSuccess", Config.Sounds, t6.blockSuccess, p30.Name)
+				end
+
+				if Config.Animations then
+					v128("Block", Config.Animations, t6.blocks, p30.Name)
+				end
+			else
+				if Config.Animations then
+					v128("SwingBeheadComboAttackBiteSlashChompGashingWoundStartWalkspeedOverrideStartWalkspeedOverrideLoopWalkspeedOverrideLungeDemonicPursuitLungeDemonicPursuitLoopLoopDashInitStartDashInitLoopDashComboStartDashCombo", Config.Animations, t6.animations, p30.Name)
+				end
+
+				if Config.Sounds then
+					v128("SwingBeheadComboAttackBiteSlashChompGashingWoundStartWalkspeedOverrideStartWalkspeedOverrideLoopWalkspeedOverrideLungeDemonicPursuitLungeDemonicPursuitLoopLoopDashInitStartDashInitLoopDashComboStartDashCombo", Config.Sounds, t6.sounds, p30.Name)
+				end
+			end
+		end
+	end
+
+	for _, child in pairs(Assets.Killers:GetChildren()) do
+		v131(child)
+		v6()
+	end
+
+	for _, child in pairs(Assets.Skins.Killers:GetChildren()) do
+		for _, child2 in pairs(child:GetChildren()) do
+			v131(child2)
+			v6()
+		end
+
+		v6()
+	end
+
+	v131(Assets.Survivors.Guest1337, true)
+
+	for _, child in pairs(Assets.Skins.Survivors.Guest1337:GetChildren()) do
+		v131(child, true)
+	end
+
+	v15(v121(t6))
+else
+	game.StarterGui:SetCore("SendNotification", {
+		Title = "Syncsaken",
+		Text = "Your executor (" .. identifyexecutor_ .. ") doesn't support animation loading, defaulting to hardcoded animations...",
+		Icon = "rbxassetid://114310588828323"
+	})
+end
+
+t6.isBlocking = function(p32)
+	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+	local Animator = Humanoid and Humanoid:FindFirstChild("Animator")
+
+	if not Animator then
+		return
+	end
+
+	local playingAnimationTracks = Animator:GetPlayingAnimationTracks()
+
+	for i = 1, #playingAnimationTracks do
+		local v145 = string.match(playingAnimationTracks[i].Animation.AnimationId, "%d+")
+
+		if v145 and p32.blocks["rbxassetid://" .. v145] then
+			return true
+		end
+	end
+
+	return false
+end
+t6.blocked = function(p33)
+	if not Character or not Character.PrimaryPart then
+		return
+	end
+
+	local PrimaryPart = Character.PrimaryPart
+	local now2 = os.clock()
+
+	while true do
+		if not (os.clock() - now2 < 1) then
+			return
+		end
+
+		local children = PrimaryPart:GetChildren()
+
+		for i = 1, #children do
+			if children[i].ClassName == "Sound" and p33.blockSuccess[children[i].SoundId] then
+				return true
+			end
+		end
+
+		task.wait(0.05)
+	end
+end
+t6.isPlayingAnimation = function(p34, p35, p36)
+	local playingAnimationTracks = p35:GetPlayingAnimationTracks()
+
+	for i = 1, #playingAnimationTracks do
+		local TimePosition = playingAnimationTracks[i].TimePosition
+		local v153 = string.match(playingAnimationTracks[i].Animation.AnimationId, "%d+")
+
+		if v153 and p34.animations["rbxassetid://" .. v153] and TimePosition <= p36 then
+			return true
+		end
+	end
+
+	return false
+end
+t6.isPlayingSound = function(p37, p38, p39)
+	for i = 1, #p38 do
+		local v155 = p38[i]
+
+		if v155.ClassName == "Sound" and p37.sounds[v155.SoundId] and v155.TimePosition <= p39 then
+			return true
+		end
+	end
+
+	return false
+end
+t6.blockAnimations = function(p40, p41)
+	if not p41 or not Character then
+		return
+	end
+
+	local Humanoid = Character:WaitForChild("Humanoid")
+	local Animator = Humanoid and Humanoid:WaitForChild("Animator", 5)
+
+	if not Animator then
+		return
+	end
+
+	local playingAnimationTracks = Animator:GetPlayingAnimationTracks()
+
+	for _, playingAnimationTrack in ipairs(playingAnimationTracks) do
+		local Animation = playingAnimationTrack.Animation
+
+		if Animation and p41[Animation and Animation.AnimationId] then
+			playingAnimationTrack:Stop()
+			playingAnimationTrack:Destroy()
+		end
+	end
+end
+
+local t7 = {
+	connections = {},
+	visuals = {
+		killer = {},
+		survivor = {},
+		generator = {},
+		item = {},
+		minion = {},
+		trap = {},
+		spray = {},
+		contract = {}
+	},
+	highlighter = Instance.new("Highlight")
+}
+
+t7.highlighter.Name = "__SESP"
+t7.highlighter.FillTransparency = 0.7
+t7.highlighter.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+t7.defaultColors = {
+	killer = Color3.fromRGB(255, 0, 0),
+	survivor = Color3.fromRGB(0, 255, 0),
+	generator = Color3.fromRGB(0, 0, 255),
+	item = Color3.fromRGB(255, 234, 0),
+	minion = Color3.fromRGB(255, 122, 33),
+	trap = Color3.fromRGB(225, 0, 255),
+	spray = Color3.fromRGB(0, 255, 255),
+	contract = Color3.fromRGB(255, 0, 123)
+}
+t7.colors = table.clone(t7.defaultColors)
+
+local function createBillboardGui(p42, p43)
+	if p43 == "killer" or p43 == "survivor" then
+		p43 = "player"
+	end
+
+	if p43 == "footstep" then
+		return
+	end
+
+	local BillboardGui = Instance.new("BillboardGui")
+	local UIStroke = Instance.new("UIStroke")
+	local TextLabel = Instance.new("TextLabel")
+
+	BillboardGui.Name = "__SBB"
+	BillboardGui.Archivable = false
+	BillboardGui.Parent = p42
+	BillboardGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	BillboardGui.Active = true
+	BillboardGui.MaxDistance = 2000
+	BillboardGui.AlwaysOnTop = true
+	BillboardGui.Size = UDim2.new(0, 133, 0, 15)
+	BillboardGui.StudsOffset = Vector3.new(0, 3, 0)
+	TextLabel.Parent = BillboardGui
+	TextLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	TextLabel.BackgroundTransparency = 1
+	TextLabel.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	TextLabel.BorderSizePixel = 0
+	TextLabel.Size = UDim2.new(1, 0, 1, 0)
+	TextLabel.Font = Enum.Font.Code
+	TextLabel.Text = p42.Name
+	TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	TextLabel.TextScaled = true
+	TextLabel.TextSize = 14
+	TextLabel.TextWrapped = true
+	UIStroke.Parent = TextLabel
+	UIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+	UIStroke.Color = Color3.fromRGB(0, 0, 0)
+	UIStroke.Thickness = 1.25
+	t7.visuals = t7.visuals or {}
+	table.insert(t7.visuals, BillboardGui)
+
+	if p43 == "player" then
+		BillboardGui.Parent = p42.PrimaryPart
+
+		local Humanoid = p42:FindFirstChildOfClass("Humanoid")
+
+		if Humanoid then
+			TextLabel.Text = p42.Name .. " | " .. math.floor(Humanoid.Health) .. "HP"
+
+			local connection
+
+			connection = Humanoid.HealthChanged:Connect(function(health)
+				if Humanoid then
+					if not BillboardGui or not TextLabel then
+						connection:Disconnect()
+
+						return
+					end
+
+					TextLabel.Text = p42.Name .. " | " .. math.floor(health) .. "HP"
+				else
+					connection:Disconnect()
+				end
+			end)
+		end
+
+		local connection
+
+		connection = BillboardGui.AncestryChanged:Connect(function(child, parent)
+			if parent == workspace.Ragdolls then
+				BillboardGui:Destroy()
+				connection:Disconnect()
+			end
+		end)
+	elseif p43 == "generator" then
+		local NumberValue = p42:FindFirstChildOfClass("NumberValue")
+
+		TextLabel.Text = p42.Name .. " | " .. math.floor(NumberValue.Value) .. "%"
+
+		local connection
+
+		connection = NumberValue.Changed:Connect(function(p44)
+			if NumberValue and BillboardGui and TextLabel then
+				TextLabel.Text = p42.Name .. " | " .. math.floor(p44) .. "%"
+			else
+				connection:Disconnect()
+			end
+		end)
+	elseif p43 == "item" then
+		TextLabel.Text = p42.Name
+	else
+		TextLabel.Text = p43
+	end
+
+	return BillboardGui
+end
+local function v172(p45, p46)
+	if typeof(p46) ~= "string" or typeof(p45) ~= "Instance" then
+		return
+	end
+
+	if p45:FindFirstChild("__SESP") then
+		return
+	end
+
+	local clone = t7.highlighter:Clone()
+
+	clone.Archivable = false
+	clone.FillColor = t7.colors[p46]
+	clone.Parent = p46 ~= "spray" and p45 or p45:FindFirstChildOfClass("BasePart")
+	createBillboardGui(p45, p46)
+end
+local function v174(p47)
+	if typeof(p47) ~= "string" then
+		v13("removeESP: identifier must be a string")
+
+		return
+	end
+
+	local v175 = ({
+		killer = Killers,
+		survivor = Survivors,
+		generator = v57(),
+		item = workspace
+	})[p47]
+
+	if not v175 then
+		return
+	end
+
+	for _, descendant in pairs(v175:GetDescendants()) do
+		if p47 == "item" then
+			if not descendant:IsA("Tool") or descendant:IsDescendantOf(Players2) then
+				continue
+			end
+		elseif descendant:IsA("Tool") then
+			continue
+		end
+
+		if descendant:FindFirstChild("__SESP", true) then
+			descendant:FindFirstChild("__SESP", true):Destroy()
+		end
+
+		if descendant:FindFirstChild("__SBB", true) then
+			descendant:FindFirstChild("__SBB", true):Destroy()
+		end
+	end
+end
+local function v178(p48)
+	local addedSignal = p48.container and p48.addedSignal
+
+	addedSignal = addedSignal and p48.valid
+	assert(addedSignal and p48.highlightType)
+
+	local t8 = {
+		Instances = {},
+		Connections = {}
+	}
+
+	local function v181(p49)
+		if not p48.valid(p49) then
+			return
+		end
+
+		if not t8.Instances[p49] then
+			t8.Instances[p49] = true
+			v172(p49, p48.highlightType)
+		end
+
+		local connection
+
+		if not p48.removalSignal then
+			connection = p49.Destroying:Connect(function()
+				t8.Instances[p49] = nil
+				connection:Disconnect()
+				connection = nil
+			end)
+		elseif not p48.removalCheck then
+			connection = p49.Destroying:Connect(function()
+				t8.Instances[p49] = nil
+				connection:Disconnect()
+				connection = nil
+			end)
+			t8.Connections[p49] = connection
+
+			return
+		elseif p48.removalSignal == "Changed" then
+			connection = p49:FindFirstChildOfClass("NumberValue")[p48.removalSignal]:Connect(function(p50)
+				if p48.removalCheck(p50, p49:FindFirstChildOfClass("NumberValue")) then
+					local __SESP = p49:FindFirstChild("__SESP", true)
+
+					if __SESP then
+						__SESP:Destroy()
+					end
+
+					local __SBB = p49:FindFirstChild("__SBB", true)
+
+					if __SBB then
+						__SBB:Destroy()
+					end
+
+					t8.Instances[p49] = nil
+					connection:Disconnect()
+				end
+			end)
+		else
+			connection = p49[p48.removalSignal]:Connect(function(...)
+				if p48.removalCheck(...) then
+					local __SESP = p49:FindFirstChild("__SESP", true)
+
+					if __SESP then
+						__SESP:Destroy()
+					end
+
+					local __SBB = p49:FindFirstChild("__SBB", true)
+
+					if __SBB then
+						__SBB:Destroy()
+					end
+
+					t8.Instances[p49] = nil
+					connection:Disconnect()
+				end
+			end)
+		end
+
+		t8.Connections[p49] = connection
+	end
+
+	for _, descendant in pairs(p48.container:GetDescendants()) do
+		v6()
+		task.spawn(function()
+			v181(descendant)
+		end)
+	end
+
+	t8.Connections.Added = p48.container[p48.addedSignal]:Connect(function(p51)
+		v6()
+		task.spawn(function()
+			v181(p51)
+		end)
+	end)
+	t8.Cleanup = function(p52)
+		if p52.Connections.Added then
+			p52.Connections.Added:Disconnect()
+			p52.Connections.Added = nil
+		end
+
+		for _, connection in pairs(p52.Connections) do
+			if typeof(connection) == "RBXScriptConnection" and connection.Connected then
+				connection:Disconnect()
+			end
+		end
+
+		for k in pairs(p52.Instances) do
+			local __SESP = k:FindFirstChild("__SESP", true)
+
+			if __SESP then
+				__SESP:Destroy()
+			end
+
+			local __SBB = k:FindFirstChild("__SBB", true)
+
+			if __SBB then
+				__SBB:Destroy()
+			end
+
+			p52.Instances[k] = nil
+		end
+
+		for _, descendant in pairs(Ragdolls:GetDescendants()) do
+			v6()
+
+			if descendant.Name == "__SESP" or descendant.Name == "__SBB" then
+				descendant:Destroy()
+			end
+		end
+
+		table.clear(p52.Connections)
+		table.clear(p52.Instances)
+	end
+
+	return t8
+end
+local function v196(p53)
+	if not t1.filesystem then
+		return
+	end
+
+	local Sound = Instance.new("Sound", Character)
+
+	if not pcall(function()
+		Sound.SoundId = getcustomasset(p53)
+	end) then
+		return
+	end
+
+	Sound.PlaybackSpeed = math.random() + 0.6
+	Sound:Play()
+	Debris:AddItem(Sound, 5)
+end
+
+local t9 = {
+	cooldown = false
+}
+
+local function v199(p54)
+	if t9.cooldown then
+		return
+	end
+
+	t9.cooldown = true
+
+	local HumanoidRootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+	local Animator = Humanoid and Humanoid:FindFirstChildOfClass("Animator")
+
+	if not HumanoidRootPart or not Humanoid then
+		t9.cooldown = false
+
+		return
+	end
+
+	v196("Syncsaken/assets/audio/gravity_coil.ogg")
+
+	local t10 = {}
+
+	if Animator then
+		for _, v in ipairs(Animator:GetPlayingAnimationTracks()) do
+			t10[#t10 + 1] = {
+				track = v,
+				time = v.TimePosition
+			}
+			v:Stop(0)
+		end
+	end
+
+	Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+	Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+	Humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+	Humanoid:SetStateEnabled(Enum.HumanoidStateType.Running, false)
+	Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+	Humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
+
+	local CFrame_ = HumanoidRootPart.CFrame
+	local LookVector = p54 == "front" and CFrame_.LookVector or -CFrame_.LookVector
+	local vector3 = Vector3.new(0, 1, 0)
+
+	task.spawn(function()
+		local now2 = os.clock()
+
+		for i = 1, 120 do
+			local v211 = i / 120
+			local v212 = CFrame_.Position + LookVector * (35 * v211) + vector3 * (4 * (v211 - v211 ^ 2) * 10)
+			local v213 = CFrame_.Rotation * CFrame.Angles(math.rad(-i * 3), 0, 0)
+
+			HumanoidRootPart.CFrame = CFrame.new(v212) * v213
+
+			local v214 = 0.0037500000000000003 * i - (os.clock() - now2)
+
+			if v214 > 0 then
+				task.wait(v214)
+			end
+		end
+
+		HumanoidRootPart.CFrame = CFrame.new(CFrame_.Position + LookVector * 35) * CFrame_.Rotation
+		Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+		Humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+		Humanoid:SetStateEnabled(Enum.HumanoidStateType.Running, true)
+		Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+		Humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+		Humanoid:ChangeState(Enum.HumanoidStateType.Running)
+
+		if Animator then
+			for _, v in ipairs(t10) do
+				local track = v.track
+
+				track:Play()
+				track.TimePosition = v.time
+
+				if track.Animation.AnimationId == "rbxassetid://75804462760596" then
+					track:AdjustSpeed(0)
+				end
+			end
+		end
+
+		task.wait(0.25)
+		t9.cooldown = false
+	end)
+end
+
+-- Syncsaken aim/attack prediction helper omitted.
+
+local t12 = {
+	Tasks = {},
+	originalFunctions = {}
+}
+
+if t1.requiring then
+	t12.AddTask = function(p71, p72, p73)
+		p71.Tasks[p72] = p73
+	end
+	t12.RemoveTask = function(p74, p75)
+		p74.Tasks[p75] = nil
+	end
+	t12.ExecuteTasks = function(p76, p77)
+		local v230 = false
+
+		for _, task_ in pairs(p76.Tasks) do
+			local _, result = xpcall(task_, function(p78)
+				task.spawn(v13, p78, 1803)
+			end, p77)
+
+			if result == "exit" then
+				v230 = true
+			end
+		end
+
+		return v230
+	end
+
+	for k, v in pairs(Network) do
+		t12.originalFunctions[k] = v
+	end
+
+	for k in pairs(Network) do
+		Network[k] = function(...)
+			local t13 = { ... }
+
+			if t12:ExecuteTasks(t13) then
+				return
+			end
+
+			return t12.originalFunctions[k](table.unpack(t13))
+		end
+		v15("Hooked " .. tostring(k))
+	end
+end
+
+local t14 = {
+	Tasks = {}
+}
+
+local _syncMeta, _syncOriginalNamecall, _syncHookedNamecall
+if t1.hooking then
+	t14.AddTask = function(p79, p80, p81)
+		t14.Tasks[p80] = p81
+	end
+	t14.RemoveTask = function(p82, p83)
+		t14.Tasks[p83] = nil
+	end
+	t14.ExecuteTasks = function(...)
+		for _, task_ in pairs(t14.Tasks) do
+			local _, result = xpcall(task_, function(p84)
+				task.spawn(v13, p84, 1858)
+			end, select(2, ...))
+
+			if result == "exit" then
+				return true
+			end
+		end
+	end
+
+	local v244 = getrawmetatable(game)
+	local __namecall = v244.__namecall
+	_syncMeta = v244
+	_syncOriginalNamecall = __namecall
+
+	setreadonly(v244, false)
+	_syncHookedNamecall = newcclosure(function(J, ...)
+		if t14:ExecuteTasks(J, ...) then
+			return
+		end
+
+		return __namecall(J, ...)
+	end)
+	v244.__namecall = _syncHookedNamecall
+	setreadonly(v244, true)
+end
+
+
+
+-- Syncsaken compatibility layer: the imported callbacks create Obsidian controls.
+local SyncControlCounts = {}
+local SyncUsedIds = {}
+local function SyncSlug(value)
+    local valueText = tostring(value or "Control")
+    local clean = valueText:gsub("[^%w]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+    if clean == "" then clean = "Control" end
+    return clean
+end
+local function SyncUniqueId(category, config)
+    local baseId = "SS_" .. SyncSlug(category) .. "_" .. SyncSlug(config.Flag or config.Name or "Control")
+    local count = (SyncControlCounts[baseId] or 0) + 1
+    SyncControlCounts[baseId] = count
+    local id = count == 1 and baseId or (baseId .. "_" .. tostring(count))
+    while SyncUsedIds[id] do
+        count += 1
+        id = baseId .. "_" .. tostring(count)
+    end
+    SyncUsedIds[id] = true
+    return id
+end
+local function SyncHandle(control)
+    local handle = { _control = control }
+    function handle:Set(value)
+        local c = self._control
+        if not c then return end
+        if type(c.SetValue) == "function" then c:SetValue(value)
+        elseif type(c.Set) == "function" then c:Set(value)
+        elseif type(c.SetText) == "function" then c:SetText(tostring(value)) end
+    end
+    return setmetatable(handle, {
+        __index = function(self, key)
+            local c = rawget(self, "_control")
+            if c then return c[key] end
+        end,
+    })
+end
+local SyncTabConfig = {
+    Generators = { tab = Tabs.Automatic, group = "Generators", side = "Left", icon = "factory" },
+    Player = { tab = Tabs.Tools, group = "Player", side = "Left", icon = "user-round" },
+    Blatant = { tab = Tabs.Tools, group = "Movement", side = "Right", icon = "move" },
+    Visual = { tab = Tabs.ESP, group = "Sync ESP", side = "Right", icon = "eye" },
+    Other = { tab = Tabs.Tools, group = "Utilities", side = "Left", icon = "wrench" },
+    Credits = { tab = Tabs.SaveLoad, group = "Credits", side = "Right", icon = "info" },
+}
+local function MakeSyncTab(category)
+    local cfg = SyncTabConfig[category]
+    assert(cfg and cfg.tab, "Unknown Syncsaken section: " .. tostring(category))
+    local group = addGroup(cfg.tab, cfg.side, cfg.group, "Imported Syncsaken features", cfg.icon)
+    local shim = { Group = group }
+
+    function shim:CreateLabel(text)
+        return SyncHandle(group:AddLabel(tostring(text or ""), true))
+    end
+    function shim:CreateSection(text)
+        return SyncHandle(group:AddLabel(tostring(text or ""), true))
+    end
+    function shim:CreateDivider()
+        return group:AddDivider()
+    end
+    function shim:CreateToggle(info)
+        info = info or {}
+        local id = SyncUniqueId(category, info)
+        local default = info.CurrentValue == true
+        if type(Settings[id]) == "boolean" then default = Settings[id] end
+        local control = group:AddToggle(id, {
+            Text = tostring(info.Name or id),
+            Tooltip = info.Tooltip,
+            Default = default,
+            Callback = function(value)
+                Settings[id] = value
+                if type(info.Callback) == "function" then
+                    local ok, err = pcall(info.Callback, value)
+                    if not ok then warn("[Doggysaken/Sync] " .. tostring(err)) end
+                end
+            end,
+        })
+        return SyncHandle(control)
+    end
+    function shim:CreateSlider(info)
+        info = info or {}
+        local id = SyncUniqueId(category, info)
+        local range = info.Range or { 0, 100 }
+        local minimum = tonumber(range[1]) or 0
+        local maximum = tonumber(range[2]) or 100
+        local default = tonumber(Settings[id]) or tonumber(info.CurrentValue) or minimum
+        local increment = tonumber(info.Increment) or 1
+        local rounding = increment > 0 and increment < 1 and math.clamp(math.ceil(-math.log10(increment)), 0, 4) or 0
+        local control = group:AddSlider(id, {
+            Text = tostring(info.Name or id),
+            Default = math.clamp(default, minimum, maximum),
+            Min = minimum,
+            Max = maximum,
+            Rounding = rounding,
+            Suffix = tostring(info.Suffix or ""),
+            Callback = function(value)
+                Settings[id] = value
+                if type(info.Callback) == "function" then
+                    local ok, err = pcall(info.Callback, value)
+                    if not ok then warn("[Doggysaken/Sync] " .. tostring(err)) end
+                end
+            end,
+        })
+        return SyncHandle(control)
+    end
+    function shim:CreateDropdown(info)
+        info = info or {}
+        local id = SyncUniqueId(category, info)
+        local current = Settings[id] ~= nil and Settings[id] or info.CurrentOption
+        local multiple = info.MultipleOptions == true
+        local default = current
+        if type(current) == "table" and not multiple then default = current[1] end
+        local control = group:AddDropdown(id, {
+            Text = tostring(info.Name or id),
+            Values = info.Options or {},
+            Default = default,
+            Multi = multiple,
+            MaxVisibleDropdownItems = 10,
+            Callback = function(value)
+                Settings[id] = value
+                if type(info.Callback) == "function" then
+                    local cbValue = value
+                    if not multiple and type(value) ~= "table" then cbValue = { value } end
+                    local ok, err = pcall(info.Callback, cbValue)
+                    if not ok then warn("[Doggysaken/Sync] " .. tostring(err)) end
+                end
+            end,
+        })
+        return SyncHandle(control)
+    end
+    function shim:CreateButton(info)
+        info = info or {}
+        local id = SyncUniqueId(category, info)
+        local control = group:AddButton({
+            Text = tostring(info.Name or id),
+            Func = function()
+                if type(info.Callback) == "function" then
+                    local ok, err = pcall(info.Callback)
+                    if not ok then warn("[Doggysaken/Sync] " .. tostring(err)) end
+                end
+            end,
+        })
+        return SyncHandle(control)
+    end
+    function shim:CreateInput(info)
+        info = info or {}
+        local id = SyncUniqueId(category, info)
+        local initial = tostring(Settings[id] or info.CurrentValue or "")
+        local control = group:AddInput(id, {
+            Text = tostring(info.Name or id),
+            Default = initial,
+            Placeholder = tostring(info.PlaceholderText or ""),
+            ClearTextOnFocus = info.RemoveTextAfterFocusLost ~= false,
+            Callback = function(value)
+                Settings[id] = value
+                if type(info.Callback) == "function" then
+                    local ok, err = pcall(info.Callback, value)
+                    if not ok then warn("[Doggysaken/Sync] " .. tostring(err)) end
+                end
+            end,
+        })
+        return SyncHandle(control)
+    end
+    function shim:CreateColorPicker(info)
+        info = info or {}
+        local id = SyncUniqueId(category, info)
+        local label = group:AddLabel(tostring(info.Name or id), true)
+        local control = label:AddColorPicker(id, {
+            Default = info.Color or Color3.new(1, 1, 1),
+            Title = tostring(info.Name or id),
+            Callback = function(value)
+                Settings[id] = value
+                if type(info.Callback) == "function" then
+                    local ok, err = pcall(info.Callback, value)
+                    if not ok then warn("[Doggysaken/Sync] " .. tostring(err)) end
+                end
+            end,
+        })
+        return SyncHandle(control)
+    end
+    function shim:CreateKeybind(info)
+        info = info or {}
+        local id = SyncUniqueId(category, info)
+        local label = group:AddLabel(tostring(info.Name or "Keybind"), true)
+        local control = label:AddKeyPicker(id, {
+            Default = info.CurrentKeybind or "RightShift",
+            Mode = info.HoldToInteract and "Hold" or "Press",
+            Text = tostring(info.Name or "Keybind"),
+            Callback = function(value)
+                Settings[id] = value
+                if type(info.Callback) == "function" then
+                    local ok, err = pcall(info.Callback, value)
+                    if not ok then warn("[Doggysaken/Sync] " .. tostring(err)) end
+                end
+            end,
+        })
+        return SyncHandle(control)
+    end
+    function shim:CreateParagraph(info)
+        info = info or {}
+        local title = tostring(info.Title or "")
+        local content = tostring(info.Content or "")
+        local labelText = (title ~= "" and (title .. "\n") or "") .. content
+        return SyncHandle(group:AddLabel(labelText, true))
+    end
+    return shim
+end
+local v246 = { CreateTab = function(_, category) return MakeSyncTab(category) end }
+local Generators = v246:CreateTab("Generators")
+local Player = v246:CreateTab("Player")
+local Blatant = v246:CreateTab("Blatant")
+local Visual = v246:CreateTab("Visual")
+local Other = v246:CreateTab("Other")
+local Credits = v246:CreateTab("Credits")
+
+Generators:CreateLabel("Best used with invisibility")
+t2.autogenToggle = Generators:CreateToggle({
+	Name = "Complete all generators (exit out of generator first)",
+	CurrentValue = false,
+	Callback = function(p93)
+		t2.autogen = p93
+		v111()
+	end
+})
+Generators:CreateSlider({
+	Name = "Wait after completing a set of generators",
+	CurrentValue = 0,
+	Range = {
+		0,
+		5
+	},
+	Increment = 0.1,
+	Suffix = "seconds",
+	Flag = "GeneratorSetDelay",
+	Callback = function(p94)
+		t2.delay = p94
+	end
+})
+Generators:CreateToggle({
+	Name = "Turn off after completion?",
+	Flag = "GeneratorDisableOnCompletion",
+	Callback = function(p95)
+		t2.disableAfterCompletion = p95
+	end
+})
+Generators:CreateToggle({
+	Name = "Reset character after completion?",
+	Flag = "GeneratorResetOnCompletion",
+	Callback = function(p96)
+		t2.resetAfterCompletion = p96
+	end
+})
+Generators:CreateDivider()
+Generators:CreateButton({
+	Name = "Complete current puzzle (be in generator)",
+	Callback = function()
+		v92()
+	end
+})
+Generators:CreateKeybind({
+	Name = "Keybind",
+	CurrentKeybind = "T",
+	HoldToInteract = false,
+	Flag = "GeneratorCompletePuzzleKeybind",
+	Callback = function()
+		v92()
+	end
+})
+Generators:CreateDivider()
+
+local t19 = {
+	running = false,
+	ended = false,
+	threads = 0
+}
+
+local function v278(child)
+	if child.Name == "PuzzleUI" then
+		t19.running = true
+	end
+end
+local function v279(child)
+	if child.Name == "PuzzleUI" then
+		t19.running = false
+	end
+end
+
+if PlayerGui:FindFirstChild("PuzzleUI") then
+	t19.running = true
+end
+
+local puzzleAddedConnection = PlayerGui.ChildAdded:Connect(v278)
+local puzzleRemovedConnection = PlayerGui.ChildRemoved:Connect(v279)
+Generators:CreateToggle({
+	Name = "Loop complete current puzzle",
+	Flag = "GeneratorLoopCompletePuzzle",
+	Callback = function(p97)
+		if p97 then
+			repeat
+				task.wait()
+			until t19.threads == 0
+
+			t19.ended = false
+			task.defer(v115, t19)
+		else
+			t19.ended = true
+		end
+	end
+})
+Generators:CreateSlider({
+	Name = "Wait after doing a puzzle",
+	CurrentValue = 4,
+	Range = {
+		2,
+		10
+	},
+	Increment = 0.1,
+	Suffix = "seconds",
+	Flag = "GeneratorLoopCompletePuzzleDelay",
+	Callback = function(p98)
+		t2.puzzleLoopCooldown = p98
+	end
+})
+Player:CreateLabel("The black part where your character should be helps guide your movement. Other players cannot see it.")
+Player:CreateToggle({
+	Name = "Invisibility (free version)",
+	Callback = function(p99)
+		task.wait()
+		t5.toggleInvisible(p99)
+	end
+})
+Player:CreateToggle({
+	Name = "Be invisible when killer",
+	Flag = "KillerInvisFlag",
+	Callback = function(p100)
+		t5.ghostface = p100
+	end
+})
+Player:CreateDivider()
+Player:CreateToggle({
+	Name = "Hide footsteps sound",
+	Callback = function(p101)
+		if p101 then
+            if not t12.AddTask then
+                v30("Footstep filtering is unavailable in this executor.", 2)
+                return
+            end
+			t12:AddTask("BlockFootsteps", function(p102)
+				for _, v in pairs(p102) do
+					if v == "FootSP" then
+						return "exit"
+					end
+				end
+			end)
+		else
+            if t12.RemoveTask then t12:RemoveTask("BlockFootsteps") end
+		end
+	end
+})
+
+local connection
+local connection2
+
+Player:CreateToggle({
+	Name = "No slowness effect",
+	Flag = "NoSlowness",
+	Callback = function(p103)
+		if connection then
+			connection:Disconnect()
+			connection = nil
+		end
+
+		if connection2 then
+			connection2:Disconnect()
+			connection2 = nil
+		end
+
+		if p103 then
+			local function v284(p104)
+				if not p104 then
+					return
+				end
+
+				for _, descendant in pairs(p104:GetDescendants()) do
+					if descendant.Name == "SlowedStatus" then
+						descendant:Destroy()
+					end
+				end
+
+				if connection then
+					connection:Disconnect()
+				end
+
+				connection = p104.DescendantAdded:Connect(function(descendant)
+					if descendant.Name == "SlowedStatus" then
+						descendant:Destroy()
+					end
+				end)
+			end
+
+			local Character2 = LocalPlayer.Character
+
+			if Character2 then
+				v284(Character2)
+			end
+
+			connection2 = LocalPlayer.CharacterAdded:Connect(function(character)
+				v284(character)
+			end)
+		end
+	end
+})
+
+local NSDC = _syncEnv.NSDC
+
+Player:CreateToggle({
+	Name = "Disable stamina drain (Doesn't work on every executor)",
+	Flag = "NoStaminaDrain",
+	Callback = function(p105)
+		if not t1.requiring then
+			v30("Your executor (" .. identifyexecutor_ .. ") does not support infinite stamina.", 2)
+
+			return
+		end
+
+		local Sprinting = require(game.ReplicatedStorage.Systems.Character.Game.Sprinting)
+        syncSprintingModule = Sprinting
+
+		if not p105 then
+			if _syncEnv.NSDC then
+				_syncEnv.NSDC:Disconnect()
+				_syncEnv.NSDC = nil
+			end
+
+			Sprinting.StaminaLossDisabled = false
+            syncSprintingModule = nil
+		elseif not _syncEnv.NSDC then
+			_syncEnv.NSDC = RunService.Heartbeat:Connect(function()
+				Sprinting.StaminaLossDisabled = function()
+				end
+			end)
+		end
+	end
+})
+
+if t1.requiring then
+	if Assets.Survivors:FindFirstChild("Veeronica") then
+		local Behavior = require(Assets.Survivors.Veeronica.Behavior)
+		local Callback = Behavior.Abilities.Sk8.Callback
+        veeronicaBehavior = Behavior
+        veeronicaOriginalSk8Callback = Callback
+
+		local function callback(p106)
+			return Callback(p106, "SKATE")
+		end
+
+		Player:CreateToggle({
+			Name = "Veeronica Sk8 ev3rywh3re (Run before round)",
+			Flag = "Sk8VeerFlag",
+			Callback = function(p107)
+				if p107 then
+					Behavior.Abilities.Sk8.Callback = callback
+				else
+					Behavior.Abilities.Sk8.Callback = Callback
+				end
+			end
+		})
+	end
+end
+
+if Assets.Survivors:FindFirstChild("Veeronica") then
+	local u293 = false
+	local SprintingButton = PlayerGui:WaitForChild("MainUI"):WaitForChild("SprintingButton")
+	local Behavior = Assets.Survivors.Veeronica.Behavior
+
+	local function v297()
+		if not u293 then
+			return
+		end
+
+		task.wait()
+
+		if TouchEnabled then
+			for _, v in ipairs(getconnections(SprintingButton.MouseButton1Down)) do
+				pcall(function()
+					v:Fire()
+				end)
+				pcall(function()
+					local v300 = string.len("Ցa")
+					local v301 = bit32.countlz(v300)
+					local v302 = 5191 + bit32.countrz(v301) + -5191
+
+					if v.Function then
+						v:Function()
+					end
+				end)
+			end
+		else
+			keypress(32)
+			task.wait(0.1)
+			keyrelease(32)
+		end
+	end
+	local function v303(p108)
+		if not u293 then
+			return
+		end
+
+		veeronicaAdorneeConnection = p108:GetPropertyChangedSignal("Adornee"):Connect(function()
+			if p108.Adornee == Character then
+				v297()
+			end
+		end)
+	end
+
+	veeronicaAddedConnection = Behavior.ChildAdded:Connect(function(child)
+		if child:IsA("Highlight") then
+			v303(child)
+		end
+	end)
+	veeronicaRemovedConnection = Behavior.ChildRemoved:Connect(function(child)
+		if child:IsA("Highlight") and veeronicaAdorneeConnection then
+			veeronicaAdorneeConnection:Disconnect()
+			veeronicaAdorneeConnection = nil
+		end
+	end)
+	Player:CreateToggle({
+		Name = "Veeronica auto-trick",
+		Flag = "VeeronicaAutoTrick",
+		Callback = function(p109)
+			u293 = p109
+
+			if not u293 and veeronicaAdorneeConnection then
+				veeronicaAdorneeConnection:Disconnect()
+				veeronicaAdorneeConnection = nil
+			end
+
+			if u293 and not veeronicaAdorneeConnection then
+				for _, child in pairs(Behavior:GetChildren()) do
+					if child:IsA("Highlight") then
+						v303(child)
+					end
+				end
+			end
+		end
+	})
+end
+
+Player:CreateToggle({
+	Name = "No wall collision (Noli)",
+	Flag = "NoliNoWallCollision",
+	Callback = function(p110)
+		if p110 then
+            if not t14.AddTask then
+                v30("Noli wall-collision hook is unavailable in this executor.", 2)
+                return
+            end
+			t14:AddTask("NoliNoWallCollision", function(p111, ...)
+				if checkcaller() then
+					return p111, ...
+				end
+
+				local t20 = { ... }
+				local v307 = getnamecallmethod()
+
+				if p111 == RemoteEvent and v307 == "FireServer" and string.find(t20[1], LocalPlayer.Name .. "VoidRushCollision") then
+					return "exit"
+				end
+			end)
+		else
+            if t14.RemoveTask then t14:RemoveTask("NoliNoWallCollision") end
+		end
+	end
+})
+
+local u308 = false
+
+Player:CreateToggle({
+	Name = "Auto ghostburger when LMS",
+	Flag = "GhostburgerLMSFlag",
+	Callback = function(p112)
+		if not p112 then
+			if ghostburgerConnection then
+				ghostburgerConnection:Disconnect()
+				ghostburgerConnection = nil
+			end
+		elseif not ghostburgerConnection then
+			ghostburgerConnection = RunService.Heartbeat:Connect(function()
+				if u308 then
+					return
+				end
+
+				if not Character then
+					return
+				end
+
+				if Character.Parent ~= Survivors then
+					return
+				end
+
+				if #Survivors:GetChildren() > 1 then
+					return
+				end
+
+				u308 = true
+				task.delay(15, function()
+					u308 = false
+				end)
+				v65("Ghostburger")
+			end)
+		end
+	end
+})
+
+-- Syncsaken Auto Block removed; Doggysaken Auto Block is the only blocker.
+
+local s3 = "enig124ma"
+local s4 = "gag124124a"
+local connection4
+local connection5
+local PlayerGui2 = LocalPlayer.PlayerGui
+local t22 = {
+	"cat",
+	"wall",
+	"super",
+	"bail",
+	"song",
+	"ride",
+	"soul",
+	"job",
+	"employment",
+	"party",
+	"w1nd0w",
+	"blow",
+	"ivan",
+	"spoon",
+	"gamer",
+	"kat",
+	"maybell",
+	"pop",
+	"star",
+	"night",
+	"aeo",
+	"neo",
+	"around",
+	"boom",
+	"juicy",
+	"cold",
+	"hot",
+	"duck"
+}
+
+local function v336()
+	local v337 = #t22
+	local v338 = t22[math.random(v337)]
+	local v339 = t22[math.random(v337)]
+
+	if v338 == v339 then
+		return v336()
+	end
+
+	return v338 .. v339 .. "_" .. tostring(math.random(101))
+end
+local function v340(descendant)
+	if (descendant:IsA("TextLabel") or descendant:IsA("TextBox") or descendant:IsA("TextButton")) and descendant.Text then
+		if string.find(descendant.Text, LocalPlayer.Name) then
+			descendant.Text = string.gsub(descendant.Text, LocalPlayer.Name, s4)
+		elseif string.find(descendant.Text, s3) then
+			descendant.Text = string.gsub(descendant.Text, s3, s4)
+		end
+	end
+end
+local function v341(p119)
+	if p119 then
+		if p119 ~= "" and p119 ~= " " then
+			if not PlayerGui2 then
+				return
+			end
+
+			if connection4 or connection5 then
+				connection4:Disconnect()
+				connection4 = nil
+				connection5:Disconnect()
+				connection5 = nil
+			end
+
+			s3 = s4
+			s4 = p119
+
+			for _, descendant in pairs(PlayerGui2:GetDescendants()) do
+				v6()
+				v340(descendant)
+			end
+
+			for _, descendant in pairs(CoreGui:GetDescendants()) do
+				v6()
+				v340(descendant)
+			end
+
+			connection5 = PlayerGui2.DescendantAdded:Connect(v340)
+			connection4 = CoreGui.DescendantAdded:Connect(v340)
+
+			return
+		end
+	end
+end
+
+local v346
+
+Player:CreateButton({
+	Name = "Randomise name (your screen only)",
+	Callback = function()
+		v346:Set(v336())
+	end
+})
+Player:CreateDivider()
+
+local t23 = {
+	"britneypears",
+	"syncsakenuser99",
+	"therealayeshaerotica",
+	"clankerhater45",
+	"iceteadrop",
+	"lopticats",
+	"STOP HACKINGGGGGGGGGGGGJGJJGJGJ",
+	"STOP HATINGGGGGGKJSDJFAKSJFGJ",
+	"your username here",
+	"augh"
+}
+local u348 = t23[math.random(#t23)]
+
+v346 = Player:CreateInput({
+	Name = "Custom username",
+	CurrentValue = u348,
+	PlaceholderText = "type text pls",
+	RemoveTextAfterFocusLost = false,
+	Callback = function(p120)
+		u348 = p120
+	end
+})
+Player:CreateButton({
+	Name = "Switch",
+	Callback = function()
+		v341(u348)
+	end
+})
+Player:CreateDivider()
+
+local function v349()
+	if Character then
+		if Character:FindFirstChildOfClass("Humanoid") and Character.Parent ~= Killers then
+			local BloxyCola = Character:FindFirstChild("BloxyCola") or LocalPlayer.Backpack:FindFirstChild("BloxyCola")
+			local Medkit = Character:FindFirstChild("Medkit") or LocalPlayer.Backpack:FindFirstChild("Medkit")
+			local pivot = Character:GetPivot()
+
+			for _, descendant in pairs(workspace:GetDescendants()) do
+				if descendant:IsA("Tool") and not (descendant:IsDescendantOf(Players2) or descendant:IsDescendantOf(Players)) then
+					if descendant.Name == "BloxyCola" or descendant.Name == "Medkit" then
+						if descendant.Name == "BloxyCola" then
+							if BloxyCola then
+								continue
+							end
+						end
+
+						if descendant.Name == "Medkit" then
+							if Medkit then
+								continue
+							end
+						end
+
+						local ProximityPrompt = descendant:FindFirstChild("ItemRoot").ProximityPrompt
+
+						if not v71() then
+							Character:PivotTo(descendant:FindFirstChild("ItemRoot").CFrame)
+							task.wait(0.25)
+						end
+
+						if not descendant:IsDescendantOf(Players2) or not descendant:IsDescendantOf(Players) then
+							fireproximityprompt(ProximityPrompt)
+						end
+
+						lib:Notify({
+							Title = "Syncsaken",
+							Content = "Grabbed " .. descendant.Name,
+							Image = "cat",
+							Duration = 2
+						})
+					end
+
+					task.wait()
+				end
+			end
+
+			Character:PivotTo(pivot)
+
+			return
+		end
+	end
+end
+
+local u356 = false
+
+Player:CreateButton({
+	Name = "Grab all tools (Blatant)",
+	Callback = function()
+		task.wait()
+		v349()
+	end
+})
+Player:CreateKeybind({
+	Name = "Keybind",
+	CurrentKeybind = "B",
+	HoldToInteract = false,
+	Flag = "GrabAllToolsKeybind",
+	Callback = function()
+		if not u356 then
+			return
+		end
+
+		task.wait()
+		v349()
+	end
+})
+Player:CreateToggle({
+	Name = "Enable keybind",
+	Flag = "GrabAllToolsKeybindFlag",
+	Callback = function(p121)
+		u356 = p121
+	end
+})
+Player:CreateDivider()
+
+-- Server hopping with an external queued script omitted.
+
+-- Syncsaken aim prediction controls omitted.
+
+local n8 = 1
+local speedConnection = RunService.Heartbeat:Connect(function(J)
+	local D = Character and Character:FindFirstChildOfClass("Humanoid")
+
+	if not D then
+		return
+	end
+
+	if n8 <= 1 then
+		return
+	end
+
+	if vector.magnitude(D.MoveDirection) > 0 then
+		Character:TranslateBy(D.MoveDirection * n8 * J)
+	end
+end)
+Blatant:CreateSlider({
+	Name = "Speed",
+	Range = {
+		1,
+		100
+	},
+	Increment = 0.1,
+	Suffix = "x",
+	CurrentValue = 1,
+	Callback = function(p125)
+		n8 = p125
+	end
+})
+Blatant:CreateDivider()
+Blatant:CreateKeybind({
+	Name = "Backflip",
+	CurrentKeybind = "N",
+	HoldToInteract = false,
+	Flag = "BackflipKeybind",
+	Callback = function()
+		v199("back")
+	end
+})
+Blatant:CreateKeybind({
+	Name = "Frontflip",
+	CurrentKeybind = "M",
+	HoldToInteract = false,
+	Flag = "FrontflipKeybind",
+	Callback = function()
+		v199("front")
+	end
+})
+Blatant:CreateDivider()
+local connection6
+
+Visual:CreateToggle({
+	Name = "Force enable chat",
+	Flag = "ChatEnabledFlag",
+	Callback = function(p126)
+		if not p126 then
+			if connection6 then
+				connection6:Disconnect()
+				connection6 = nil
+			end
+
+			task.wait()
+
+			if Character and Character.Parent ~= Spectating then
+				TextChatService.ChatWindowConfiguration.Enabled = false
+			end
+		elseif not connection6 then
+			connection6 = RunService.Heartbeat:Connect(function()
+				TextChatService.ChatWindowConfiguration.Enabled = true
+			end)
+		end
+	end
+})
+Visual:CreateDivider()
+
+local FieldOfView
+pcall(function() FieldOfView = LocalPlayer:WaitForChild("PlayerData", 10).Settings.Game.FieldOfView end)
+
+if FieldOfView then
+Visual:CreateSlider({
+	Name = "FOV",
+	CurrentValue = 90,
+	Flag = "FOVSlider",
+	Increment = 1,
+	Range = {
+		20,
+		120
+	},
+	Callback = function(p127)
+		FieldOfView.Value = p127
+	end
+})
+end
+
+Visual:CreateDivider()
+Visual:CreateLabel("ESP:", "eye")
+
+local v371 = Visual:CreateColorPicker({
+	Name = "Survivor",
+	Flag = "SurvivorESPColor",
+	Color = t7.colors.survivor,
+	Callback = function(p128)
+		t7.colors.survivor = p128
+
+		if t7.connections.survivor then
+			for k in t7.connections.survivor.Instances, nil, nil do
+				if k:FindFirstChild("__SESP") then
+					k.__SESP.FillColor = t7.colors.survivor
+				end
+			end
+		end
+	end
+})
+
+Visual:CreateToggle({
+	Name = "Survivors",
+	Flag = "SurvivorESP",
+	Callback = function(p129)
+		if not p129 then
+			if t7.connections.survivor then
+				t7.connections.survivor:Cleanup()
+				t7.connections.survivor = nil
+				v174("survivor")
+			end
+		elseif not t7.connections.survivor then
+			t7.connections.survivor = v178({
+				container = Survivors,
+				addedSignal = "DescendantAdded",
+				removalSignal = "AncestryChanged",
+				removalCheck = function(p130, p131)
+					return p130:IsDescendantOf(Ragdolls) or p131 ~= Survivors
+				end,
+				valid = function(p132)
+					task.wait(3.5)
+
+					local v373 = false
+					local playerFromCharacter = Players:GetPlayerFromCharacter(p132)
+
+					if playerFromCharacter then
+						v373 = true
+					end
+
+					return p132 and p132:IsA("Model") and p132:WaitForChild("Humanoid", 5) and v373 and playerFromCharacter.UserId ~= LocalPlayer.UserId
+				end,
+				highlightType = "survivor"
+			})
+		end
+	end
+})
+Visual:CreateDivider()
+
+local v375 = Visual:CreateColorPicker({
+	Name = "Killer",
+	Flag = "KillerESPColor",
+	Color = t7.colors.killer,
+	Callback = function(p133)
+		t7.colors.killer = p133
+
+		if t7.connections.killer then
+			for k in t7.connections.killer.Instances, nil, nil do
+				if k:FindFirstChild("__SESP") then
+					k.__SESP.FillColor = t7.colors.killer
+				end
+			end
+		end
+	end
+})
+
+Visual:CreateToggle({
+	Name = "Killers",
+	Flag = "KillerESP",
+	Callback = function(p134)
+		if not p134 then
+			if t7.connections.killer then
+				t7.connections.killer:Cleanup()
+				t7.connections.killer = nil
+				v174("killer")
+			end
+		elseif not t7.connections.killer then
+			t7.connections.killer = v178({
+				container = Killers,
+				addedSignal = "DescendantAdded",
+				removalSignal = "AncestryChanged",
+				removalCheck = function(p135, p136)
+					return p135:IsDescendantOf(Ragdolls) or p136 ~= Survivors
+				end,
+				valid = function(p137)
+					task.wait(3.5)
+
+					local v377 = false
+					local playerFromCharacter = Players:GetPlayerFromCharacter(p137)
+
+					if playerFromCharacter then
+						v377 = true
+					end
+
+					return p137 and p137:IsA("Model") and p137:WaitForChild("Humanoid", 5) and v377 and playerFromCharacter.UserId ~= LocalPlayer.UserId
+				end,
+				highlightType = "killer"
+			})
+		end
+	end
+})
+Visual:CreateDivider()
+
+local v379 = Visual:CreateColorPicker({
+	Name = "Generator",
+	Flag = "GeneratorESPColor",
+	Color = t7.colors.generator,
+	Callback = function(p138)
+		t7.colors.generator = p138
+
+		if t7.connections.generator then
+			for k in t7.connections.generator.Instances, nil, nil do
+				if k:FindFirstChild("__SESP") then
+					k.__SESP.FillColor = t7.colors.generator
+				end
+			end
+		end
+	end
+})
+
+Visual:CreateToggle({
+	Name = "Generators",
+	Flag = "GeneratorESP",
+	Callback = function(p139)
+		if not p139 then
+			if t7.connections.generator then
+				t7.connections.generator:Cleanup()
+				t7.connections.generator = nil
+			end
+
+			v174("generator")
+		elseif not t7.connections.generator then
+			t7.connections.generator = v178({
+				container = Ingame,
+				addedSignal = "DescendantAdded",
+				valid = function(p140)
+					return p140:IsA("Model") and p140.Name == "Generator" and p140:FindFirstChildOfClass("NumberValue") and p140.Progress.Value < 100
+				end,
+				highlightType = "generator",
+				removalSignal = "Changed",
+				removalCheck = function(p141)
+					return p141 >= 100
+				end
+			})
+		end
+	end
+})
+Visual:CreateDivider()
+
+local v381 = Visual:CreateColorPicker({
+	Name = "Spray",
+	Flag = "SprayESPColor",
+	Color = t7.colors.spray,
+	Callback = function(p142)
+		t7.colors.spray = p142
+
+		if t7.connections.spray then
+			for k in t7.connections.spray.Instances, nil, nil do
+				if k:FindFirstChild("__SESP") then
+					k.__SESP.FillColor = t7.colors.spray
+				end
+			end
+		end
+	end
+})
+
+Visual:CreateToggle({
+	Name = "Spray",
+	Flag = "SprayESP",
+	Callback = function(p143)
+		if not p143 then
+			if t7.connections.spray then
+				t7.connections.spray:Cleanup()
+				t7.connections.spray = nil
+				v174("spray")
+			end
+		elseif not t7.connections.spray then
+			t7.connections.spray = v178({
+				container = Ingame,
+				addedSignal = "ChildAdded",
+				valid = function(p144)
+					return p144 and p144:IsA("Model") and string.find(p144.Name, "Spray")
+				end,
+				highlightType = "spray"
+			})
+		end
+	end
+})
+Visual:CreateDivider()
+
+local v383 = Visual:CreateColorPicker({
+	Name = "Minion",
+	Flag = "MinionESPColor",
+	Color = t7.colors.minion,
+	Callback = function(p145)
+		t7.colors.minion = p145
+
+		if t7.connections.minion then
+			for k in t7.connections.minion.Instances, nil, nil do
+				if k:FindFirstChild("__SESP") then
+					k.__SESP.FillColor = t7.colors.minion
+				end
+			end
+		end
+	end
+})
+
+Visual:CreateToggle({
+	Name = "Minions",
+	Flag = "MinionESP",
+	Callback = function(p146)
+		if not p146 then
+			if t7.connections.minion then
+				t7.connections.minion:Cleanup()
+				t7.connections.minion = nil
+				v174("minion")
+			end
+		elseif not t7.connections.minion then
+			t7.connections.minion = v178({
+				container = workspace,
+				addedSignal = "DescendantAdded",
+				valid = function(p147)
+					return p147 and p147:IsA("Model") and p147.Name == "PizzaDeliveryRig" or p147.Name == "1x1x1x1Zombie"
+				end,
+				highlightType = "minion"
+			})
+		end
+	end
+})
+Visual:CreateDivider()
+
+local v385 = Visual:CreateColorPicker({
+	Name = "Traps",
+	Flag = "TrapESPColor",
+	Color = t7.colors.trap,
+	Callback = function(p148)
+		t7.colors.trap = p148
+
+		if t7.connections.trap then
+			for k in t7.connections.trap.Instances, nil, nil do
+				if k:FindFirstChild("__SESP") then
+					k.__SESP.FillColor = t7.colors.trap
+				end
+			end
+		end
+	end
+})
+
+Visual:CreateToggle({
+	Name = "Traps",
+	Flag = "AmberliciousESP",
+	Callback = function(p149)
+		if not p149 then
+			if t7.connections.trap then
+				t7.connections.trap:Cleanup()
+				t7.connections.trap = nil
+				v174("trap")
+			end
+		elseif not t7.connections.trap then
+			local function v387(p150)
+				return p150 and p150:IsA("Model") and not p150:IsDescendantOf(Survivors) and p150.Name == "SubspaceTripmine" or string.find(p150.Name, "TaphTripwire")
+			end
+
+			t7.connections.trap = v178({
+				container = workspace,
+				addedSignal = "DescendantAdded",
+				valid = v387,
+				highlightType = "trap"
+			})
+		end
+	end
+})
+Visual:CreateDivider()
+Visual:CreateColorPicker({
+	Name = "Items",
+	Flag = "ItemESPColor",
+	Color = t7.colors.item,
+	Callback = function(p151)
+		t7.colors.item = p151
+
+		if t7.connections.item then
+			for k in t7.connections.item.Instances, nil, nil do
+				if k:FindFirstChild("__SESP") then
+					k.__SESP.FillColor = t7.colors.item
+				end
+			end
+		end
+	end
+})
+Visual:CreateToggle({
+	Name = "Items",
+	Flag = "ItemESP",
+	Callback = function(p152)
+		if not p152 then
+			if t7.connections.item then
+				t7.connections.item:Cleanup()
+				t7.connections.item = nil
+				v174("item")
+			end
+		elseif not t7.connections.item then
+			t7.connections.item = v178({
+				container = workspace,
+				addedSignal = "DescendantAdded",
+				valid = function(p153)
+					return p153 and p153:IsA("Tool") and (p153.Name == "BloxyCola" or p153.Name == "Medkit") and not p153:IsDescendantOf(Players2)
+				end,
+				highlightType = "item"
+			})
+		end
+	end
+})
+Visual:CreateDivider()
+
+local v389 = Visual:CreateColorPicker({
+	Name = "Jane Doe Quest",
+	Flag = "JaneQuestESP",
+	Color = t7.colors.contract,
+	Callback = function(p154)
+		t7.colors.contract = p154
+
+		if t7.connections.contract then
+			for k in t7.connections.contract.Instances, nil, nil do
+				if k:FindFirstChild("__SESP") then
+					k.__SESP.FillColor = t7.colors.contract
+				end
+			end
+		end
+	end
+})
+
+Visual:CreateToggle({
+	Name = "Jane Doe Quest",
+	Flag = "JaneQuestESPColor",
+	Callback = function(p155)
+		if not p155 then
+			if t7.connections.contract then
+				t7.connections.contract:Cleanup()
+				t7.connections.contract = nil
+				v174("contract")
+			end
+		elseif not t7.connections.contract then
+			t7.connections.contract = v178({
+				container = workspace,
+				addedSignal = "ChildAdded",
+				valid = function(p156)
+					return p156 and p156:IsA("MeshPart") and p156.Name == "Model" and (p156.MeshId == "rbxassetid://116433898437270" or p156.MeshId == "rbxassetid://81503280733693")
+				end,
+				highlightType = "contract"
+			})
+		end
+	end
+})
+
+-- Syncsaken target-lock, backstab, and attack automation omitted.
+
+local connection7
+local u548 = false
+
+local function v549(p185)
+	if not p185 then
+		if connection7 then
+			connection7:Disconnect()
+			connection7 = nil
+		end
+
+		if Character then
+			if Character:FindFirstChild("CollisionHitbox") then
+				Character:FindFirstChild("CollisionHitbox").CanCollide = true
+			end
+
+			if Character:FindFirstChild("HumanoidRootPart") then
+				Character.HumanoidRootPart.CanCollide = true
+			end
+
+			if Character:FindFirstChild("Head") then
+				Character.Head.CanCollide = true
+			end
+		end
+	elseif not connection7 then
+		connection7 = RunService.Heartbeat:Connect(function()
+			if Character then
+				if Character:FindFirstChild("CollisionHitbox") then
+					Character:FindFirstChild("CollisionHitbox").CanCollide = false
+				end
+
+				if Character:FindFirstChild("HumanoidRootPart") then
+					Character.HumanoidRootPart.CanCollide = false
+				end
+
+				if Character:FindFirstChild("Head") then
+					Character.Head.CanCollide = false
+				end
+			end
+		end)
+	end
+end
+
+Other:CreateDivider()
+
+local v550 = Other:CreateToggle({
+	Name = "Noclip",
+	Flag = "NoclipFlag",
+	Callback = function(p186)
+		u548 = p186
+		v549(p186)
+	end
+})
+
+Other:CreateKeybind({
+	Name = "Keybind",
+	Flag = "NoclipKeybind",
+	HoldToInteract = false,
+	CurrentKeybind = "LeftBracket",
+	Callback = function()
+		v550:Set(not u548)
+	end
+})
+
+if t1.requiring then
+	Other:CreateDivider()
+	Other:CreateDropdown({
+		Name = "Spoof device",
+		Options = {
+			"PC",
+			"Mobile",
+			"Console"
+		},
+		CurrentOption = {},
+		MultipleOptions = false,
+		Flag = "SpoofDevice",
+		Callback = function(p187)
+			Network:FireServerConnection("SetDevice", "REMOTE_EVENT", p187[1])
+		end
+	})
+end
+
+Credits:CreateLabel("Syncsaken wouldn't exist without:")
+Credits:CreateDivider()
+Credits:CreateParagraph({
+	Title = "@remiafterdark (elysian owner)",
+	Content = [[she helped write:
+• infinite stamina
+• grabbing all items
+
+she also inspired:
+• this script
+• randomise name]]
+})
+Credits:CreateParagraph({
+	Title = "@ivanetta (fartsaken owner)",
+	Content = [[he helped write:
+• 1x1x1x1 popups
+• frontflip & backflip
+
+and inspired:
+• this script]]
+})
+Credits:CreateParagraph({
+	Title = "@jzexok",
+	Content = "they wrote:\n• the fov slider"
+})
+Credits:CreateDivider()
+
+UIEnv.DoggysakenSyncReadiness = {
+    Generator = type(t2) == "table" and type(v111) == "function",
+    ESP = type(t7) == "table" and type(v178) == "function",
+    Player = type(t5) == "table" and type(t6) == "table",
+}
+
+UIEnv.DoggysakenSyncCleanup = function()
+    pcall(function() t2.autogen = false; t19.ended = true; v111() end)
+    pcall(function() v549(false) end)
+    pcall(function() if t5 and t5.enabled then t5.toggleInvisible(false) end end)
+    pcall(function()
+        if t7 and t7.connections then
+            for _, tracker in pairs(t7.connections) do
+                if tracker and type(tracker.Cleanup) == "function" then
+                    tracker:Cleanup()
+                end
+            end
+            table.clear(t7.connections)
+        end
+    end)
+    pcall(function() if t12 and t12.RemoveTask then t12:RemoveTask("BlockFootsteps") end end)
+    pcall(function() if t14 and t14.RemoveTask then t14:RemoveTask("NoliNoWallCollision") end end)
+    for _, conn in pairs({connection, connection2, veeronicaAdorneeConnection, ghostburgerConnection, connection4, connection5, connection6, connection7, speedConnection, puzzleAddedConnection, puzzleRemovedConnection, veeronicaAddedConnection, veeronicaRemovedConnection, characterAddedConnection}) do
+        if conn and typeof(conn) == "RBXScriptConnection" and conn.Connected then pcall(function() conn:Disconnect() end) end
+    end
+    pcall(function()
+        if _syncEnv.NSDC and _syncEnv.NSDC.Connected then _syncEnv.NSDC:Disconnect() end
+        _syncEnv.NSDC = nil
+    end)
+    pcall(function()
+        if syncSprintingModule then syncSprintingModule.StaminaLossDisabled = false end
+    end)
+    pcall(function()
+        if veeronicaBehavior and veeronicaOriginalSk8Callback then
+            veeronicaBehavior.Abilities.Sk8.Callback = veeronicaOriginalSk8Callback
+        end
+    end)
+    pcall(function()
+        if Network and t12 and t12.originalFunctions then
+            for name, original in pairs(t12.originalFunctions) do Network[name] = original end
+        end
+    end)
+    pcall(function()
+        if _syncMeta and _syncHookedNamecall and _syncMeta.__namecall == _syncHookedNamecall then
+            setreadonly(_syncMeta, false)
+            _syncMeta.__namecall = _syncOriginalNamecall
+            setreadonly(_syncMeta, true)
+        end
+    end)
+end
+
+end -- Syncsaken feature port
+
+
+-- Obsidian-native configuration management for every merged control.
+local SaveManager
+local saveManagerLoaded, saveManagerResult = pcall(function()
+    local source = game:HttpGet(DOGGYSAKEN_OBSIDIAN_REPO .. "addons/SaveManager.lua")
+    local loader = loadstring(source)
+    assert(type(loader) == "function", "Obsidian SaveManager did not compile")
+    return loader()
+end)
+if saveManagerLoaded and type(saveManagerResult) == "table" then
+    SaveManager = saveManagerResult
+    local configured = pcall(function()
+        SaveManager:SetLibrary(ObsidianLibrary)
+        SaveManager:IgnoreThemeSettings()
+        SaveManager:SetIgnoreIndexes({ "Doggysaken_MenuKey" })
+        SaveManager:SetFolder("Doggysaken")
+        SaveManager:SetSubFolder("Forsaken")
+        SaveManager:BuildConfigSection(Tabs.SaveLoad)
+        SaveManager:LoadAutoloadConfig()
+    end)
+    if not configured then warn("[Doggysaken] SaveManager setup failed; manual toggles remain available.") end
+else
+    warn("[Doggysaken] Obsidian SaveManager unavailable; config saving is disabled.")
+end
+
 -- Feature definitions and their controller tables are all created before this point.
 -- Check the feature entry points before making the UI visible; this does not turn
 -- gameplay features on automatically.
@@ -3060,8 +5721,10 @@ local FeatureReadiness = {
     ["Map ESP"] = type(StartMapESP) == "function" and type(StopMapESP) == "function",
     ["Azure Automation"] = type(StartAzureMinigame) == "function" and type(StopAzureMinigame) == "function",
     ["Nosferatu Automation"] = type(StartNosferatuMinigame) == "function" and type(StopNosferatuMinigame) == "function",
-    ["Character Lock"] = type(GH_Aimbot_Start) == "function" and type(GH_Aimbot_Stop) == "function",
     ["Extended ESP"] = type(DoggysakneESP) == "table" and type(DoggysakneESP.SetEnabled) == "function",
+    ["Sync Generator Automation"] = UIEnv.DoggysakenSyncReadiness and UIEnv.DoggysakenSyncReadiness.Generator == true,
+    ["Sync ESP"] = UIEnv.DoggysakenSyncReadiness and UIEnv.DoggysakenSyncReadiness.ESP == true,
+    ["Sync Player Utilities"] = UIEnv.DoggysakenSyncReadiness and UIEnv.DoggysakenSyncReadiness.Player == true,
 }
 local readyCount, featureCount = 0, 0
 local missingFeatures = {}
@@ -3118,7 +5781,7 @@ function DoggysakneCleanup()
     pcall(function() StopAzureMinigame() end)
     pcall(function() StopNosferatuMinigame() end)
     pcall(function() HDT_StopWatcher() end)
-    pcall(function() GH_Aimbot_Stop() end)
+    pcall(function() if type(UIEnv.DoggysakenSyncCleanup) == "function" then UIEnv.DoggysakenSyncCleanup() end end)
 end
 
 
