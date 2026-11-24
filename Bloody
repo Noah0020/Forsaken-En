@@ -102,7 +102,12 @@ local AB = {
     defaultRangeRequireFacing=false, customFacingDot=-0.1,
     wallCheckEnabled=false, hitboxDraggingEnabled=false, hitboxDraggingDuration=0.3,
     customVisualizerVisible=false, defaultVisualizerVisible=false,
-    facingMode="default",
+    facingMode="box", -- "box" | "flex"
+    flexFacingDot=0.6,
+    strictVisualBeam=true,
+    BlockDelayMs=0,
+    DragSpeed=14,
+    HitboxDragRange=30,
     customRangeSettings={enabled=false, frontRange=12, sideRange=12, height=8},
     autoPunch=false, PunchDelay=0.5, soundHooks={},
     HitboxVis=true, HitboxMult=1, HitboxDist=3,
@@ -170,14 +175,16 @@ local function pointInBox(box, worldPos)
     local h = box.Size * 0.5
     return math.abs(lp.X) <= h.X+0.001 and math.abs(lp.Y) <= h.Y+0.001 and math.abs(lp.Z) <= h.Z+0.001
 end
+-- Detection gate: "box" = always ok here (box overlap is the real gate)
+-- "flex" = Flex StrictVisualCheck: killer must be looking at you
 local function facingOk(localRoot, killerRoot)
-    if AB.facingMode ~= "default" then return true end
-    if not AB.defaultRangeRequireFacing or not localRoot or not killerRoot then return true end
-    local n = localRoot.Position - killerRoot.Position
-    if n.Magnitude < 0.1 then return true end
-    local unit = Vector3.new(n.X, 0, n.Z).Unit
-    local look = killerRoot.CFrame.LookVector
-    return Vector3.new(look.X, 0, look.Z).Unit:Dot(unit) > (AB.customFacingDot or -0.1)
+    if AB.facingMode == "box" then return true end
+    if not localRoot or not killerRoot then return false end
+    local offset = localRoot.Position - killerRoot.Position
+    local look = Vector3.new(killerRoot.CFrame.LookVector.X, 0, killerRoot.CFrame.LookVector.Z)
+    local toMe = Vector3.new(offset.X, 0, offset.Z)
+    if look.Magnitude < 0.01 or toMe.Magnitude < 0.01 then return false end
+    return look.Unit:Dot(toMe.Unit) >= (AB.flexFacingDot or 0.6)
 end
 local function wallBlocked(localRoot, killerRoot, char)
     if not AB.wallCheckEnabled then return false end
@@ -190,11 +197,24 @@ end
 local function doBlockAbility()
     if AB.autoBlockMode == "007n7" then FireAbility("Clone") else fireBlock() end
 end
+local _lastBlockFire = 0
 local function scheduleBlock()
     if not abRunning or not AB.autoBlock then return end
-    if tonumber(AB.autoBlockDelay) and AB.autoBlockDelay > 0 then
-        task.delay(AB.autoBlockDelay, doBlockAbility)
-    else doBlockAbility() end
+    local now = os.clock()
+    if now - _lastBlockFire < 0.02 then return end -- faster debounce
+    _lastBlockFire = now
+    local delayMs = tonumber(AB.BlockDelayMs) or 0
+    local function fireFast()
+        doBlockAbility()
+        doBlockAbility()
+        doBlockAbility()
+        doBlockAbility()
+    end
+    if delayMs > 0 then
+        task.delay(delayMs / 1000, fireFast)
+    else
+        fireFast()
+    end
     if AB.autoPunch then task.delay(AB.PunchDelay or 0.5, FirePunch) end
 end
 local function armKiller(model, duration)
@@ -235,44 +255,62 @@ end
 local function clearVis(model, key)
     if visuals[model] and visuals[model][key] then visuals[model][key]:Destroy(); visuals[model][key]=nil end
 end
+-- Flex visual beam (Strict Visual Check)
+local VisualCheckBeam = Instance.new("Part")
+VisualCheckBeam.Name = "DS_FlexVisualBeam"
+VisualCheckBeam.Anchored = true
+VisualCheckBeam.CanCollide = false
+VisualCheckBeam.CanQuery = false
+VisualCheckBeam.CanTouch = false
+VisualCheckBeam.Transparency = 1
+VisualCheckBeam.Parent = workspace
+local beamAtt0 = Instance.new("Attachment")
+local beamAtt1 = Instance.new("Attachment")
+beamAtt0.Parent = VisualCheckBeam
+beamAtt1.Parent = VisualCheckBeam
+local VisualBeam = Instance.new("Beam")
+VisualBeam.Attachment0 = beamAtt0
+VisualBeam.Attachment1 = beamAtt1
+VisualBeam.Width0 = 0.05
+VisualBeam.Width1 = 0.05
+VisualBeam.FaceCamera = true
+VisualBeam.LightEmission = 1
+VisualBeam.Color = ColorSequence.new(Color3.fromRGB(220, 20, 60))
+VisualBeam.Enabled = false
+VisualBeam.Parent = VisualCheckBeam
+
 local function updateVisuals()
-    if not abRunning or not AB.autoBlock then return end
-    local customOn = AB.facingMode == "custom"
-    local now = os.clock()
+    if not abRunning or not AB.autoBlock then
+        VisualBeam.Enabled = false
+        return
+    end
+    -- range cylinder when box mode
     for _, m in ipairs(killersList) do
         local root = getRoot(m)
         if root then
             visuals[m] = visuals[m] or {}
-            if not customOn and AB.defaultVisualizerVisible then
+            if AB.facingMode == "box" and AB.HitboxVis then
                 if not visuals[m].Default then
                     local cyl = Instance.new("CylinderHandleAdornment")
-                    cyl.Name="DefaultRangeVisualizer"; cyl.Adornee=root
-                    cyl.Color3=Color3.fromRGB(255,100,100); cyl.AlwaysOnTop=true
-                    cyl.ZIndex=1; cyl.Transparency=0.5; cyl.Height=0.12; cyl.Parent=root
+                    cyl.Name = "BoxRangeVis"
+                    cyl.Adornee = root
+                    cyl.Color3 = Color3.fromRGB(255, 200, 40)
+                    cyl.AlwaysOnTop = true
+                    cyl.ZIndex = 1
+                    cyl.Transparency = 0.55
+                    cyl.Height = 0.12
+                    cyl.Parent = root
                     visuals[m].Default = cyl
                 end
                 visuals[m].Default.Radius = tonumber(AB.detectionRange) or 15
                 visuals[m].Default.CFrame = CFrame.new(0, -(root.Size.Y/2+0.05), 0) * CFrame.Angles(math.pi/2, 0, 0)
-            else clearVis(m, "Default") end
-            if customOn and AB.customVisualizerVisible and pendingBlocks[m] and now <= pendingBlocks[m].expiry then
-                if not visuals[m].Custom then
-                    local box = Instance.new("BoxHandleAdornment")
-                    box.Name="CustomRangeVisualizer"; box.Adornee=root
-                    box.Color3=Color3.fromRGB(255,255,102); box.AlwaysOnTop=true
-                    box.ZIndex=1; box.Transparency=0.7; box.Parent=root
-                    visuals[m].Custom = box
-                end
-                local q = getQueryHitbox(m) or root
-                local fr = tonumber(AB.customRangeSettings.frontRange) or 12
-                local sr = tonumber(AB.customRangeSettings.sideRange) or 12
-                local ht = tonumber(AB.customRangeSettings.height) or 8
-                visuals[m].Custom.Adornee=q
-                visuals[m].Custom.Size=Vector3.new(sr,ht,fr)
-                visuals[m].Custom.CFrame=CFrame.new(0,0,-(fr/2))
-            else clearVis(m, "Custom") end
+            else
+                clearVis(m, "Default")
+            end
         end
     end
 end
+
 local function abTick()
     if not abRunning or not AB.autoBlock then return end
     local char = LocalPlayer.Character
@@ -280,23 +318,45 @@ local function abTick()
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
     local now = os.clock()
-    local customOn = AB.facingMode == "custom"
+
+    -- Flex facing beam update
+    if AB.facingMode == "flex" and AB.strictVisualBeam then
+        RefreshFolders()
+        local best, bd = nil, 150
+        if KillersFolder then
+            for _, m in ipairs(KillersFolder:GetChildren()) do
+                local kr = getRoot(m)
+                if kr then
+                    local d = (kr.Position - hrp.Position).Magnitude
+                    if d < bd then bd = d; best = m end
+                end
+            end
+        end
+        if best then
+            local krp = getRoot(best)
+            if krp then
+                beamAtt0.Parent = hrp
+                beamAtt1.Parent = krp
+                local seeing = facingOk(hrp, krp)
+                VisualBeam.Color = ColorSequence.new(seeing and Color3.fromRGB(0,255,0) or Color3.fromRGB(220,20,60))
+                VisualBeam.Enabled = true
+            else
+                VisualBeam.Enabled = false
+            end
+        else
+            VisualBeam.Enabled = false
+        end
+    else
+        VisualBeam.Enabled = false
+    end
+
     for model, st in pairs(pendingBlocks) do
         if not model or not model.Parent or now > st.expiry then
             pendingBlocks[model] = nil
         else
             local kr = getRoot(model)
             if kr then
-                local inRange = false
-                if customOn then
-                    local q = getQueryHitbox(model) or kr
-                    local fr = tonumber(AB.customRangeSettings.frontRange) or 12
-                    local sr = tonumber(AB.customRangeSettings.sideRange) or 12
-                    local ht = tonumber(AB.customRangeSettings.height) or 8
-                    inRange = pointInBox({CFrame=q.CFrame*CFrame.new(0,0,-(fr/2)), Size=Vector3.new(sr,ht,fr)}, hrp.Position)
-                else
-                    inRange = (hrp.Position - kr.Position).Magnitude <= (tonumber(AB.detectionRange) or 15)
-                end
+                local inRange = (hrp.Position - kr.Position).Magnitude <= (tonumber(AB.detectionRange) or 15)
                 inRange = inRange and not st.blocked
                 if inRange and facingOk(hrp, kr) and not wallBlocked(hrp, kr, char) then
                     st.blocked = true
@@ -347,11 +407,18 @@ local function onAnimPlayed(track, model)
             params.MaxParts = 1
             params.FilterType = Enum.RaycastFilterType.Include
             params.FilterDescendantsInstances = { localQ }
-            for _ = 1, 10 do
+            for _ = 1, 16 do
                 if not AB.autoBlock then break end
+                -- flex mode still requires facing
+                local kr = getRoot(model)
+                local my = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if AB.facingMode == "flex" and my and kr and not facingOk(my, kr) then
+                    task.wait(0.01)
+                    continue
+                end
                 local hits = workspace:GetPartBoundsInBox(q.CFrame * CFrame.new(0,0,-3.5), Vector3.new(5.2,6,5.65)*2.2, params)
                 if #hits > 0 then scheduleBlock(); hitboxDrag(); break end
-                task.wait(0.02)
+                task.wait(0.01)
             end
         end)
     end
@@ -426,10 +493,16 @@ local function makeLastUsedHitbox(killer)
             for _, p in ipairs(workspace:GetPartsInPart(hb, op)) do
                 local hum = p.Parent and p.Parent:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 and Players:GetPlayerFromCharacter(hum.Parent) == LocalPlayer then
-                    blocked = true; hb.Color = Color3.fromRGB(0,255,0)
-                    fireBlock(); fireBlock(); fireBlock(); fireBlock()
-                    if AB.autoPunch then task.delay(AB.PunchDelay, FirePunch) end
-                    hitboxDrag(); break
+                    local myR = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    local kr = getRoot(killer)
+                    if AB.facingMode == "flex" and myR and kr and not facingOk(myR, kr) then
+                        -- skip: killer not facing us
+                    else
+                        blocked = true; hb.Color = Color3.fromRGB(0,255,0)
+                        fireBlock(); fireBlock(); fireBlock(); fireBlock()
+                        if AB.autoPunch then task.delay(AB.PunchDelay, FirePunch) end
+                        hitboxDrag(); break
+                    end
                 end
             end
             RunService.Heartbeat:Wait()
@@ -474,9 +547,9 @@ local function stopAB()
     Notify("Auto Block OFF")
 end
 local function setFacingMode(mode)
-    AB.facingMode = mode
-    AB.customRangeSettings.enabled = (mode == "custom")
-    Notify("Facing: " .. mode)
+    AB.facingMode = mode -- "box" or "flex"
+    AB.customRangeSettings.enabled = false
+    Notify("Detection: " .. tostring(mode))
 end
 
 -- ========== STAMINA (Guesting) ==========
@@ -1013,37 +1086,39 @@ do
     L:AddSlider("StamGain", {Text="Gain", Default=20, Min=0, Max=100, Rounding=0, Callback=function(v) Stam.Gain=v; if Stam.SettingsOn then applyStamina() end end})
 end
 do
-    local L = Tabs.AutoBlock:AddLeftGroupbox("Auto Block (merged)")
-    L:AddToggle("AB_On", {Text="Enable Auto Block", Default=false, Callback=function(v)
-        AB.autoBlock=v; if v then startAB() else stopAB() end
+    -- Mirror Flex Auto Block tab layout
+    local L = Tabs.AutoBlock:AddLeftGroupbox("Original Auto Block")
+    L:AddToggle("AB_On", {Text="Auto Block", Default=false, Callback=function(v)
+        AB.autoBlock=v
+        if v then startAB() else stopAB() end
     end})
-    L:AddLabel("ON = sound + anim + last-used together")
-    L:AddToggle("AB_Punch", {Text="Auto Punch after block", Default=false, Callback=function(v) AB.autoPunch=v end})
+    L:AddLabel("ON = sound + anim + last-used all active")
     L:AddToggle("AB_Drag", {Text="Hitbox Drag", Default=false, Callback=function(v) AB.hitboxDraggingEnabled=v end})
-    L:AddToggle("AB_Wall", {Text="Wall Check", Default=false, Callback=function(v) AB.wallCheckEnabled=v end})
-    L:AddSlider("AB_Delay", {Text="Block Delay (s)", Default=0, Min=0, Max=1, Rounding=2, Callback=function(v) AB.autoBlockDelay=v end})
-    L:AddSlider("AB_SoundT", {Text="Sound Timer", Default=0.32, Min=0.05, Max=2, Rounding=2, Callback=function(v) AB.soundTimerValue=v end})
-    L:AddSlider("AB_DragDur", {Text="Drag Duration", Default=0.3, Min=0.05, Max=1, Rounding=2, Callback=function(v) AB.hitboxDraggingDuration=v end})
+    L:AddSlider("AB_DragRange", {Text="Drag Range (studs)", Default=30, Min=5, Max=60, Rounding=0, Callback=function(v) AB.HitboxDragRange=v end})
+    L:AddSlider("AB_DragSpd", {Text="Drag Speed", Default=14, Min=1, Max=40, Rounding=0, Callback=function(v) AB.DragSpeed=v end})
+    L:AddSlider("AB_DelayMs", {Text="Block Delay (ms)", Default=0, Min=0, Max=200, Rounding=0, Callback=function(v) AB.BlockDelayMs=v end})
+    L:AddDropdown("AB_Mode", {Text="Block Ability", Values={"Guest1337","007n7"}, Default=1, Callback=function(v) AB.autoBlockMode=v end})
+    L:AddToggle("AB_Punch", {Text="Auto Punch Counter", Default=false, Callback=function(v) AB.autoPunch=v end})
     L:AddSlider("AB_PunchD", {Text="Punch Delay", Default=0.5, Min=0, Max=2, Rounding=2, Callback=function(v) AB.PunchDelay=v end})
-    L:AddDropdown("AB_Mode", {Text="Block Mode", Values={"Guest1337","007n7"}, Default=1, Callback=function(v) AB.autoBlockMode=v end})
+    L:AddSlider("AB_SoundT", {Text="Sound Timer", Default=0.32, Min=0.05, Max=2, Rounding=2, Callback=function(v) AB.soundTimerValue=v end})
+    L:AddButton({Text="Test Block", Func=function() fireBlock(); fireBlock(); Notify("Fired x2") end})
 
-    local R = Tabs.AutoBlock:AddRightGroupbox("Facing (pick one)")
-    R:AddDropdown("AB_Facing", {Text="Facing Mode", Values={"default","custom"}, Default=1, Callback=function(v) setFacingMode(v) end})
-    R:AddLabel("--- Default Range ---")
-    R:AddSlider("AB_Range", {Text="Detection Range", Default=15, Min=3, Max=40, Rounding=0, Callback=function(v) AB.detectionRange=v end})
-    R:AddToggle("AB_ReqFace", {Text="Require Facing (default)", Default=false, Callback=function(v) AB.defaultRangeRequireFacing=v end})
-    R:AddSlider("AB_FaceDot", {Text="Facing Dot", Default=-0.1, Min=-1, Max=1, Rounding=2, Callback=function(v) AB.customFacingDot=v end})
-    R:AddToggle("AB_DefVis", {Text="Show Default Visual", Default=false, Callback=function(v) AB.defaultVisualizerVisible=v end})
-    R:AddLabel("--- Custom Zone ---")
-    R:AddSlider("AB_Front", {Text="Front Range", Default=12, Min=1, Max=30, Rounding=0, Callback=function(v) AB.customRangeSettings.frontRange=v end})
-    R:AddSlider("AB_Side", {Text="Side Range", Default=12, Min=1, Max=30, Rounding=0, Callback=function(v) AB.customRangeSettings.sideRange=v end})
-    R:AddSlider("AB_Height", {Text="Height", Default=8, Min=1, Max=20, Rounding=0, Callback=function(v) AB.customRangeSettings.height=v end})
-    R:AddToggle("AB_CusVis", {Text="Show Custom Visual", Default=false, Callback=function(v) AB.customVisualizerVisible=v end})
-    R:AddLabel("--- Last-Used Box ---")
-    R:AddToggle("AB_HBVis", {Text="Show Last-Used Hitbox", Default=true, Callback=function(v) AB.HitboxVis=v end})
-    R:AddSlider("AB_HBMult", {Text="Hitbox Mult", Default=1, Min=0.3, Max=4, Rounding=1, Callback=function(v) AB.HitboxMult=v end})
-    R:AddSlider("AB_HBDist", {Text="Hitbox Dist", Default=3, Min=1, Max=12, Rounding=1, Callback=function(v) AB.HitboxDist=v end})
-    R:AddButton({Text="Test Block", Func=function() fireBlock(); Notify("Fired") end})
+    local R = Tabs.AutoBlock:AddRightGroupbox("Detection (pick ONE)")
+    R:AddDropdown("AB_Facing", {
+        Text = "Detection Mode",
+        Values = {"box", "flex"},
+        Default = 1,
+        Callback = function(v) setFacingMode(v) end,
+    })
+    R:AddLabel("--- Box (hitbox / QueryHitbox) ---")
+    R:AddSlider("AB_Range", {Text="Arm Range (sound)", Default=15, Min=3, Max=40, Rounding=0, Callback=function(v) AB.detectionRange=v end})
+    R:AddToggle("AB_HBVis", {Text="Show Box Hitbox", Default=true, Callback=function(v) AB.HitboxVis=v end})
+    R:AddSlider("AB_HBMult", {Text="Box Mult", Default=1, Min=0.3, Max=4, Rounding=1, Callback=function(v) AB.HitboxMult=v end})
+    R:AddSlider("AB_HBDist", {Text="Box Distance", Default=3, Min=1, Max=12, Rounding=1, Callback=function(v) AB.HitboxDist=v end})
+    R:AddLabel("--- Flex Facing Check ---")
+    R:AddSlider("AB_FlexDot", {Text="Facing Dot (0.6=Flex)", Default=0.6, Min=0, Max=1, Rounding=2, Callback=function(v) AB.flexFacingDot=v end})
+    R:AddToggle("AB_Beam", {Text="Strict Visual Beam", Default=true, Callback=function(v) AB.strictVisualBeam=v end})
+    R:AddToggle("AB_Wall", {Text="Wall Check", Default=false, Callback=function(v) AB.wallCheckEnabled=v end})
 end
 do
     local L = Tabs.Aim:AddLeftGroupbox("Aimbots (Guesting)")
