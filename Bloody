@@ -1,5 +1,5 @@
 --[[
-    Golden Hub — WindUI (Gold)
+    Golden Hub — WindUI (Gold) · Flex AB
     Icon: 126198090386776
 ]]
 
@@ -52,12 +52,12 @@ pcall(function() WindUI:SetTheme("GoldenTheme") end)
 local ICON = "rbxassetid://126198090386776"
 local Window = WindUI:CreateWindow({
     Title = "Golden Hub", Icon = ICON, Author = "Gold · Clean",
-    Folder = "GoldenHub", Size = UDim2.fromOffset(540, 440),
-    Transparent = true, Theme = "GoldenTheme", SideBarWidth = 165, HasOutline = true,
+    Folder = "GoldenHub", Size = UDim2.fromOffset(600, 460),
+    Transparent = true, Theme = "GoldenTheme", SideBarWidth = 190, HasOutline = true,
 })
 pcall(function()
     Window:EditOpenButton({
-        Title = "Golden Hub", Icon = ICON, CornerRadius = UDim.new(0,12), StrokeThickness = 1.5,
+        Title = "Golden Hub", Icon = ICON, CornerRadius = UDim.new(0,12), StrokeThickness = 2,
         Color = ColorSequence.new({
             ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 220, 80)),
             ColorSequenceKeypoint.new(0.5, Color3.fromRGB(200, 150, 30)),
@@ -224,58 +224,188 @@ local function setStaminaEdit(on) Stam.Edit=on; refreshStamConn(); Notify("Stami
 
 
 
--- Auto Block (box only, anim+sound+ALU)
+-- Auto Block (box · Flex sound/anim · name-filtered abilities)
 local blockAnimIds = {
     ["72722244508749"]=true,["96959123077498"]=true,["95802026624883"]=true,
     ["140671644163156"]=true,["100926346851492"]=true,
 }
 local AB = {
     Enabled=false, Range=15, SoundTimer=0.32, BlockDelayMs=0,
-    HitboxDrag=false, DragRange=30, DragSpeed=14,
+    HitboxDrag=false, DragRange=30, DragSpeed=14, DragDuration=0.35,
     AutoPunch=true, PunchDelay=0.12, HitboxVis=true, HitboxMult=1, HitboxDist=3,
 }
 local HDT_Active, HDT_Until = false, 0
-local AttackSounds = {
-    ["74809026448465"]=true,["85853080745515"]=true,["95079963655241"]=true,["98111231282218"]=true,
-    ["101199185291628"]=true,["115026634746636"]=true,["117173212095661"]=true,["119942598489800"]=true,
-    ["121954639447247"]=true,["128856426573270"]=true,["133709029886490"]=true,["86174610237192"]=true,
-    ["98675142200448"]=true,["105204810054381"]=true,["123923371062204"]=true,["131123355704017"]=true,
-    ["140242176732868"]=true,["89004992452376"]=true,["96117920303138"]=true,["108610718831698"]=true,
-    ["109348678063422"]=true,["112395455254818"]=true,["70739368096233"]=true,["104910828105172"]=true,
-    ["71805956520207"]=true,["74842815979546"]=true,["79980897195554"]=true,["96594507550917"]=true,
-    ["75330693422988"]=true,["79391273191671"]=true,["80516583309685"]=true,["82221759983649"]=true,
-    ["84307400688050"]=true,["98733709078792"]=true,["100600301396617"]=true,
+
+--═══════════════════════════════════════════════════════════════════
+-- AUTO BLOCK name-filter (ability names + scanned killer assets)
+--═══════════════════════════════════════════════════════════════════
+local BlockAbilityNames = {
+    "PERFORATING", "LACERATE", "EVISCERATE", "CARVING SLASH",
+    "STAB", "TAG", "SLASH", "ENRAGED SLASH",
 }
+local BLOCK_NAMES_LOWER = {}
+for _, n in ipairs(BlockAbilityNames) do BLOCK_NAMES_LOWER[n:lower()] = true end
+
+local function nameMatchesBlock(raw)
+    if type(raw) ~= "string" or raw == "" then return false end
+    local l = raw:lower()
+    for bn in pairs(BLOCK_NAMES_LOWER) do
+        if string.find(l, bn, 1, true) then return true end
+    end
+    return false
+end
+
+local function extractAnimIds(v)
+    local out = {}
+    if type(v) == "string" then
+        local id = v:match("%d+")
+        if id then table.insert(out, id) end
+    elseif type(v) == "number" then
+        table.insert(out, tostring(math.floor(v)))
+    elseif type(v) == "table" then
+        for _, x in pairs(v) do
+            for _, id in ipairs(extractAnimIds(x)) do table.insert(out, id) end
+        end
+    end
+    return out
+end
+
+local BLOCK_ANIM_IDS = {}
+local BLOCK_SOUND_IDS = {}
+local BLOCK_SOUND_FIELDS = {"Sounds","Sound","SFX","Sfx","SoundEffects","SoundIds"}
+
+local function collectBlockAssets(cfg)
+    if type(cfg) ~= "table" then return end
+    if type(cfg.Animations) == "table" then
+        for name, v in pairs(cfg.Animations) do
+            if nameMatchesBlock(name) then
+                for _, id in ipairs(extractAnimIds(v)) do BLOCK_ANIM_IDS[id] = true end
+            end
+        end
+    end
+    for _, field in ipairs(BLOCK_SOUND_FIELDS) do
+        if type(cfg[field]) == "table" then
+            for name, v in pairs(cfg[field]) do
+                if nameMatchesBlock(name) then
+                    for _, id in ipairs(extractAnimIds(v)) do BLOCK_SOUND_IDS[id] = true end
+                end
+            end
+        end
+    end
+end
+
+local function scanKillerFolder(folder)
+    if not folder then return end
+    for _, sub in ipairs(folder:GetChildren()) do
+        if sub:IsA("Folder") then
+            for _, cfgName in ipairs({"Config", "Behavior"}) do
+                local mod = sub:FindFirstChild(cfgName)
+                if mod and mod:IsA("ModuleScript") then
+                    local ok, data = pcall(require, mod)
+                    if ok then collectBlockAssets(data) end
+                end
+            end
+        end
+    end
+end
+
+local function scanAllKillerAssets()
+    BLOCK_ANIM_IDS = {}
+    BLOCK_SOUND_IDS = {}
+    local assets = ReplicatedStorage:FindFirstChild("Assets")
+    if not assets then return end
+    scanKillerFolder(assets:FindFirstChild("Killers"))
+    local skins = assets:FindFirstChild("Skins")
+    local sk = skins and skins:FindFirstChild("Killers")
+    if sk then
+        for _, base in ipairs(sk:GetChildren()) do
+            if base:IsA("Folder") then scanKillerFolder(base) end
+        end
+    end
+end
+task.spawn(scanAllKillerAssets)
+
+local function getBlockAbilityName(killer)
+    if not killer then return nil end
+    for _, attr in ipairs({"AbilityName","LastAbility","CurrentAbility","LastAbilityName","AbilityUsed","Ability","CurrentAttack"}) do
+        local ok, val = pcall(function() return killer:GetAttribute(attr) end)
+        if ok and type(val) == "string" and val ~= "" then return val end
+    end
+    return nil
+end
+
+local AttackSounds = {
+    ["100600301396617"]=true,["101199185291628"]=true,["101553872555606"]=true,["101698569375359"]=true,
+    ["104910828105172"]=true,["105204810054381"]=true,["105516183226360"]=true,["105840448036441"]=true,
+    ["108610718831698"]=true,["108651070773439"]=true,["108907358619313"]=true,["109348678063422"]=true,
+    ["109570290393196"]=true,["112809109188560"]=true,["113413858159336"]=true,["115026634746636"]=true,
+    ["115678417928765"]=true,["117173212095661"]=true,["117231507259853"]=true,["119583605486352"]=true,
+    ["119664480754070"]=true,["119942598489800"]=true,["121954639447247"]=true,["122398404613193"]=true,
+    ["123923371062204"]=true,["124234993291213"]=true,["125213046326879"]=true,["127557531826290"]=true,
+    ["128195973631079"]=true,["128367348686124"]=true,["128856426573270"]=true,["131123355704017"]=true,
+    ["133709029886490"]=true,["135319730390518"]=true,["136323728355613"]=true,["139996647355899"]=true,
+    ["140242176732868"]=true,["70739368096233"]=true,["71805956520207"]=true,["74809026448465"]=true,
+    ["74842815979546"]=true,["75330693422988"]=true,["79391273191671"]=true,["79980897195554"]=true,
+    ["80516583309685"]=true,["82221759983649"]=true,["84307400688050"]=true,["85853080745515"]=true,
+    ["86174610237192"]=true,["88589682639517"]=true,["89004992452376"]=true,["95079963655241"]=true,
+    ["96117920303138"]=true,["96594507550917"]=true,["98111231282218"]=true,["98675142200448"]=true,
+    ["98733709078792"]=true,
+}
+
 local AttackAnims = {
     ["87259391926321"]=true,["140703210927645"]=true,["136007065400978"]=true,["129843313690921"]=true,
     ["86709774283672"]=true,["108807732150251"]=true,["138040001965654"]=true,["86096387000557"]=true,
-    ["96959123077498"]=true,["72722244508749"]=true,["100725497418533"]=true,["94958041603347"]=true,
-    ["106860049270347"]=true,["108196996477620"]=true,["99625520747974"]=true,["95802026624883"]=true,
+    ["96959123077498"]=true,["72722244508749"]=true,["100725497418533"]=true,["89448354637442"]=true,
+    ["94958041603347"]=true,["106860049270347"]=true,["108196996477620"]=true,["99625520747974"]=true,
+    ["95802026624883"]=true,["72182155407310"]=true,["87547792346658"]=true,["88557287105521"]=true,
+    ["82605295530067"]=true,["114159864966636"]=true,["128647082364719"]=true,
 }
+
 local abConns, pending, lastBlock = {}, {}, 0
 local aluLast, aluUsed, aluLock = nil, nil, false
 
+local HDT_CD = 27
+local HDT_LastUse = 0
+local DragToken = 0
+
 local function DragToward(kr)
+    -- HDT only during local block anim window, and only every 27s
     if not AB.HitboxDrag or not HDT_Active or not LocalRoot or not kr then return end
-    if os.clock() > HDT_Until then HDT_Active=false; return end
-    if (kr.Position-LocalRoot.Position).Magnitude > (AB.DragRange or 30) then return end
-    local speed, t0 = AB.DragSpeed or 14, os.clock()
+    if os.clock() > HDT_Until then HDT_Active = false; return end
+    if os.clock() - HDT_LastUse < HDT_CD then return end
+    local dist = (kr.Position - LocalRoot.Position).Magnitude
+    if dist > (AB.DragRange or 30) then return end
+    HDT_LastUse = os.clock()
+    DragToken += 1
+    local myToken = DragToken
+    local speed = AB.DragSpeed or 14
+    local duration = AB.DragDuration or 0.35
+    local start = os.clock()
     task.spawn(function()
-        while os.clock()-t0 < 0.3 and AB.Enabled and HDT_Active and LocalRoot and kr.Parent do
+        while myToken == DragToken and os.clock() - start < duration do
             local dt = RunService.Heartbeat:Wait()
-            local dir = Vector3.new(kr.Position.X-LocalRoot.Position.X, 0, kr.Position.Z-LocalRoot.Position.Z)
-            if dir.Magnitude <= 3 then break end
-            local ramp = math.sin(math.pi*(os.clock()-t0)/0.3)
+            if not LocalRoot or not kr.Parent then break end
+            if not HDT_Active then break end
+            local dir = kr.Position - LocalRoot.Position
+            dir = Vector3.new(dir.X, 0, dir.Z)
+            if dir.Magnitude <= 2.5 then break end
+            local ramp = math.sin(math.pi * (os.clock() - start) / duration)
+            if LocalHum then
+                pcall(function() LocalHum:Move(dir.Unit, false) end)
+            end
             LocalRoot.CFrame = LocalRoot.CFrame + dir.Unit * speed * ramp * dt
+            LocalRoot.CFrame = CFrame.lookAt(LocalRoot.Position, LocalRoot.Position + dir.Unit)
         end
+        if LocalHum then pcall(function() LocalHum:Move(Vector3.zero, false) end) end
     end)
 end
 
+
 local function DoBlock(kr)
     local now = os.clock()
-    if now - lastBlock < 0.02 then return end
+    if now - lastBlock < 0.01 then return end
     lastBlock = now
-    local function burst() FireBlock(); FireBlock(); FireBlock(); FireBlock() end
+    local function burst() for _=1,6 do FireBlock() end end
     local ms = tonumber(AB.BlockDelayMs) or 0
     if ms > 0 then task.delay(ms/1000, burst) else burst() end
     if AB.HitboxDrag and HDT_Active and kr then DragToward(kr) end
@@ -300,13 +430,37 @@ local function hookSound(sound, model)
     table.insert(abConns, sound.Played:Connect(function()
         if not AB.Enabled then return end
         local id = extractId(sound.SoundId)
-        if id and AttackSounds[id] then armKiller(model or sound:FindFirstAncestorOfClass("Model"), AB.SoundTimer) end
+        if id and (AttackSounds[id] or BLOCK_SOUND_IDS[id]) then armKiller(model or sound:FindFirstAncestorOfClass("Model"), AB.SoundTimer) end
     end))
 end
 
 local function trackKiller(model)
     if not model or not model:IsA("Model") then return end
     pcall(function() for _,d in ipairs(model:GetDescendants()) do if d:IsA("Sound") then hookSound(d, model) end end end)
+
+    -- Ability name / AbilityLastUsed filter
+    local lastAbility = model:GetAttribute("AbilityLastUsed") or 0
+    local function onAbilityChange()
+        if not AB.Enabled then return end
+        local cur = model:GetAttribute("AbilityLastUsed") or 0
+        if cur == lastAbility then return end
+        lastAbility = cur
+        local name = getBlockAbilityName(model)
+        if name and nameMatchesBlock(name) then
+            local kr = model:FindFirstChild("HumanoidRootPart")
+            if LocalRoot and kr and (kr.Position - LocalRoot.Position).Magnitude <= (AB.Range or 15) then
+                DoBlock(kr)
+            end
+        end
+    end
+    pcall(function()
+        table.insert(abConns, model:GetAttributeChangedSignal("AbilityLastUsed"):Connect(onAbilityChange))
+        for _, attr in ipairs({"AbilityName","LastAbility","CurrentAbility","LastAbilityName"}) do
+            pcall(function()
+                table.insert(abConns, model:GetAttributeChangedSignal(attr):Connect(onAbilityChange))
+            end)
+        end
+    end)
     table.insert(abConns, model.DescendantAdded:Connect(function(d) if d:IsA("Sound") then hookSound(d, model) end end))
     task.spawn(function()
         local hum = model:WaitForChild("Humanoid", 5); if not hum then return end
@@ -314,7 +468,7 @@ local function trackKiller(model)
         table.insert(abConns, anim.AnimationPlayed:Connect(function(track)
             if not AB.Enabled or not track.Animation then return end
             local id = extractId(track.Animation.AnimationId)
-            if not id or not AttackAnims[id] then return end
+            if not id or not (AttackAnims[id] or BLOCK_ANIM_IDS[id]) then return end
             armKiller(model, AB.SoundTimer)
             task.spawn(function()
                 local q = model:FindFirstChild("QueryHitbox"); if not q then return end
@@ -394,19 +548,7 @@ local function abHeartbeat()
             end
         end
     end
-    if KillersFolder then
-        local killer = KillersFolder:GetChildren()[1]
-        if killer and killer:IsA("Model") then
-            local alu = killer:GetAttribute("AbilityLastUsed") or 0
-            local au = killer:GetAttribute("AbilitiesUsed") or 0
-            if aluLast == nil then aluLast, aluUsed = alu, au
-            else
-                if au > aluUsed then aluLock=true end
-                if alu > aluLast then if aluLock then aluLock=false else makeALUBox(killer) end end
-                aluLast, aluUsed = alu, au
-            end
         end
-    end
 end
 
 local function SetAutoBlock(on)
@@ -423,7 +565,8 @@ local function SetAutoBlock(on)
         table.insert(abConns, KillersFolder.ChildAdded:Connect(function(c) if c:IsA("Model") then trackKiller(c) end end))
     end
     table.insert(abConns, RunService.Heartbeat:Connect(abHeartbeat))
-    Notify("Auto Block", "ON · anim + sound + AbilityLastUsed")
+    task.spawn(scanAllKillerAssets)
+    Notify("Auto Block", "ON · sound + anim + name filter")
 end
 
 -- Killer Parry
@@ -842,6 +985,22 @@ task.spawn(function()
     end
 end)
 
+
+-- trails / footprints cleaner
+task.spawn(function()
+    while getgenv().GoldenHubLoaded do
+        task.wait(0.5)
+        if getgenv()._GH_DisableTrails or getgenv()._GH_DisableFootprints then
+            pcall(function()
+                for _, o in ipairs(workspace:GetDescendants()) do
+                    if getgenv()._GH_DisableTrails and o:IsA("Trail") then o.Enabled = false end
+                    if getgenv()._GH_DisableFootprints and (o.Name == "Footprint" or o.Name == "JD_Footprint") then o:Destroy() end
+                end
+            end)
+        end
+    end
+end)
+
 local TabESP  = Window:Tab({ Title = "ESP", Icon = "eye" })
 local TabStam = Window:Tab({ Title = "Stamina", Icon = "zap" })
 local TabAB   = Window:Tab({ Title = "Auto Block", Icon = "shield" })
@@ -877,26 +1036,24 @@ TabStam:Slider({ Title = "Stamina Gain", Value = { Min=0, Max=200, Default=50 },
 
 TabAB:Section({ Title = "Auto Block" })
 TabAB:Toggle({ Title = "Auto Block", Value = false, Callback = SetAutoBlock })
-TabAB:Paragraph({ Title = "Systems", Desc = "ON = Animation + Sound + AbilityLastUsed. Box detection only. Counter: aim killer → Punch." })
 TabAB:Slider({ Title = "Arm Range", Value = { Min=5, Max=35, Default=15 }, Step=1, Callback = function(v) AB.Range=v end })
 TabAB:Slider({ Title = "Sound Timer", Value = { Min=0.1, Max=1.5, Default=0.32 }, Step=0.01, Callback = function(v) AB.SoundTimer=v end })
 TabAB:Slider({ Title = "Block Delay (ms)", Value = { Min=0, Max=200, Default=0 }, Step=5, Callback = function(v) AB.BlockDelayMs=v end })
-TabAB:Section({ Title = "Box / AbilityLastUsed" })
+TabAB:Section({ Title = "Box" })
 TabAB:Toggle({ Title = "Show Box", Value = true, Callback = function(v) AB.HitboxVis=v end })
 TabAB:Slider({ Title = "Box Mult", Value = { Min=0.5, Max=3, Default=1 }, Step=0.1, Callback = function(v) AB.HitboxMult=v end })
 TabAB:Slider({ Title = "Box Distance", Value = { Min=1, Max=10, Default=3 }, Step=0.5, Callback = function(v) AB.HitboxDist=v end })
 TabAB:Section({ Title = "HDT (your block anim only)" })
-TabAB:Paragraph({ Title = "Info", Desc = "Hitbox Drag only while YOU play block anims (5 block IDs)." })
 TabAB:Toggle({ Title = "Hitbox Drag", Value = false, Callback = function(v) AB.HitboxDrag=v end })
 TabAB:Slider({ Title = "Drag Range", Value = { Min=5, Max=60, Default=30 }, Step=1, Callback = function(v) AB.DragRange=v end })
 TabAB:Slider({ Title = "Drag Speed", Value = { Min=1, Max=40, Default=14 }, Step=1, Callback = function(v) AB.DragSpeed=v end })
+TabAB:Slider({ Title = "Drag Duration", Value = { Min=0.1, Max=1.5, Default=0.35 }, Step=0.05, Callback = function(v) AB.DragDuration=v end })
 TabAB:Section({ Title = "Counter Punch" })
 TabAB:Toggle({ Title = "Aim then Punch", Value = true, Callback = function(v) AB.AutoPunch=v end })
 TabAB:Slider({ Title = "Punch Delay", Value = { Min=0, Max=1, Default=0.12 }, Step=0.02, Callback = function(v) AB.PunchDelay=v end })
 TabAB:Section({ Title = "Killer Parry" })
 TabAB:Toggle({ Title = "Killer Parry (Slasher / John Doe)", Value = false, Callback = setKillerParry })
 TabAB:Slider({ Title = "Parry Range", Value = { Min=5, Max=40, Default=20 }, Step=1, Callback = function(v) KillerParry.Range=v end })
-TabAB:Paragraph({ Title = "Abilities", Desc = "Slasher → Raging Pace · John Doe → 404 Error" })
 
 TabAim:Section({ Title = "Aimbots" })
 TabAim:Toggle({ Title = "Enable Aimbot", Value = false, Callback = function(v) GlobalAimbot=v; applySelectedAimbots(); Notify("Aim", v and "ON" or "OFF") end })
@@ -905,6 +1062,15 @@ TabAim:Dropdown({ Title = "Pick Aimbots", Values = {"Guest1337","Shedlekey","Two
 TabAim:Dropdown({ Title = "Aimlock Mode", Values = {"Character Lock","Char + Cam Lock"}, Value = "Character Lock", Callback = function(v) AimlockMode=v end })
 TabAim:Slider({ Title = "Distance", Value = { Min=10, Max=100, Default=50 }, Step=1, Callback = function(v)
     for _,n in ipairs({"Guest1337","Shedlekey","TwoTime","Pizza","JaneDoe","Chance"}) do if AimbotValues[n] then AimbotValues[n].Distance=v end end
+end })
+TabAim:Slider({ Title = "Prediction", Value = { Min=0, Max=8, Default=0 }, Step=0.25, Callback = function(v)
+    for _,n in ipairs({"Guest1337","Shedlekey","TwoTime","Pizza","JaneDoe","Chance"}) do if AimbotValues[n] then AimbotValues[n].Prediction=v end end
+end })
+TabAim:Dropdown({ Title = "Prediction Mode", Values = {"None","Low","Medium","High","Custom"}, Value = "None", Callback = function(v)
+    local map = { None=0, Low=1, Medium=2.5, High=4, Custom=nil }
+    if map[v] then
+        for _,n in ipairs({"Guest1337","Shedlekey","TwoTime","Pizza","JaneDoe","Chance"}) do if AimbotValues[n] then AimbotValues[n].Prediction=map[v] end end
+    end
 end })
 TabAim:Section({ Title = "Silent Aim" })
 TabAim:Toggle({ Title = "Jane / Crystal Pinch SA", Value = false, Callback = setCrystalSA })
@@ -940,9 +1106,38 @@ TabUtil:Slider({ Title = "FOV Value", Value = { Min=40, Max=120, Default=70 }, S
 end })
 TabUtil:Section({ Title = "Movement" })
 TabUtil:Toggle({ Title = "No Slowness", Value = false, Callback = setNoSlow })
+TabUtil:Section({ Title = "World" })
+TabUtil:Toggle({ Title = "Disable Trails", Value = false, Callback = function(v)
+    getgenv()._GH_DisableTrails = v
+end })
+TabUtil:Toggle({ Title = "Disable Footprints", Value = false, Callback = function(v)
+    getgenv()._GH_DisableFootprints = v
+end })
+TabUtil:Toggle({ Title = "Auto Generator", Value = false, Callback = function(v)
+    getgenv()._GH_AutoGen = v
+    Notify("Util", v and "Auto Gen ON" or "OFF")
+end })
+TabUtil:Button({ Title = "Server Hop", Callback = function()
+    pcall(function()
+        local ts = game:GetService("TeleportService")
+        local http = game:GetService("HttpService")
+        local placeId = game.PlaceId
+        local servers = http:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/"..placeId.."/servers/Public?sortOrder=Asc&limit=100"))
+        for _,s in ipairs(servers.data or {}) do
+            if s.playing < s.maxPlayers and s.id ~= game.JobId then
+                ts:TeleportToPlaceInstance(placeId, s.id, LocalPlayer)
+                break
+            end
+        end
+    end)
+end })
+TabUtil:Button({ Title = "Rejoin", Callback = function()
+    pcall(function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
+    end)
+end })
 
 TabCfg:Section({ Title = "Config" })
-TabCfg:Paragraph({ Title = "Info", Desc = "Saves ESP, Stamina, Auto Block, Aim, Two Time, Vee to GoldenHub_Config.json" })
 TabCfg:Button({ Title = "Save Config", Callback = saveConfig })
 TabCfg:Button({ Title = "Load Config", Callback = loadConfig })
 
