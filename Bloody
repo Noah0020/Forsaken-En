@@ -427,15 +427,15 @@ local SettingsAB = {
     HitboxDistance = 3,
     HitboxMultiplier = 1,
     HitboxTransparency = 0.75,
-    PendingWindow = 0.28,
+    PendingWindow = 0,
     SpamEnabled = true,
-    SpamCount = 4,
+    SpamCount = 6,
     FacingDot = 0.35,
     AntiBait = true,
     Range = 20,
     HDTEnabled = false,
     HDTSpeed = 40,
-    HDTDelay = 0.05,
+    HDTDelay = 0,
     HDTDuration = 0.6,
     AutoPunch = true,
     PunchDelay = 0.12,
@@ -550,7 +550,8 @@ local function playerInsideHitbox(hb)
 end
 
 local function fireBlockBurst()
-    local n = SettingsAB.SpamEnabled and (SettingsAB.SpamCount or 4) or 1
+    local n = SettingsAB.SpamEnabled and (SettingsAB.SpamCount or 6) or 3
+    -- same-frame multi-fire for instant server hit
     for i = 1, n do
         FireBlock()
     end
@@ -558,7 +559,7 @@ end
 
 local function DoBlock(kr)
     local now = os.clock()
-    if now - ABState.lastBlock < 0.04 then return end
+    if now - ABState.lastBlock < 0.001 then return end
     ABState.lastBlock = now
     fireBlockBurst()
     if SettingsAB.AutoPunch and kr then
@@ -628,18 +629,26 @@ local function tryHitboxBlock(killer)
     if not kr then return end
     local dist = (kr.Position - LocalRoot.Position).Magnitude
     if dist > (SettingsAB.Range or 20) then return end
-    if not isFacingKiller(kr) and not SettingsAB.AntiBait then return end
+    -- Instant path: close + facing (or anti-bait) => block NOW, no wait
+    local facing = isFacingKiller(kr)
+    if facing or SettingsAB.AntiBait then
+        if dist <= math.max((SettingsAB.HitboxDistance or 3) + 6 * (SettingsAB.HitboxMultiplier or 1), 8) then
+            DoBlock(kr)
+            if SettingsAB.HDTEnabled and (SettingsAB.HDTDelay or 0) <= 0 then
+                HDT_Dash(killer)
+            elseif SettingsAB.HDTEnabled then
+                task.delay(SettingsAB.HDTDelay, function() HDT_Dash(killer) end)
+            end
+        end
+    end
     local hb = makeFrameHitbox(kr)
     if playerInsideHitbox(hb) then
         hb.Color = Color3.fromRGB(60, 255, 100)
         DoBlock(kr)
-        if SettingsAB.HDTEnabled then
-            local d = SettingsAB.HDTDelay or 0.05
-            if d > 0 then
-                task.delay(d, function() HDT_Dash(killer) end)
-            else
-                HDT_Dash(killer)
-            end
+        if SettingsAB.HDTEnabled and (SettingsAB.HDTDelay or 0) <= 0 then
+            HDT_Dash(killer)
+        elseif SettingsAB.HDTEnabled then
+            task.delay(SettingsAB.HDTDelay or 0.05, function() HDT_Dash(killer) end)
         end
     end
 end
@@ -658,7 +667,11 @@ local function trackKillerAB(killer)
             if not SettingsAB.Enabled or not track.Animation then return end
             local id = extractId(track.Animation.AnimationId)
             if id and (AttackAnims["rbxassetid://" .. id] or AttackAnims[id]) then
-                armKiller(killer)
+                local kr = killer:FindFirstChild("HumanoidRootPart")
+                if kr and LocalRoot and (kr.Position - LocalRoot.Position).Magnitude <= (SettingsAB.Range or 20) then
+                    DoBlock(kr) -- instant
+                end
+                armKiller(killer, 0.15)
                 tryHitboxBlock(killer)
             end
         end))
@@ -670,7 +683,11 @@ local function trackKillerAB(killer)
         if AttackSounds[sid] or (num and AttackSounds[num]) or (num and AttackSounds["rbxassetid://" .. num]) then
             table.insert(ABState.connections, s.Played:Connect(function()
                 if not SettingsAB.Enabled then return end
-                armKiller(killer)
+                local kr = killer:FindFirstChild("HumanoidRootPart")
+                if kr and LocalRoot and (kr.Position - LocalRoot.Position).Magnitude <= (SettingsAB.Range or 20) then
+                    DoBlock(kr) -- instant
+                end
+                armKiller(killer, 0.15)
                 tryHitboxBlock(killer)
             end))
         end
@@ -688,7 +705,11 @@ local function trackKillerAB(killer)
         local cur = killer:GetAttribute("AbilityLastUsed") or 0
         if cur == last then return end
         last = cur
-        armKiller(killer)
+        local kr = killer:FindFirstChild("HumanoidRootPart")
+        if kr and LocalRoot and (kr.Position - LocalRoot.Position).Magnitude <= (SettingsAB.Range or 20) then
+            DoBlock(kr) -- instant
+        end
+        armKiller(killer, 0.15)
         tryHitboxBlock(killer)
     end))
 end
@@ -1221,13 +1242,13 @@ TabAB:Slider({ Title = "Facing Dot", Value = { Min = 0, Max = 1, Default = 0.35 
 TabAB:Toggle({ Title = "Anti Bait", Value = true, Callback = function(v) SettingsAB.AntiBait = v end })
 TabAB:Section({ Title = "Spam / Punch" })
 TabAB:Toggle({ Title = "Block Spam", Value = true, Callback = function(v) SettingsAB.SpamEnabled = v end })
-TabAB:Slider({ Title = "Spam Count", Value = { Min = 1, Max = 10, Default = 4 }, Step = 1, Callback = function(v) SettingsAB.SpamCount = v end })
+TabAB:Slider({ Title = "Spam Count", Value = { Min = 1, Max = 10, Default = 6 }, Step = 1, Callback = function(v) SettingsAB.SpamCount = v end })
 TabAB:Toggle({ Title = "Aim then Punch", Value = true, Callback = function(v) SettingsAB.AutoPunch = v end })
 TabAB:Slider({ Title = "Punch Delay", Value = { Min = 0, Max = 1, Default = 0.12 }, Step = 0.02, Callback = function(v) SettingsAB.PunchDelay = v end })
 TabAB:Section({ Title = "HDT" })
 TabAB:Toggle({ Title = "Enable HDT", Value = false, Callback = function(v) SettingsAB.HDTEnabled = v end })
 TabAB:Slider({ Title = "HDT Speed", Value = { Min = 5, Max = 120, Default = 40 }, Step = 1, Callback = function(v) SettingsAB.HDTSpeed = v end })
-TabAB:Slider({ Title = "HDT Delay", Value = { Min = 0, Max = 1, Default = 0.05 }, Step = 0.01, Callback = function(v) SettingsAB.HDTDelay = v end })
+TabAB:Slider({ Title = "HDT Delay", Value = { Min = 0, Max = 1, Default = 0 }, Step = 0.01, Callback = function(v) SettingsAB.HDTDelay = v end })
 TabAB:Slider({ Title = "HDT Duration", Value = { Min = 0.05, Max = 2, Default = 0.6 }, Step = 0.05, Callback = function(v) SettingsAB.HDTDuration = v end })
 
 -- Aim
