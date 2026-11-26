@@ -148,8 +148,16 @@ local function FireAbility(name)
     local r = getRemote()
     if not r then return end
     pcall(function()
-        r:FireServer("UseActorAbility", { buffer.fromstring("\3\5\0\0\0" .. name) })
+        r:FireServer("UseActorAbility", { name })
     end)
+    pcall(function()
+        r:FireServer("UseActorAbility", name)
+    end)
+    if buffer and buffer.fromstring then
+        pcall(function()
+            r:FireServer("UseActorAbility", { buffer.fromstring("\3\5\0\0\0" .. name) })
+        end)
+    end
 end
 
 local function FireBlock()
@@ -157,9 +165,16 @@ local function FireBlock()
 end
 
 local function FirePunch()
-    local r = getRemote()
-    if not r then return end
-    pcall(function() r:FireServer("UseActorAbility", { "Punch" }) end)
+    FireAbility("Punch")
+end
+
+local function IdSet(list)
+    local set = {}
+    for _, id in ipairs(list) do
+        set["rbxassetid://" .. id] = true
+        set[id] = true
+    end
+    return set
 end
 
 local function extractId(s)
@@ -402,23 +417,31 @@ local function setStaminaEdit(on)
     end
 end
 
---======= AUTO BLOCK =======
-local AB = {
+
+
+--======= AUTO BLOCK (Skidsaken hitbox + box) =======
+local SettingsAB = {
     Enabled = false,
-    Range = 15,
-    SoundTimer = 0.32,
-    BlockDelayMs = 0,
-    HitboxDrag = false,
-    DragRange = 30,
-    DragSpeed = 14,
-    DragDuration = 0.35,
+    ShowHitboxVisual = true,
+    ShowOutline = true,
+    HitboxDistance = 3,
+    HitboxMultiplier = 1,
+    HitboxTransparency = 0.75,
+    PendingWindow = 0.28,
+    SpamEnabled = true,
+    SpamCount = 4,
+    FacingDot = 0.35,
+    AntiBait = true,
+    Range = 20,
+    HDTEnabled = false,
+    HDTSpeed = 40,
+    HDTDelay = 0.05,
+    HDTDuration = 0.6,
     AutoPunch = true,
     PunchDelay = 0.12,
-    HitboxVis = true,
-    HitboxMult = 1,
 }
 
-local blockAnimIds = {
+local HDT_ANIMS = {
     ["72722244508749"] = true,
     ["96959123077498"] = true,
     ["95802026624883"] = true,
@@ -426,344 +449,317 @@ local blockAnimIds = {
     ["100926346851492"] = true,
 }
 
-local AttackSounds = {
-    ["74809026448465"] = true, ["85853080745515"] = true, ["95079963655241"] = true,
-    ["98111231282218"] = true, ["101199185291628"] = true, ["115026634746636"] = true,
-    ["117173212095661"] = true, ["119942598489800"] = true, ["121954639447247"] = true,
-    ["128856426573270"] = true, ["133709029886490"] = true, ["135319730390518"] = true,
-    ["70739368096233"] = true, ["86174610237192"] = true, ["88589682639517"] = true,
-    ["89004992452376"] = true, ["96117920303138"] = true, ["108610718831698"] = true,
-    ["71805956520207"] = true, ["74842815979546"] = true, ["79980897195554"] = true,
-    ["75330693422988"] = true, ["79391273191671"] = true, ["80516583309685"] = true,
-    ["82221759983649"] = true, ["84307400688050"] = true, ["98733709078792"] = true,
+local AttackSounds = IdSet({
+    "100600301396617","101199185291628","104910828105172","108610718831698","115026634746636",
+    "117173212095661","119942598489800","121954639447247","128856426573270","133709029886490",
+    "135319730390518","140242176732868","70739368096233","71805956520207","74809026448465",
+    "74842815979546","75330693422988","79391273191671","79980897195554","80516583309685",
+    "82221759983649","84307400688050","85853080745515","86174610237192","88589682639517",
+    "89004992452376","95079963655241","96117920303138","98111231282218","98733709078792"
+})
+
+local AttackAnims = IdSet({
+    "87259391926321","140703210927645","136007065400978","129843313690921","86709774283672",
+    "108807732150251","138040001965654","86096387000557","96959123077498","72722244508749",
+    "100725497418533","89448354637442","114159864966636"
+})
+
+local ABState = {
+    running = false,
+    connections = {},
+    pending = {},
+    lastBlock = 0,
+    generation = 0,
 }
-
-local AttackAnims = {
-    ["87259391926321"] = true, ["140703210927645"] = true, ["136007065400978"] = true,
-    ["129843313690921"] = true, ["86709774283672"] = true, ["108807732150251"] = true,
-    ["138040001965654"] = true, ["86096387000557"] = true, ["96959123077498"] = true,
-    ["72722244508749"] = true, ["100725497418533"] = true, ["94958041603347"] = true,
-    ["95802026624883"] = true, ["99625520747974"] = true,
+local HDTState = {
+    debounce = false,
+    lastUse = 0,
+    conn = nil,
 }
+local HitboxFolder = Instance.new("Folder")
+HitboxFolder.Name = "GH_AB_Hitboxes"
+HitboxFolder.Parent = workspace
 
-local BlockAbilityNames = {
-    "PERFORATING", "LACERATE", "EVISCERATE", "CARVING SLASH",
-    "STAB", "TAG", "SLASH", "ENRAGED SLASH",
-}
-local BLOCK_NAMES = {}
-for i = 1, #BlockAbilityNames do
-    BLOCK_NAMES[string.lower(BlockAbilityNames[i])] = true
-end
-
-local function nameMatches(raw)
-    if type(raw) ~= "string" or raw == "" then return false end
-    local l = string.lower(raw)
-    for bn in pairs(BLOCK_NAMES) do
-        if string.find(l, bn, 1, true) then return true end
+local function clearHitboxes()
+    for _, o in ipairs(HitboxFolder:GetChildren()) do
+        o:Destroy()
     end
-    return false
-end
-
-local function extractAnimIds(v, out)
-    out = out or {}
-    if type(v) == "string" then
-        local id = v:match("%d+")
-        if id then out[#out + 1] = id end
-    elseif type(v) == "number" then
-        out[#out + 1] = tostring(math.floor(v))
-    elseif type(v) == "table" then
-        for _, x in pairs(v) do
-            extractAnimIds(x, out)
-        end
-    end
-    return out
-end
-
-local BLOCK_ANIM_IDS = {}
-local BLOCK_SOUND_IDS = {}
-
-local function collectAssets(cfg)
-    if type(cfg) ~= "table" then return end
-    if type(cfg.Animations) == "table" then
-        for name, v in pairs(cfg.Animations) do
-            if nameMatches(name) then
-                for _, id in ipairs(extractAnimIds(v)) do
-                    BLOCK_ANIM_IDS[id] = true
-                end
-            end
-        end
-    end
-    local fields = { "Sounds", "Sound", "SFX", "Sfx", "SoundEffects", "SoundIds" }
-    for fi = 1, #fields do
-        local field = fields[fi]
-        if type(cfg[field]) == "table" then
-            for name, v in pairs(cfg[field]) do
-                if nameMatches(name) then
-                    for _, id in ipairs(extractAnimIds(v)) do
-                        BLOCK_SOUND_IDS[id] = true
-                    end
-                end
-            end
+    for _, o in ipairs(workspace:GetChildren()) do
+        if o.Name == "AutoBlockHitbox_Frame" or o.Name == "AutoBlockHitbox_Green" then
+            pcall(function() o:Destroy() end)
         end
     end
 end
 
-local function scanKillerFolder(folder)
-    if not folder then return end
-    for _, sub in ipairs(folder:GetChildren()) do
-        if sub:IsA("Folder") then
-            local names = { "Config", "Behavior" }
-            for ni = 1, #names do
-                local mod = sub:FindFirstChild(names[ni])
-                if mod and mod:IsA("ModuleScript") then
-                    local ok, data = pcall(require, mod)
-                    if ok then collectAssets(data) end
-                end
-            end
-        end
-    end
+local function isFacingKiller(kr)
+    if not LocalRoot or not kr then return false end
+    local toMe = LocalRoot.Position - kr.Position
+    local flat = Vector3.new(toMe.X, 0, toMe.Z)
+    local look = Vector3.new(kr.CFrame.LookVector.X, 0, kr.CFrame.LookVector.Z)
+    if flat.Magnitude < 0.05 or look.Magnitude < 0.05 then return false end
+    return look.Unit:Dot(flat.Unit) >= (SettingsAB.FacingDot or 0.35)
 end
 
-local function scanAllKillerAssets()
-    BLOCK_ANIM_IDS = {}
-    BLOCK_SOUND_IDS = {}
-    local assets = Rep:FindFirstChild("Assets")
-    if not assets then return end
-    scanKillerFolder(assets:FindFirstChild("Killers"))
-    local skins = assets:FindFirstChild("Skins")
-    if skins then
-        local sk = skins:FindFirstChild("Killers")
-        if sk then
-            for _, base in ipairs(sk:GetChildren()) do
-                if base:IsA("Folder") then scanKillerFolder(base) end
-            end
+local function makeFrameHitbox(kr)
+    local m = SettingsAB.HitboxMultiplier or 1
+    local dist = SettingsAB.HitboxDistance or 3
+    local size = Vector3.new(6 * m, 6 * m, 9 * m)
+    local hb = Instance.new("Part")
+    hb.Name = "AutoBlockHitbox_Frame"
+    hb.Anchored = true
+    hb.CanCollide = false
+    hb.CanTouch = false
+    hb.CanQuery = true
+    hb.CastShadow = false
+    hb.Material = Enum.Material.ForceField
+    hb.Color = Color3.fromRGB(255, 40, 40)
+    hb.Transparency = SettingsAB.ShowHitboxVisual and (SettingsAB.HitboxTransparency or 0.75) or 1
+    hb.Size = size
+    hb.CFrame = kr.CFrame * CFrame.new(0, 0, -dist)
+    hb.Parent = HitboxFolder
+    if SettingsAB.ShowOutline and SettingsAB.ShowHitboxVisual then
+        local sb = Instance.new("SelectionBox")
+        sb.Adornee = hb
+        sb.Color3 = Color3.fromRGB(255, 60, 60)
+        sb.LineThickness = 0.04
+        sb.Transparency = 0.3
+        sb.Parent = hb
+    end
+    Debris:AddItem(hb, 0.2)
+    return hb
+end
+
+local function playerInsideHitbox(hb)
+    if not LocalRoot or not hb then return false end
+    local params = OverlapParams.new()
+    params.FilterType = Enum.RaycastFilterType.Include
+    local parts = {}
+    if LocalChar then
+        for _, p in ipairs(LocalChar:GetChildren()) do
+            if p:IsA("BasePart") then parts[#parts + 1] = p end
         end
     end
+    if #parts == 0 then parts = { LocalRoot } end
+    params.FilterDescendantsInstances = parts
+    local hits = workspace:GetPartsInPart(hb, params)
+    if hits and #hits > 0 then return true end
+    -- fallback: point in box
+    local localPt = hb.CFrame:PointToObjectSpace(LocalRoot.Position)
+    local hs = hb.Size * 0.5
+    return math.abs(localPt.X) <= hs.X and math.abs(localPt.Y) <= hs.Y and math.abs(localPt.Z) <= hs.Z
 end
-task.spawn(scanAllKillerAssets)
 
-local function getAbilityName(killer)
-    local attrs = { "AbilityName", "LastAbility", "CurrentAbility", "LastAbilityName", "AbilityUsed", "Ability", "CurrentAttack" }
-    for i = 1, #attrs do
-        local ok, val = pcall(function() return killer:GetAttribute(attrs[i]) end)
-        if ok and type(val) == "string" and val ~= "" then return val end
+local function fireBlockBurst()
+    local n = SettingsAB.SpamEnabled and (SettingsAB.SpamCount or 4) or 1
+    for i = 1, n do
+        FireBlock()
     end
-    return nil
-end
-
-local HDT_Active = false
-local HDT_Until = 0
-local HDT_CD = 27
-local HDT_Last = 0
-local DragToken = 0
-local abConns = {}
-local pending = {}
-local lastBlock = 0
-
-local function DragToward(kr)
-    if not AB.HitboxDrag or not HDT_Active or not LocalRoot or not kr then return end
-    if os.clock() > HDT_Until then HDT_Active = false return end
-    if os.clock() - HDT_Last < HDT_CD then return end
-    if (kr.Position - LocalRoot.Position).Magnitude > AB.DragRange then return end
-    HDT_Last = os.clock()
-    DragToken = DragToken + 1
-    local my = DragToken
-    local speed = AB.DragSpeed
-    local dur = AB.DragDuration
-    local t0 = os.clock()
-    task.spawn(function()
-        while my == DragToken and os.clock() - t0 < dur do
-            local dt = RS.Heartbeat:Wait()
-            if not LocalRoot or not kr.Parent or not HDT_Active then break end
-            local dir = Vector3.new(kr.Position.X - LocalRoot.Position.X, 0, kr.Position.Z - LocalRoot.Position.Z)
-            if dir.Magnitude <= 2.5 then break end
-            local ramp = math.sin(math.pi * (os.clock() - t0) / dur)
-            if LocalHum then pcall(function() LocalHum:Move(dir.Unit, false) end) end
-            LocalRoot.CFrame = LocalRoot.CFrame + dir.Unit * speed * ramp * dt
-            LocalRoot.CFrame = CFrame.lookAt(LocalRoot.Position, LocalRoot.Position + dir.Unit)
-        end
-        if LocalHum then pcall(function() LocalHum:Move(Vector3.zero, false) end) end
-    end)
 end
 
 local function DoBlock(kr)
     local now = os.clock()
-    if now - lastBlock < 0.01 then return end
-    lastBlock = now
-    local function burst()
-        for _ = 1, 6 do FireBlock() end
-    end
-    if AB.BlockDelayMs > 0 then
-        task.delay(AB.BlockDelayMs / 1000, burst)
-    else
-        burst()
-    end
-    if AB.HitboxDrag and HDT_Active and kr then DragToward(kr) end
-    if AB.AutoPunch and kr then
+    if now - ABState.lastBlock < 0.04 then return end
+    ABState.lastBlock = now
+    fireBlockBurst()
+    if SettingsAB.AutoPunch and kr then
         task.spawn(function()
-            aimAt(kr, 0.18)
-            task.wait(AB.PunchDelay)
-            if LocalRoot and kr.Parent then aimAt(kr, 0.1) end
+            aimAt(kr, 0.16)
+            task.wait(SettingsAB.PunchDelay or 0.12)
+            if LocalRoot and kr.Parent then aimAt(kr, 0.08) end
             FirePunch()
         end)
     end
 end
 
-local function armKiller(model, dur)
-    if not model or model == LocalChar then return end
-    pending[model] = { expiry = os.clock() + (dur or AB.SoundTimer), blocked = false }
-end
-
-local function hookSound(sound, model)
-    if not sound:IsA("Sound") then return end
-    table.insert(abConns, sound.Played:Connect(function()
-        if not AB.Enabled then return end
-        local id = extractId(sound.SoundId)
-        if id and (AttackSounds[id] or BLOCK_SOUND_IDS[id]) then
-            armKiller(model or sound:FindFirstAncestorOfClass("Model"), AB.SoundTimer)
-        end
-    end))
-end
-
-local function trackKiller(model)
-    if not model or not model:IsA("Model") then return end
-
+local function HDT_Dash(killer)
+    if not SettingsAB.HDTEnabled or HDTState.debounce or not LocalRoot or not LocalHum then return end
+    if os.clock() - HDTState.lastUse < 27 then return end
+    local kr = killer and killer:FindFirstChild("HumanoidRootPart")
+    if not kr then return end
+    if (kr.Position - LocalRoot.Position).Magnitude > 45 then return end
+    HDTState.debounce = true
+    HDTState.lastUse = os.clock()
+    local speed = SettingsAB.HDTSpeed or 40
+    local dur = SettingsAB.HDTDuration or 0.6
+    local oWS = LocalHum.WalkSpeed
+    local oAR = LocalHum.AutoRotate
+    local st = tick()
+    local bind = "GH_HDT_" .. tostring(math.random(1, 1e9))
     pcall(function()
-        for _, d in ipairs(model:GetDescendants()) do
-            if d:IsA("Sound") then hookSound(d, model) end
+        RS:BindToRenderStep(bind, Enum.RenderPriority.Last.Value + 1, function()
+            if not HDTState.debounce then
+                pcall(function() RS:UnbindFromRenderStep(bind) end)
+                return
+            end
+            if not LocalRoot or not LocalHum or not kr.Parent then
+                HDTState.debounce = false
+                return
+            end
+            local flat = Vector3.new(kr.Position.X - LocalRoot.Position.X, 0, kr.Position.Z - LocalRoot.Position.Z)
+            if flat.Magnitude <= 2 then
+                HDTState.debounce = false
+                return
+            end
+            LocalHum.WalkSpeed = speed
+            LocalHum.AutoRotate = false
+            LocalHum:Move(flat.Unit, false)
+            LocalRoot.CFrame = CFrame.lookAt(LocalRoot.Position, LocalRoot.Position + flat.Unit)
+            if tick() - st > dur then
+                HDTState.debounce = false
+            end
+        end)
+    end)
+    task.delay(dur + 0.15, function()
+        HDTState.debounce = false
+        pcall(function() RS:UnbindFromRenderStep(bind) end)
+        if LocalHum and LocalHum.Parent then
+            pcall(function()
+                LocalHum:Move(Vector3.zero, false)
+                LocalHum.WalkSpeed = oWS
+                LocalHum.AutoRotate = oAR
+            end)
         end
     end)
-    table.insert(abConns, model.DescendantAdded:Connect(function(d)
-        if d:IsA("Sound") then hookSound(d, model) end
-    end))
+end
 
-    local lastAbility = model:GetAttribute("AbilityLastUsed") or 0
-    local function onAbilityChange()
-        if not AB.Enabled then return end
-        local cur = model:GetAttribute("AbilityLastUsed") or 0
-        if cur == lastAbility then return end
-        lastAbility = cur
-        local name = getAbilityName(model)
-        if name and nameMatches(name) then
-            local kr = model:FindFirstChild("HumanoidRootPart")
-            if LocalRoot and kr and (kr.Position - LocalRoot.Position).Magnitude <= AB.Range then
-                DoBlock(kr)
+local function tryHitboxBlock(killer)
+    if not SettingsAB.Enabled or not LocalRoot then return end
+    local kr = killer:FindFirstChild("HumanoidRootPart")
+    if not kr then return end
+    local dist = (kr.Position - LocalRoot.Position).Magnitude
+    if dist > (SettingsAB.Range or 20) then return end
+    if not isFacingKiller(kr) and not SettingsAB.AntiBait then return end
+    local hb = makeFrameHitbox(kr)
+    if playerInsideHitbox(hb) then
+        hb.Color = Color3.fromRGB(60, 255, 100)
+        DoBlock(kr)
+        if SettingsAB.HDTEnabled then
+            local d = SettingsAB.HDTDelay or 0.05
+            if d > 0 then
+                task.delay(d, function() HDT_Dash(killer) end)
+            else
+                HDT_Dash(killer)
             end
         end
     end
-    pcall(function()
-        table.insert(abConns, model:GetAttributeChangedSignal("AbilityLastUsed"):Connect(onAbilityChange))
-    end)
-
-    task.spawn(function()
-        local hum = model:WaitForChild("Humanoid", 5)
-        if not hum then return end
-        local anim = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 3)
-        if not anim then return end
-        table.insert(abConns, anim.AnimationPlayed:Connect(function(track)
-            if not AB.Enabled or not track.Animation then return end
-            local id = extractId(track.Animation.AnimationId)
-            if not id or not (AttackAnims[id] or BLOCK_ANIM_IDS[id]) then return end
-            armKiller(model, AB.SoundTimer)
-            task.spawn(function()
-                local q = model:FindFirstChild("QueryHitbox")
-                if not q then return end
-                local lq = LocalChar and LocalChar:FindFirstChild("QueryHitbox")
-                local params = OverlapParams.new()
-                params.MaxParts = 2
-                if lq then
-                    params.FilterType = Enum.RaycastFilterType.Include
-                    params.FilterDescendantsInstances = { lq }
-                else
-                    params.FilterType = Enum.RaycastFilterType.Exclude
-                    params.FilterDescendantsInstances = { model }
-                end
-                for _ = 1, 14 do
-                    if not AB.Enabled then break end
-                    local kr = model:FindFirstChild("HumanoidRootPart")
-                    local hits = workspace:GetPartBoundsInBox(
-                        q.CFrame * CFrame.new(0, 0, -3.5),
-                        Vector3.new(5.2, 6, 5.65) * 2.2 * AB.HitboxMult,
-                        params
-                    )
-                    if #hits > 0 then
-                        DoBlock(kr)
-                        break
-                    end
-                    task.wait(0.01)
-                end
-            end)
-        end))
-    end)
 end
 
-local localAnimConns = {}
-local function hookLocalBlock(char)
-    for i = 1, #localAnimConns do
-        pcall(function() localAnimConns[i]:Disconnect() end)
+local function armKiller(killer, window)
+    ABState.pending[killer] = os.clock() + (window or SettingsAB.PendingWindow or 0.28)
+end
+
+local function trackKillerAB(killer)
+    if not killer or not killer:IsA("Model") then return end
+    local hum = killer:FindFirstChildOfClass("Humanoid") or killer:WaitForChild("Humanoid", 4)
+    if not hum then return end
+    local anim = hum:FindFirstChildOfClass("Animator")
+    if anim then
+        table.insert(ABState.connections, anim.AnimationPlayed:Connect(function(track)
+            if not SettingsAB.Enabled or not track.Animation then return end
+            local id = extractId(track.Animation.AnimationId)
+            if id and (AttackAnims["rbxassetid://" .. id] or AttackAnims[id]) then
+                armKiller(killer)
+                tryHitboxBlock(killer)
+            end
+        end))
     end
-    table.clear(localAnimConns)
+    local function hookSound(s)
+        if not s:IsA("Sound") then return end
+        local sid = s.SoundId
+        local num = extractId(sid)
+        if AttackSounds[sid] or (num and AttackSounds[num]) or (num and AttackSounds["rbxassetid://" .. num]) then
+            table.insert(ABState.connections, s.Played:Connect(function()
+                if not SettingsAB.Enabled then return end
+                armKiller(killer)
+                tryHitboxBlock(killer)
+            end))
+        end
+    end
+    for _, d in ipairs(killer:GetDescendants()) do
+        if d:IsA("Sound") then hookSound(d) end
+    end
+    table.insert(ABState.connections, killer.DescendantAdded:Connect(function(d)
+        if d:IsA("Sound") then hookSound(d) end
+    end))
+    -- ability last used
+    local last = killer:GetAttribute("AbilityLastUsed") or 0
+    table.insert(ABState.connections, killer:GetAttributeChangedSignal("AbilityLastUsed"):Connect(function()
+        if not SettingsAB.Enabled then return end
+        local cur = killer:GetAttribute("AbilityLastUsed") or 0
+        if cur == last then return end
+        last = cur
+        armKiller(killer)
+        tryHitboxBlock(killer)
+    end))
+end
+
+local function abHeartbeat()
+    if not SettingsAB.Enabled or not LocalRoot then return end
+    local now = os.clock()
+    for killer, untilT in pairs(ABState.pending) do
+        if not killer.Parent or now > untilT then
+            ABState.pending[killer] = nil
+        else
+            tryHitboxBlock(killer)
+        end
+    end
+end
+
+-- local block anim -> HDT window
+local function hookLocalHDT(char)
+    if HDTState.conn then pcall(function() HDTState.conn:Disconnect() end) HDTState.conn = nil end
     task.spawn(function()
         local hum = char:WaitForChild("Humanoid", 5)
         if not hum then return end
         local anim = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 3)
         if not anim then return end
-        table.insert(localAnimConns, anim.AnimationPlayed:Connect(function(track)
+        HDTState.conn = anim.AnimationPlayed:Connect(function(track)
+            if not SettingsAB.HDTEnabled then return end
             local id = track.Animation and extractId(track.Animation.AnimationId)
-            if id and blockAnimIds[id] then
-                HDT_Active = true
-                HDT_Until = os.clock() + 0.55
-                task.delay(0.55, function()
-                    if os.clock() >= HDT_Until then HDT_Active = false end
-                end)
+            if id and HDT_ANIMS[id] then
+                local k = nearestKiller(40)
+                if k then
+                    local d = SettingsAB.HDTDelay or 0.05
+                    if d > 0 then
+                        task.delay(d, function() HDT_Dash(k) end)
+                    else
+                        HDT_Dash(k)
+                    end
+                end
             end
-        end))
+        end)
     end)
 end
-if LP.Character then hookLocalBlock(LP.Character) end
-LP.CharacterAdded:Connect(hookLocalBlock)
-
-local function abTick()
-    if not AB.Enabled or not LocalRoot then return end
-    local now = os.clock()
-    if HDT_Active and now > HDT_Until then HDT_Active = false end
-    for model, st in pairs(pending) do
-        if not model.Parent or now > st.expiry then
-            pending[model] = nil
-        elseif not st.blocked then
-            local kr = model:FindFirstChild("HumanoidRootPart")
-            if kr and (LocalRoot.Position - kr.Position).Magnitude <= AB.Range then
-                st.blocked = true
-                DoBlock(kr)
-            end
-        end
-    end
-end
+if LP.Character then hookLocalHDT(LP.Character) end
+LP.CharacterAdded:Connect(hookLocalHDT)
 
 local function SetAutoBlock(on)
-    AB.Enabled = on
-    for i = 1, #abConns do
-        pcall(function() abConns[i]:Disconnect() end)
+    SettingsAB.Enabled = on
+    for i = 1, #ABState.connections do
+        pcall(function() ABState.connections[i]:Disconnect() end)
     end
-    table.clear(abConns)
-    table.clear(pending)
+    ABState.connections = {}
+    ABState.pending = {}
+    clearHitboxes()
     if not on then
         Notify("Auto Block", "OFF")
         return
     end
     refreshFolders()
-    task.spawn(scanAllKillerAssets)
     if KillersFolder then
-        for _, m in ipairs(KillersFolder:GetChildren()) do
-            if m:IsA("Model") then trackKiller(m) end
+        for _, k in ipairs(KillersFolder:GetChildren()) do
+            if k:IsA("Model") then trackKillerAB(k) end
         end
-        table.insert(abConns, KillersFolder.ChildAdded:Connect(function(c)
-            if c:IsA("Model") then trackKiller(c) end
+        table.insert(ABState.connections, KillersFolder.ChildAdded:Connect(function(c)
+            if c:IsA("Model") then trackKillerAB(c) end
         end))
     end
-    table.insert(abConns, RS.Heartbeat:Connect(abTick))
-    Notify("Auto Block", "ON")
+    table.insert(ABState.connections, RS.Heartbeat:Connect(abHeartbeat))
+    Notify("Auto Block", "ON · Skidsaken hitbox")
 end
+
+-- alias for UI that still references AB table
+local AB = SettingsAB
 
 --======= AIM =======
 local Aim = {
@@ -1214,22 +1210,25 @@ TabStam:Slider({ Title = "Loss", Value = { Min = 0, Max = 100, Default = 0 }, St
 TabStam:Slider({ Title = "Gain", Value = { Min = 0, Max = 200, Default = 50 }, Step = 1, Callback = function(v) Stam.Gain = v end })
 
 -- Auto Block
-TabAB:Section({ Title = "Main" })
-TabAB:Toggle({ Title = "Auto Block", Value = false, Callback = SetAutoBlock })
-TabAB:Slider({ Title = "Arm Range", Value = { Min = 5, Max = 35, Default = 15 }, Step = 1, Callback = function(v) AB.Range = v end })
-TabAB:Slider({ Title = "Sound Timer", Value = { Min = 0.1, Max = 1.5, Default = 0.32 }, Step = 0.01, Callback = function(v) AB.SoundTimer = v end })
-TabAB:Slider({ Title = "Block Delay (ms)", Value = { Min = 0, Max = 200, Default = 0 }, Step = 5, Callback = function(v) AB.BlockDelayMs = v end })
-TabAB:Section({ Title = "Box" })
-TabAB:Toggle({ Title = "Show Box", Value = true, Callback = function(v) AB.HitboxVis = v end })
-TabAB:Slider({ Title = "Box Mult", Value = { Min = 0.5, Max = 3, Default = 1 }, Step = 0.1, Callback = function(v) AB.HitboxMult = v end })
+TabAB:Section({ Title = "Auto Block" })
+TabAB:Toggle({ Title = "Enable Auto Block", Value = false, Callback = SetAutoBlock })
+TabAB:Toggle({ Title = "Show Hitbox", Value = true, Callback = function(v) SettingsAB.ShowHitboxVisual = v end })
+TabAB:Toggle({ Title = "Show Outline", Value = true, Callback = function(v) SettingsAB.ShowOutline = v end })
+TabAB:Slider({ Title = "Hitbox Distance", Value = { Min = 1, Max = 15, Default = 3 }, Step = 0.5, Callback = function(v) SettingsAB.HitboxDistance = v end })
+TabAB:Slider({ Title = "Hitbox Multiplier", Value = { Min = 0.5, Max = 4, Default = 1 }, Step = 0.1, Callback = function(v) SettingsAB.HitboxMultiplier = v end })
+TabAB:Slider({ Title = "Range", Value = { Min = 5, Max = 40, Default = 20 }, Step = 1, Callback = function(v) SettingsAB.Range = v end })
+TabAB:Slider({ Title = "Facing Dot", Value = { Min = 0, Max = 1, Default = 0.35 }, Step = 0.05, Callback = function(v) SettingsAB.FacingDot = v end })
+TabAB:Toggle({ Title = "Anti Bait", Value = true, Callback = function(v) SettingsAB.AntiBait = v end })
+TabAB:Section({ Title = "Spam / Punch" })
+TabAB:Toggle({ Title = "Block Spam", Value = true, Callback = function(v) SettingsAB.SpamEnabled = v end })
+TabAB:Slider({ Title = "Spam Count", Value = { Min = 1, Max = 10, Default = 4 }, Step = 1, Callback = function(v) SettingsAB.SpamCount = v end })
+TabAB:Toggle({ Title = "Aim then Punch", Value = true, Callback = function(v) SettingsAB.AutoPunch = v end })
+TabAB:Slider({ Title = "Punch Delay", Value = { Min = 0, Max = 1, Default = 0.12 }, Step = 0.02, Callback = function(v) SettingsAB.PunchDelay = v end })
 TabAB:Section({ Title = "HDT" })
-TabAB:Toggle({ Title = "Hitbox Drag", Value = false, Callback = function(v) AB.HitboxDrag = v end })
-TabAB:Slider({ Title = "Drag Range", Value = { Min = 5, Max = 60, Default = 30 }, Step = 1, Callback = function(v) AB.DragRange = v end })
-TabAB:Slider({ Title = "Drag Speed", Value = { Min = 1, Max = 40, Default = 14 }, Step = 1, Callback = function(v) AB.DragSpeed = v end })
-TabAB:Slider({ Title = "Drag Duration", Value = { Min = 0.1, Max = 1.5, Default = 0.35 }, Step = 0.05, Callback = function(v) AB.DragDuration = v end })
-TabAB:Section({ Title = "Counter" })
-TabAB:Toggle({ Title = "Aim then Punch", Value = true, Callback = function(v) AB.AutoPunch = v end })
-TabAB:Slider({ Title = "Punch Delay", Value = { Min = 0, Max = 1, Default = 0.12 }, Step = 0.02, Callback = function(v) AB.PunchDelay = v end })
+TabAB:Toggle({ Title = "Enable HDT", Value = false, Callback = function(v) SettingsAB.HDTEnabled = v end })
+TabAB:Slider({ Title = "HDT Speed", Value = { Min = 5, Max = 120, Default = 40 }, Step = 1, Callback = function(v) SettingsAB.HDTSpeed = v end })
+TabAB:Slider({ Title = "HDT Delay", Value = { Min = 0, Max = 1, Default = 0.05 }, Step = 0.01, Callback = function(v) SettingsAB.HDTDelay = v end })
+TabAB:Slider({ Title = "HDT Duration", Value = { Min = 0.05, Max = 2, Default = 0.6 }, Step = 0.05, Callback = function(v) SettingsAB.HDTDuration = v end })
 
 -- Aim
 TabAim:Section({ Title = "Aimbot" })
