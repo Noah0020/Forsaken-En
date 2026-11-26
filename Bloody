@@ -427,9 +427,7 @@ local SettingsAB = {
     HitboxDistance = 3,
     HitboxMultiplier = 1,
     HitboxTransparency = 0.75,
-    PendingWindow = 0,
-    SpamEnabled = true,
-    SpamCount = 6,
+    PendingWindow = 0.2,
     FacingDot = 0.35,
     AntiBait = true,
     Range = 20,
@@ -549,25 +547,42 @@ local function playerInsideHitbox(hb)
     return math.abs(localPt.X) <= hs.X and math.abs(localPt.Y) <= hs.Y and math.abs(localPt.Z) <= hs.Z
 end
 
-local function fireBlockBurst()
-    local n = SettingsAB.SpamEnabled and (SettingsAB.SpamCount or 6) or 3
-    -- same-frame multi-fire for instant server hit
-    for i = 1, n do
-        FireBlock()
-    end
-end
-
 local function DoBlock(kr)
     local now = os.clock()
-    if now - ABState.lastBlock < 0.001 then return end
+    if now - ABState.lastBlock < 0.05 then return end
     ABState.lastBlock = now
-    fireBlockBurst()
-    if SettingsAB.AutoPunch and kr then
+    -- single block only (no spam)
+    FireBlock()
+    if SettingsAB.AutoPunch and kr and LocalRoot then
         task.spawn(function()
-            aimAt(kr, 0.16)
+            -- face killer first
+            local t0 = os.clock()
+            while os.clock() - t0 < 0.2 and LocalRoot and kr.Parent do
+                local p = kr.Position
+                LocalRoot.CFrame = CFrame.lookAt(LocalRoot.Position, Vector3.new(p.X, LocalRoot.Position.Y, p.Z))
+                if LocalHum then LocalHum.AutoRotate = false end
+                RS.RenderStepped:Wait()
+            end
             task.wait(SettingsAB.PunchDelay or 0.12)
-            if LocalRoot and kr.Parent then aimAt(kr, 0.08) end
+            if LocalRoot and kr.Parent then
+                local p = kr.Position
+                LocalRoot.CFrame = CFrame.lookAt(LocalRoot.Position, Vector3.new(p.X, LocalRoot.Position.Y, p.Z))
+            end
             FirePunch()
+            FireAbility("Punch")
+            -- Guest UI click fallback
+            pcall(function()
+                local mainUI = LP:FindFirstChild("PlayerGui") and LP.PlayerGui:FindFirstChild("MainUI")
+                local ac = mainUI and mainUI:FindFirstChild("AbilityContainer")
+                local btn = ac and (ac:FindFirstChild("Punch") or ac:FindFirstChild("ParryPunch"))
+                if btn and firesignal then
+                    local sig = btn:FindFirstChildOfClass("MouseButton1Click")
+                    if sig then firesignal(sig) end
+                end
+            end)
+            task.delay(0.25, function()
+                if LocalHum then LocalHum.AutoRotate = true end
+            end)
         end)
     end
 end
@@ -585,34 +600,37 @@ local function HDT_Dash(killer)
     local oWS = LocalHum.WalkSpeed
     local oAR = LocalHum.AutoRotate
     local st = tick()
-    local bind = "GH_HDT_" .. tostring(math.random(1, 1e9))
-    pcall(function()
-        RS:BindToRenderStep(bind, Enum.RenderPriority.Last.Value + 1, function()
-            if not HDTState.debounce then
-                pcall(function() RS:UnbindFromRenderStep(bind) end)
-                return
-            end
-            if not LocalRoot or not LocalHum or not kr.Parent then
-                HDTState.debounce = false
-                return
-            end
-            local flat = Vector3.new(kr.Position.X - LocalRoot.Position.X, 0, kr.Position.Z - LocalRoot.Position.Z)
-            if flat.Magnitude <= 2 then
-                HDTState.debounce = false
-                return
-            end
+    -- WALK only: Humanoid:Move + WalkSpeed. Never CFrame position (no teleport).
+    local conn
+    conn = RS.Heartbeat:Connect(function()
+        if not HDTState.debounce then
+            if conn then conn:Disconnect() end
+            return
+        end
+        if not LocalRoot or not LocalHum or not LocalHum.Parent or not kr.Parent then
+            HDTState.debounce = false
+            return
+        end
+        local flat = Vector3.new(kr.Position.X - LocalRoot.Position.X, 0, kr.Position.Z - LocalRoot.Position.Z)
+        if flat.Magnitude <= 2.5 then
+            HDTState.debounce = false
+            return
+        end
+        pcall(function()
             LocalHum.WalkSpeed = speed
             LocalHum.AutoRotate = false
             LocalHum:Move(flat.Unit, false)
-            LocalRoot.CFrame = CFrame.lookAt(LocalRoot.Position, LocalRoot.Position + flat.Unit)
-            if tick() - st > dur then
-                HDTState.debounce = false
-            end
         end)
+        -- face only (rotation), do not change Position
+        local pos = LocalRoot.Position
+        LocalRoot.CFrame = CFrame.lookAt(pos, pos + flat.Unit)
+        if tick() - st > dur then
+            HDTState.debounce = false
+        end
     end)
-    task.delay(dur + 0.15, function()
+    task.delay(dur + 0.2, function()
         HDTState.debounce = false
-        pcall(function() RS:UnbindFromRenderStep(bind) end)
+        if conn then pcall(function() conn:Disconnect() end) end
         if LocalHum and LocalHum.Parent then
             pcall(function()
                 LocalHum:Move(Vector3.zero, false)
@@ -629,26 +647,20 @@ local function tryHitboxBlock(killer)
     if not kr then return end
     local dist = (kr.Position - LocalRoot.Position).Magnitude
     if dist > (SettingsAB.Range or 20) then return end
-    -- Instant path: close + facing (or anti-bait) => block NOW, no wait
-    local facing = isFacingKiller(kr)
-    if facing or SettingsAB.AntiBait then
-        if dist <= math.max((SettingsAB.HitboxDistance or 3) + 6 * (SettingsAB.HitboxMultiplier or 1), 8) then
-            DoBlock(kr)
-            if SettingsAB.HDTEnabled and (SettingsAB.HDTDelay or 0) <= 0 then
-                HDT_Dash(killer)
-            elseif SettingsAB.HDTEnabled then
-                task.delay(SettingsAB.HDTDelay, function() HDT_Dash(killer) end)
-            end
-        end
-    end
+    -- Must be facing (or anti-bait) before we even check the box
+    if not isFacingKiller(kr) and not SettingsAB.AntiBait then return end
     local hb = makeFrameHitbox(kr)
+    -- ONLY block when inside the hitbox — never outside
     if playerInsideHitbox(hb) then
         hb.Color = Color3.fromRGB(60, 255, 100)
         DoBlock(kr)
-        if SettingsAB.HDTEnabled and (SettingsAB.HDTDelay or 0) <= 0 then
-            HDT_Dash(killer)
-        elseif SettingsAB.HDTEnabled then
-            task.delay(SettingsAB.HDTDelay or 0.05, function() HDT_Dash(killer) end)
+        if SettingsAB.HDTEnabled then
+            local d = SettingsAB.HDTDelay or 0
+            if d > 0 then
+                task.delay(d, function() HDT_Dash(killer) end)
+            else
+                HDT_Dash(killer)
+            end
         end
     end
 end
@@ -667,11 +679,7 @@ local function trackKillerAB(killer)
             if not SettingsAB.Enabled or not track.Animation then return end
             local id = extractId(track.Animation.AnimationId)
             if id and (AttackAnims["rbxassetid://" .. id] or AttackAnims[id]) then
-                local kr = killer:FindFirstChild("HumanoidRootPart")
-                if kr and LocalRoot and (kr.Position - LocalRoot.Position).Magnitude <= (SettingsAB.Range or 20) then
-                    DoBlock(kr) -- instant
-                end
-                armKiller(killer, 0.15)
+                armKiller(killer, 0.2)
                 tryHitboxBlock(killer)
             end
         end))
@@ -683,11 +691,7 @@ local function trackKillerAB(killer)
         if AttackSounds[sid] or (num and AttackSounds[num]) or (num and AttackSounds["rbxassetid://" .. num]) then
             table.insert(ABState.connections, s.Played:Connect(function()
                 if not SettingsAB.Enabled then return end
-                local kr = killer:FindFirstChild("HumanoidRootPart")
-                if kr and LocalRoot and (kr.Position - LocalRoot.Position).Magnitude <= (SettingsAB.Range or 20) then
-                    DoBlock(kr) -- instant
-                end
-                armKiller(killer, 0.15)
+                armKiller(killer, 0.2)
                 tryHitboxBlock(killer)
             end))
         end
@@ -705,11 +709,7 @@ local function trackKillerAB(killer)
         local cur = killer:GetAttribute("AbilityLastUsed") or 0
         if cur == last then return end
         last = cur
-        local kr = killer:FindFirstChild("HumanoidRootPart")
-        if kr and LocalRoot and (kr.Position - LocalRoot.Position).Magnitude <= (SettingsAB.Range or 20) then
-            DoBlock(kr) -- instant
-        end
-        armKiller(killer, 0.15)
+        armKiller(killer, 0.2)
         tryHitboxBlock(killer)
     end))
 end
@@ -1240,9 +1240,7 @@ TabAB:Slider({ Title = "Hitbox Multiplier", Value = { Min = 0.5, Max = 4, Defaul
 TabAB:Slider({ Title = "Range", Value = { Min = 5, Max = 40, Default = 20 }, Step = 1, Callback = function(v) SettingsAB.Range = v end })
 TabAB:Slider({ Title = "Facing Dot", Value = { Min = 0, Max = 1, Default = 0.35 }, Step = 0.05, Callback = function(v) SettingsAB.FacingDot = v end })
 TabAB:Toggle({ Title = "Anti Bait", Value = true, Callback = function(v) SettingsAB.AntiBait = v end })
-TabAB:Section({ Title = "Spam / Punch" })
-TabAB:Toggle({ Title = "Block Spam", Value = true, Callback = function(v) SettingsAB.SpamEnabled = v end })
-TabAB:Slider({ Title = "Spam Count", Value = { Min = 1, Max = 10, Default = 6 }, Step = 1, Callback = function(v) SettingsAB.SpamCount = v end })
+TabAB:Section({ Title = "Punch" })
 TabAB:Toggle({ Title = "Aim then Punch", Value = true, Callback = function(v) SettingsAB.AutoPunch = v end })
 TabAB:Slider({ Title = "Punch Delay", Value = { Min = 0, Max = 1, Default = 0.12 }, Step = 0.02, Callback = function(v) SettingsAB.PunchDelay = v end })
 TabAB:Section({ Title = "HDT" })
