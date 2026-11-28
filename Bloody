@@ -1,32 +1,15 @@
---[[
-    SIMPLE HUB | FORSAKEN | 3-LAYER AUTO BLOCK
+-- SIMPLE HUB | AUTO BLOCK ONLY
+-- Standalone Auto Block using Duck Hub-style box checks, sound cues,
+-- animation-name cues, and killer AbilityLastUsed attributes.
 
-    Load the COMPLETE SkidSaken v1.7 core first, then execute this add-on.
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+local Stats = game:GetService("Stats")
+local LocalPlayer = Players.LocalPlayer
 
-    Layer 1: SkidSaken's native hitbox/attribute detector.
-    Layer 2: Duck Hub-style oriented box overlap detector (ported from the
-             supplied deobfuscated source; no broken loader/deobfuscated locals).
-    Layer 3: killer-name filtered sound + animation cue watcher.
-
-    This file is an add-on, not a standalone replacement for SkidSaken.
-    First trigger is immediate. A confirmation sound suppresses the retry;
-    otherwise one short failover attempt is made.
-]]
-
---// WindUI loader
-local WindUI
-local loadOK, loadResult = pcall(function()
-    return loadstring(game:HttpGet(
-        "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
-    ))()
-end)
-if not loadOK or not loadResult then
-    warn("[Simple Hub] WindUI failed to load: " .. tostring(loadResult))
-    return
-end
-WindUI = loadResult
-
---// Shared executor environment
 local SharedEnv = _G
 pcall(function()
     if type(getgenv) == "function" then
@@ -34,167 +17,54 @@ pcall(function()
         if type(env) == "table" then SharedEnv = env end
     end
 end)
-local function G(name)
-    local value = SharedEnv[name]
-    if value == nil then value = _G[name] end
-    return value
-end
-local function getSettings()
-    return G("Settings")
-end
 
---// Services
-local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
-local Stats = game:GetService("Stats")
-local Debris = game:GetService("Debris")
-local LocalPlayer = Players.LocalPlayer
-
---// Visual style
+-- Stop an older copy before creating a new one.
 pcall(function()
-    WindUI.TransparencyValue = 0.10
-    WindUI:SetTheme("Dark")
-end)
-local ACCENT = Color3.fromRGB(255, 164, 75)
-local ACCENT_SOFT = Color3.fromRGB(255, 202, 133)
-local GREEN = Color3.fromRGB(95, 220, 145)
-local RED = Color3.fromRGB(238, 93, 93)
-
-local Window = WindUI:CreateWindow({
-    Title = "SIMPLE HUB",
-    Author = "FORSAKEN  |  3-LAYER EDITION",
-    Icon = "shield-check",
-    Theme = "Dark",
-    Acrylic = true,
-    Transparent = true,
-})
-pcall(function()
-    Window:SetIconSize(42)
-    Window:SetBackgroundTransparency(0.10)
-    Window:SetBackgroundImageTransparency(1)
-    Window:Tag({ Title = "3-LAYER AUTO BLOCK", Color = ACCENT })
-    Window:Tag({ Title = "SOUND + ANIMATION", Color = GREEN })
+    local old = SharedEnv.SimpleHubAutoBlock
+    if type(old) == "table" and type(old.Stop) == "function" then
+        old.Stop()
+    end
 end)
 
-local function notify(title, content, icon)
-    pcall(function()
-        WindUI:Notify({
-            Title = title,
-            Content = content,
-            Icon = icon or "info",
-            Duration = 3,
-        })
-    end)
-end
-
-local function section(tab, title, icon)
-    return tab:Section({
-        Title = title,
-        Icon = icon,
-        Box = true,
-        BoxBorder = true,
-    })
-end
-
-local function pickValue(value)
-    if type(value) == "table" then
-        return value.Value or value.Option or value.Name or value[1]
-    end
-    return value
-end
-
-local function coreReady()
-    return type(getSettings()) == "table"
-        and type(G("StartAutoBlock")) == "function"
-        and type(G("StopAutoBlock")) == "function"
-        and type(G("NS_StartHitboxLoop")) == "function"
-        and type(G("NS_StopHitboxLoop")) == "function"
-        and type(G("FireAbilityByMode")) == "function"
-end
-
-local function getSetting(key, fallback)
-    local settings = getSettings()
-    if type(settings) == "table" and settings[key] ~= nil then
-        return settings[key]
-    end
-    return fallback
-end
-
-local function setSetting(key, value)
-    local settings = getSettings()
-    if type(settings) ~= "table" then
-        notify("SkidSaken missing", "Load the complete SkidSaken core first.", "alert-triangle")
-        return false
-    end
-    settings[key] = value
-    return true
-end
-
-local function runFeature(startName, stopName, enabled)
-    local fn = G(enabled and startName or stopName)
-    if type(fn) ~= "function" then
-        notify("Module unavailable", startName .. " / " .. stopName .. " was not found.", "alert-triangle")
-        return
-    end
-    local ok, err = pcall(fn)
-    if not ok then notify("Feature error", tostring(err), "alert-triangle") end
-end
-
---// Simple Hub configuration
-local Config = {
-    enabled = false,
-    skidLayer = true,
-    duckLayer = true,
-    cueLayer = true,
-    soundWatcher = true,
-    animationWatcher = true,
-    retryEnabled = true,
-    fallbackDelay = 0.16,
-    cueRange = 36,
-    boxWidth = 8,
-    boxHeight = 7,
-    boxDepth = 12,
-    boxDistance = 0.01,
-    showDuckBox = true,
-    boxTransparency = 0.50,
-    boxColor = Color3.fromRGB(0, 255, 0),
-    visibleTime = 0.40,
+local CONFIG = {
+    BoxWidth = 8,
+    BoxHeight = 7,
+    BoxDepth = 12,
+    BoxDistance = 0.01,
+    BoxTransparency = 0.52,
+    BoxVisibleTime = 0.40,
+    MaxCueRange = 42,
+    TriggerDebounce = 0.12,
+    BoxScanInterval = 0.025,
 }
 
-local SimpleAB = {
-    running = false,
-    connections = {},
-    killerStates = setmetatable({}, { __mode = "k" }),
-    seenSounds = setmetatable({}, { __mode = "k" }),
-    lastConfirmedBlock = 0,
-    lastFolder = nil,
-    folderChildConnection = nil,
-    heartbeat = nil,
-    savedCore = nil,
-    overlapParams = OverlapParams.new(),
-    lastFolderScan = 0,
-    soundDebounce = setmetatable({}, { __mode = "k" }),
+local State = {
+    Enabled = false,
+    Connections = {},
+    KillerStates = setmetatable({}, { __mode = "k" }),
+    SeenSounds = setmetatable({}, { __mode = "k" }),
+    Folder = nil,
+    FolderConnection = nil,
+    Remote = nil,
+    LastRemoteSearch = 0,
+    LastScan = 0,
+    Overlap = OverlapParams.new(),
 }
-SimpleAB.overlapParams.FilterType = Enum.RaycastFilterType.Include
-SimpleAB.overlapParams.MaxParts = 32
+State.Overlap.FilterType = Enum.RaycastFilterType.Include
+State.Overlap.MaxParts = 64
 
---// Killer filter requested
 local WATCHED_KILLERS = {
     "slasher",
     "c00lkid",
     "c00lkidd",
     "1x1x1x1",
     "noli",
-    "guest 666",
     "guest666",
     "nosferatu",
     "nos",
     "azure",
 }
 
---// Attack labels requested. TAB is matched as a whole word so that the
---// letters inside unrelated names do not cause accidental triggers.
 local ATTACK_CUES = {
     "carving slash",
     "eviscerate",
@@ -205,87 +75,7 @@ local ATTACK_CUES = {
     "tab",
 }
 
-local function hasWholeWord(text, word)
-    local padded = " " .. string.lower(tostring(text or "")):gsub("[^%w]+", " ") .. " "
-    return string.find(padded, " " .. word .. " ", 1, true) ~= nil
-end
-
-local function matchesAttackCue(text)
-    local value = string.lower(tostring(text or ""))
-    if value == "" then return false end
-    for _, cue in ipairs(ATTACK_CUES) do
-        if cue == "tab" then
-            if hasWholeWord(value, "tab") then return true end
-        elseif string.find(value, cue, 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
-local function isWatchedKiller(model)
-    if not model or not model:IsA("Model") then return false end
-    local name = string.lower(model.Name)
-    for _, wanted in ipairs(WATCHED_KILLERS) do
-        if string.find(name, wanted, 1, true) then return true end
-    end
-    return false
-end
-
-local function getKillersFolder()
-    local folder = Workspace:FindFirstChild("Players")
-    return folder and folder:FindFirstChild("Killers") or nil
-end
-
-local function getKillerFromInstance(instance)
-    local folder = getKillersFolder()
-    if not folder or not instance then return nil end
-    local cursor = instance
-    while cursor and cursor ~= folder do
-        if cursor:IsA("Model") and isWatchedKiller(cursor) then
-            return cursor
-        end
-        cursor = cursor.Parent
-    end
-    return nil
-end
-
-local function getRoot(model)
-    if not model then return nil end
-    return model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("RootPart") or model.PrimaryPart
-end
-
-local function localPlayerIsKiller()
-    local state = G("KillerState")
-    if type(state) == "table" and state.isKiller == true then return true end
-    local check = G("IsLocalPlayerKiller")
-    if type(check) == "function" then
-        local ok, result = pcall(check)
-        if ok and result == true then return true end
-    end
-    return false
-end
-
-local function getLocalParts()
-    local character = LocalPlayer and LocalPlayer.Character
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    if not character or not humanoid or humanoid.Health <= 0 or not root then
-        return nil, nil, nil
-    end
-    return character, humanoid, root
-end
-
-local function getPingSeconds()
-    local ping = 0.08
-    pcall(function()
-        ping = (Stats.Network.ServerStatsItem["Data Ping"]:GetValue() or 80) / 1000
-    end)
-    return math.clamp(tonumber(ping) or 0.08, 0, 0.60)
-end
-
---// Duck Hub's sound whitelist from the supplied deobfuscated file.
---// The seven Node IDs were explicitly excluded by that source (behead-related).
+-- Duck Hub's attack sound IDs from the supplied deobfuscated file.
 local DUCK_SOUND_IDS = {
     ["119583605486352"] = true, ["94317217837143"] = true,
     ["105840448036441"] = true, ["99215225043220"] = true,
@@ -322,819 +112,636 @@ local DUCK_SOUND_IDS = {
     ["77649238882198"] = true, ["115678417928765"] = true,
     ["118562842802948"] = true, ["132581672170205"] = true,
 }
-local DUCK_IGNORED_IDS = {
-    ["86566726496558"] = true,
-    ["126727756047566"] = true,
-    ["126355327951215"] = true,
-    ["82113744478546"] = true,
-    ["126681776859538"] = true,
-    ["116250166603410"] = true,
-    ["89182710199063"] = true,
-}
 
-local function soundHasDuckId(sound)
-    if not sound then return false end
-    local id = string.match(tostring(sound.SoundId or ""), "%d+")
-    return id ~= nil and DUCK_SOUND_IDS[id] == true and DUCK_IGNORED_IDS[id] ~= true
+local function addConnection(connection)
+    if connection then
+        table.insert(State.Connections, connection)
+    end
+    return connection
 end
 
-local function getCueNameContext(instance, killer)
-    local names = {}
-    local cursor = instance
-    while cursor and cursor ~= killer do
-        table.insert(names, cursor.Name)
-        cursor = cursor.Parent
+local function findRemote()
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    local network = modules and modules:FindFirstChild("Network")
+    local nestedNetwork = network and network:FindFirstChild("Network")
+    local remote = nestedNetwork and nestedNetwork:FindFirstChild("RemoteEvent")
+    if remote and remote:IsA("RemoteEvent") then
+        return remote
+    end
+
+    -- Use the exact helper path exposed by the supplied SkidSaken source if present.
+    local helper = SharedEnv.GetGHNetworkObjects or _G.GetGHNetworkObjects
+    if type(helper) == "function" then
+        local ok, result = pcall(helper)
+        if ok and typeof(result) == "Instance" and result:IsA("RemoteEvent") then
+            return result
+        end
+    end
+    return nil
+end
+
+local function getRemote()
+    if State.Remote and State.Remote.Parent then
+        return State.Remote
+    end
+    local now = os.clock()
+    if now - State.LastRemoteSearch < 0.5 then
+        return nil
+    end
+    State.LastRemoteSearch = now
+    State.Remote = findRemote()
+    return State.Remote
+end
+
+local function getAbilityName()
+    local settings = SharedEnv.Settings or _G.Settings
+    if type(settings) == "table" and settings.RectangleABMode == "007n7" then
+        return "Clone"
+    end
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        local hasClone = false
+        local hasBlock = false
+        for _, item in ipairs(playerGui:GetDescendants()) do
+            if item:IsA("GuiButton") then
+                local name = string.lower(item.Name)
+                if name == "clone" then hasClone = true end
+                if name == "block" then hasBlock = true end
+            end
+        end
+        if hasClone and not hasBlock then return "Clone" end
+    end
+    return "Block"
+end
+
+local function fireBlock()
+    local remote = getRemote()
+    if not remote then
+        return false
+    end
+    local abilityName = getAbilityName()
+    local ok = pcall(function()
+        local abilityBuffer = buffer.fromstring("\003\005\000\000\000" .. abilityName)
+        remote:FireServer("UseActorAbility", { abilityBuffer })
+    end)
+    return ok
+end
+
+local function getKillersFolder()
+    local playersFolder = Workspace:FindFirstChild("Players")
+    return playersFolder and playersFolder:FindFirstChild("Killers") or nil
+end
+
+local function getRoot(model)
+    if not model then return nil end
+    return model:FindFirstChild("HumanoidRootPart")
+        or model:FindFirstChild("RootPart")
+        or model.PrimaryPart
+end
+
+local function normalize(value)
+    return string.lower(tostring(value or "")):gsub("[^%w]", "")
+end
+
+local function killerIdentity(model)
+    local names = { model.Name }
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        table.insert(names, humanoid.DisplayName)
+    end
+    for _, attributeName in ipairs({ "ActorName", "CharacterName", "KillerName", "DisplayName" }) do
+        local value = model:GetAttribute(attributeName)
+        if type(value) == "string" then
+            table.insert(names, value)
+        end
     end
     return table.concat(names, " ")
 end
 
---// One shared fire path prevents all three layers from firing repeatedly at
---// the same instant. The first call is immediate; the retry is confirmation-gated.
-local function getKillerState(killer)
-    local state = SimpleAB.killerStates[killer]
+local function isWatchedKiller(model)
+    if not model or not model:IsA("Model") then return false end
+    local identity = normalize(killerIdentity(model))
+    for _, wanted in ipairs(WATCHED_KILLERS) do
+        if string.find(identity, wanted, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function getKillerFromInstance(instance)
+    local folder = getKillersFolder()
+    local cursor = instance
+    while cursor and cursor ~= folder do
+        if cursor:IsA("Model") and isWatchedKiller(cursor) then
+            return cursor
+        end
+        cursor = cursor.Parent
+    end
+    return nil
+end
+
+local function getLocalParts()
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not character or not humanoid or humanoid.Health <= 0 or not root then
+        return nil, nil, nil
+    end
+    return character, humanoid, root
+end
+
+local function isLocalPlayerKiller()
+    local state = SharedEnv.KillerState or _G.KillerState
+    if type(state) == "table" and state.isKiller == true then
+        return true
+    end
+    local helper = SharedEnv.IsLocalPlayerKiller or _G.IsLocalPlayerKiller
+    if type(helper) == "function" then
+        local ok, result = pcall(helper)
+        if ok and result == true then return true end
+    end
+    local folder = getKillersFolder()
+    local character = LocalPlayer.Character
+    return folder ~= nil and character ~= nil and character:IsDescendantOf(folder)
+end
+
+local function pingSeconds()
+    local ping = 0.08
+    pcall(function()
+        ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
+    end)
+    return math.clamp(tonumber(ping) or 0.08, 0, 0.60)
+end
+
+local function getBoxCFrame(root)
+    return root.CFrame * CFrame.new(0, 0, -(CONFIG.BoxDepth / 2) - CONFIG.BoxDistance)
+end
+
+local function getState(killer)
+    local state = State.KillerStates[killer]
     if not state then
         state = {
-            firstFire = 0,
-            lastFire = 0,
-            attempts = 0,
-            confirmed = false,
-            windowEnd = 0,
-            token = 0,
-            lastCoreStamp = 0,
-            lastBoxScan = 0,
+            LastBlock = 0,
+            BoxEntered = false,
+            LastAbility = killer:GetAttribute("AbilityLastUsed"),
+            LastUsed = tonumber(killer:GetAttribute("AbilitiesUsed")) or 0,
+            SkipNextAbility = false,
+            Box = nil,
+            Animator = nil,
+            Tracked = false,
         }
-        SimpleAB.killerStates[killer] = state
+        State.KillerStates[killer] = state
     end
     return state
 end
 
-local function fireAtKiller(killer)
-    local settings = getSettings()
-    local fire = G("FireAbilityByMode")
-    if type(settings) ~= "table" or type(fire) ~= "function" then return false end
-    if settings.PermanentABLock or localPlayerIsKiller() then return false end
-
-    -- Keep the hitbox ability mode selected even when the SkidSaken layer is
-    -- switched off and only the Duck/cue backup layers are being used.
-    local oldAuto = settings.AutoBlock
-    local oldCustom = settings.AutoBlockCustom
-    local oldRectangle = settings.AutoBlockRectangle
-    settings.AutoBlock = false
-    settings.AutoBlockCustom = false
-    settings.AutoBlockRectangle = true
-    local ok, err = pcall(fire, nil, killer)
-    settings.AutoBlock = oldAuto
-    settings.AutoBlockCustom = oldCustom
-    settings.AutoBlockRectangle = oldRectangle
-    if not ok then
-        warn("[Simple Hub] FireAbilityByMode failed: " .. tostring(err))
-        return false
-    end
-    return true
+local function showBox(killerRoot, red)
+    if not killerRoot or not killerRoot.Parent then return end
+    local part = Instance.new("Part")
+    part.Name = "SimpleHub_AutoBlockBox"
+    part.Size = Vector3.new(CONFIG.BoxWidth, CONFIG.BoxHeight, CONFIG.BoxDepth)
+    part.CFrame = getBoxCFrame(killerRoot)
+    part.Color = red and Color3.fromRGB(255, 65, 65) or Color3.fromRGB(70, 230, 135)
+    part.Transparency = CONFIG.BoxTransparency
+    part.Material = Enum.Material.Neon
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.CastShadow = false
+    part.Parent = Workspace
+    Debris:AddItem(part, CONFIG.BoxVisibleTime)
 end
 
-local function scheduleFailover(killer, state, token)
-    if not Config.retryEnabled then return end
-    task.delay(Config.fallbackDelay, function()
-        if not SimpleAB.running or not killer or not killer.Parent then return end
-        if SimpleAB.killerStates[killer] ~= state or state.token ~= token then return end
-        if state.confirmed or state.attempts >= 2 then return end
-        if tick() > state.windowEnd then return end
-        local _, _, localRoot = getLocalParts()
-        local killerRoot = getRoot(killer)
-        if not localRoot or not killerRoot then return end
-        if (localRoot.Position - killerRoot.Position).Magnitude > Config.cueRange then return end
-
-        state.attempts = 2
-        state.lastFire = tick()
-        fireAtKiller(killer)
-    end)
-end
-
-local function requestBlock(killer, source)
-    if not SimpleAB.running or not killer or not killer.Parent then return false end
-    if not isWatchedKiller(killer) or localPlayerIsKiller() then return false end
-    local settings = getSettings()
-    if type(settings) ~= "table" or settings.PermanentABLock then return false end
-
+local function withinCueRange(killerRoot)
     local _, _, localRoot = getLocalParts()
-    local killerRoot = getRoot(killer)
     if not localRoot or not killerRoot then return false end
-    if (localRoot.Position - killerRoot.Position).Magnitude > Config.cueRange then return false end
+    return (localRoot.Position - killerRoot.Position).Magnitude <= CONFIG.MaxCueRange
+end
 
-    local now = tick()
-    local state = getKillerState(killer)
-    if now > state.windowEnd then
-        state.firstFire = 0
-        state.lastFire = 0
-        state.attempts = 0
-        state.confirmed = false
-        state.token = state.token + 1
+local function requestBlock(killer, reason)
+    if not State.Enabled or not killer or not killer.Parent or isLocalPlayerKiller() then
+        return false
     end
-    if state.confirmed or state.attempts >= 2 then return false end
-    if state.attempts > 0 and now - state.lastFire < 0.10 then return false end
-
-    -- If SkidSaken's native hitbox just fired for this same moment, let its
-    -- confirmation arrive before using the addon fallback.
-    local coreStamp = tonumber(G("_lastABSuccessTime")) or 0
-    local coreKillerRoot = G("_lastABKillerRoot")
-    if state.attempts == 0 and coreKillerRoot == killerRoot and coreStamp > state.lastCoreStamp and now - coreStamp >= 0 and now - coreStamp < 0.10 then
-        state.lastCoreStamp = coreStamp
-        state.firstFire = coreStamp
-        state.lastFire = now
-        state.attempts = 1
-        state.confirmed = false
-        state.windowEnd = now + 0.70
-        state.token = state.token + 1
-        scheduleFailover(killer, state, state.token)
+    if not isWatchedKiller(killer) then
+        return false
+    end
+    local killerRoot = getRoot(killer)
+    if not killerRoot or not withinCueRange(killerRoot) then
         return false
     end
 
-    if state.attempts == 0 then
-        state.firstFire = now
-        state.windowEnd = now + 0.70
-        state.token = state.token + 1
+    local state = getState(killer)
+    local now = os.clock()
+    if now - state.LastBlock < CONFIG.TriggerDebounce then
+        return false
     end
-    state.attempts = state.attempts + 1
-    state.lastFire = now
-    local token = state.token
-    local fired = fireAtKiller(killer)
-    if state.attempts == 1 then scheduleFailover(killer, state, token) end
+    state.LastBlock = now
+
+    local fired = fireBlock()
+    if fired then
+        showBox(killerRoot, true)
+    end
     return fired
 end
 
---// Local block confirmation sounds used by SkidSaken v1.7.
-local BLOCK_CONFIRM_SOUNDS = {
-    ["rbxassetid://132298811847315"] = true,
-    ["rbxassetid://81114852524420"] = true,
-    ["rbxassetid://123825742002486"] = true,
-    ["rbxassetid://116616310968045"] = true,
-    ["rbxassetid://102808968188291"] = true,
-    ["rbxassetid://117828699507982"] = true,
-    ["rbxassetid://125854302746190"] = true,
-    ["rbxassetid://18568553101"] = true,
-    ["rbxassetid://95135835034592"] = true,
-    ["rbxassetid://135209101640984"] = true,
-    ["rbxassetid://91165993312513"] = true,
-    ["rbxassetid://82772022662025"] = true,
-}
-
-local function onBlockConfirmed()
-    local now = tick()
-    SimpleAB.lastConfirmedBlock = now
-    for _, state in pairs(SimpleAB.killerStates) do
-        if state.attempts > 0 and now >= state.firstFire and now - state.firstFire <= 0.75 then
-            state.confirmed = true
+local function matchesCue(text)
+    local lowered = string.lower(tostring(text or ""))
+    if lowered == "" then return false end
+    for _, cue in ipairs(ATTACK_CUES) do
+        if cue == "tab" then
+            local cleaned = " " .. lowered:gsub("[^%w]+", " ") .. " "
+            if string.find(cleaned, " tab ", 1, true) then return true end
+        elseif string.find(lowered, cue, 1, true) then
+            return true
         end
     end
+    return false
 end
 
-local function attachLocalConfirmation(character)
-    if not character then return end
-    local function monitor(sound)
-        if not sound or not sound:IsA("Sound") then return end
-        local function check()
-            if BLOCK_CONFIRM_SOUNDS[sound.SoundId] then onBlockConfirmed() end
+local function soundMatches(sound, killer)
+    if not sound then return false end
+    local id = string.match(tostring(sound.SoundId or ""), "%d+$")
+    local names = {}
+    local cursor = sound
+    while cursor and cursor ~= killer do
+        table.insert(names, cursor.Name)
+        cursor = cursor.Parent
+    end
+    local nameMatch = matchesCue(table.concat(names, " "))
+    return nameMatch or (id ~= nil and DUCK_SOUND_IDS[id] == true)
+end
+
+local function handleSound(sound)
+    if not State.Enabled or not sound or not sound:IsA("Sound") then return end
+    local killer = getKillerFromInstance(sound)
+    if not killer or not soundMatches(sound, killer) then return end
+    requestBlock(killer, "sound")
+end
+
+local function attachSound(sound)
+    if not sound or not sound:IsA("Sound") or State.SeenSounds[sound] then return end
+    State.SeenSounds[sound] = true
+
+    local function check()
+        if sound.IsPlaying then
+            handleSound(sound)
         end
-        local okPlayed, playedConnection = pcall(function() return sound.Played:Connect(check) end)
-        if okPlayed and playedConnection then table.insert(SimpleAB.connections, playedConnection) end
-        local okResumed, resumedConnection = pcall(function() return sound.Resumed:Connect(check) end)
-        if okResumed and resumedConnection then table.insert(SimpleAB.connections, resumedConnection) end
-        if sound.IsPlaying then check() end
     end
-    for _, descendant in ipairs(character:GetDescendants()) do
-        if descendant:IsA("Sound") then monitor(descendant) end
+
+    pcall(function()
+        addConnection(sound.Played:Connect(function()
+            handleSound(sound)
+        end))
+    end)
+    pcall(function()
+        addConnection(sound.Resumed:Connect(function()
+            handleSound(sound)
+        end))
+    end)
+    pcall(function()
+        addConnection(sound:GetPropertyChangedSignal("Playing"):Connect(check))
+    end)
+    pcall(function()
+        addConnection(sound:GetPropertyChangedSignal("SoundId"):Connect(function()
+            if sound.IsPlaying then handleSound(sound) end
+        end))
+    end)
+    if sound.IsPlaying then
+        handleSound(sound)
     end
-    table.insert(SimpleAB.connections, character.DescendantAdded:Connect(monitor))
 end
 
---// Layer 2: Duck Hub's oriented box dimensions and overlap approach.
-local function getDuckBoxCFrame(killerRoot)
-    return killerRoot.CFrame * CFrame.new(0, 0, -(Config.boxDepth / 2) - Config.boxDistance)
+local function attachAnimator(killer)
+    local state = getState(killer)
+    local humanoid = killer:FindFirstChildOfClass("Humanoid")
+    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+    if not animator or state.Animator == animator then return end
+    state.Animator = animator
+
+    local ok, connection = pcall(function()
+        return animator.AnimationPlayed:Connect(function(track)
+            if not State.Enabled then return end
+            local animation = track and track.Animation
+            local cueText = tostring(track and track.Name or "")
+                .. " " .. tostring(animation and animation.Name or "")
+            if matchesCue(cueText) then
+                requestBlock(killer, "animation")
+            end
+        end)
+    end)
+    if ok then addConnection(connection) end
 end
 
-local function drawDuckBox(killerRoot)
-    if not Config.showDuckBox or not killerRoot or not killerRoot.Parent then return end
+local function trackKiller(killer)
+    if not killer or not killer:IsA("Model") or not isWatchedKiller(killer) then return end
+    local state = getState(killer)
+    attachAnimator(killer)
+    if state.Tracked then return end
+    state.Tracked = true
+
+    for _, descendant in ipairs(killer:GetDescendants()) do
+        if descendant:IsA("Sound") then
+            attachSound(descendant)
+        end
+    end
+
+    addConnection(killer.DescendantAdded:Connect(function(descendant)
+        if not State.Enabled then return end
+        if descendant:IsA("Sound") then
+            attachSound(descendant)
+        elseif descendant:IsA("Animator") or descendant:IsA("Humanoid") then
+            task.defer(function()
+                if State.Enabled and killer.Parent then attachAnimator(killer) end
+            end)
+        end
+    end))
+end
+
+local function scanBox(killer)
+    local character, _, localRoot = getLocalParts()
+    local killerRoot = getRoot(killer)
+    if not character or not localRoot or not killerRoot then return end
+
+    local estimatedLead = pingSeconds() * 22
+    local maxRange = CONFIG.BoxDepth + CONFIG.BoxDistance + 3 + estimatedLead
+    if (localRoot.Position - killerRoot.Position).Magnitude > maxRange then
+        local state = getState(killer)
+        state.BoxEntered = false
+        if state.Box and state.Box.Parent then state.Box.Color = Color3.fromRGB(70, 230, 135) end
+        return
+    end
+
+    State.Overlap.FilterDescendantsInstances = { character }
+    local success, parts = pcall(function()
+        return Workspace:GetPartBoundsInBox(
+            getBoxCFrame(killerRoot),
+            Vector3.new(CONFIG.BoxWidth, CONFIG.BoxHeight, CONFIG.BoxDepth),
+            State.Overlap
+        )
+    end)
+    if not success then return end
+
+    local inside = false
+    for _, part in ipairs(parts) do
+        if part and part:IsDescendantOf(character) then
+            inside = true
+            break
+        end
+    end
+
+    -- Position-space fallback keeps the box check reliable when a character
+    -- limb is temporarily non-queryable on a client frame.
+    if not inside then
+        local localPosition = getBoxCFrame(killerRoot):PointToObjectSpace(localRoot.Position)
+        inside = math.abs(localPosition.X) <= (CONFIG.BoxWidth / 2) + 1.25
+            and math.abs(localPosition.Y) <= (CONFIG.BoxHeight / 2) + 2.0
+            and math.abs(localPosition.Z) <= (CONFIG.BoxDepth / 2) + 1.25
+    end
+
+    local state = getState(killer)
+    if state.Box and state.Box.Parent then
+        state.Box.CFrame = getBoxCFrame(killerRoot)
+        state.Box.Color = inside and Color3.fromRGB(255, 65, 65) or Color3.fromRGB(70, 230, 135)
+    end
+
+    if inside and not state.BoxEntered then
+        local fired = requestBlock(killer, "duck-box")
+        local recentlyAttempted = os.clock() - state.LastBlock < CONFIG.TriggerDebounce
+        if fired or recentlyAttempted then
+            state.BoxEntered = true
+        end
+    elseif not inside then
+        state.BoxEntered = false
+    end
+end
+
+local function scanAbilityAttributes(killer)
+    local state = getState(killer)
+    local abilityLastUsed = killer:GetAttribute("AbilityLastUsed")
+    local abilitiesUsed = tonumber(killer:GetAttribute("AbilitiesUsed")) or 0
+
+    if abilitiesUsed > state.LastUsed then
+        state.SkipNextAbility = true
+    end
+
+    if abilityLastUsed ~= nil and state.LastAbility ~= nil and abilityLastUsed ~= state.LastAbility then
+        if state.SkipNextAbility then
+            state.SkipNextAbility = false
+        else
+            requestBlock(killer, "ability-attribute")
+        end
+    end
+
+    state.LastAbility = abilityLastUsed
+    state.LastUsed = abilitiesUsed
+end
+
+local function makeBox(killer)
+    local root = getRoot(killer)
+    if not root then return end
+    local state = getState(killer)
+    if state.Box and state.Box.Parent then return end
+
     local box = Instance.new("Part")
-    box.Name = "SimpleHub_DuckBox"
-    box.Size = Vector3.new(Config.boxWidth, Config.boxHeight, Config.boxDepth)
-    box.Color = Config.boxColor
-    box.Transparency = Config.boxTransparency
+    box.Name = "SimpleHub_AutoBlockBox"
+    box.Size = Vector3.new(CONFIG.BoxWidth, CONFIG.BoxHeight, CONFIG.BoxDepth)
+    box.CFrame = getBoxCFrame(root)
+    box.Color = Color3.fromRGB(70, 230, 135)
+    box.Transparency = CONFIG.BoxTransparency
     box.Material = Enum.Material.Neon
     box.Anchored = true
     box.CanCollide = false
     box.CanTouch = false
     box.CanQuery = false
     box.CastShadow = false
-    box.Massless = true
-    box.CFrame = getDuckBoxCFrame(killerRoot)
     box.Parent = Workspace
-    Debris:AddItem(box, Config.visibleTime)
+    state.Box = box
 end
 
-local function duckBoxContainsPlayer(killer)
-    local character, _, localRoot = getLocalParts()
-    local killerRoot = getRoot(killer)
-    if not character or not localRoot or not killerRoot then return false end
-
-    local pingLead = getPingSeconds() * 22
-    local broadRange = Config.boxDepth + Config.boxDistance + 3 + pingLead
-    if (localRoot.Position - killerRoot.Position).Magnitude > broadRange then return false end
-
-    SimpleAB.overlapParams.FilterDescendantsInstances = { character }
-    local boxCFrame = getDuckBoxCFrame(killerRoot)
-    local ok, parts = pcall(function()
-        return Workspace:GetPartBoundsInBox(
-            boxCFrame,
-            Vector3.new(Config.boxWidth, Config.boxHeight, Config.boxDepth),
-            SimpleAB.overlapParams
-        )
-    end)
-    if not ok or type(parts) ~= "table" then return false end
-    for _, part in ipairs(parts) do
-        if part and part:IsDescendantOf(character) then return true end
-    end
-    return false
-end
-
---// Layer 3: attack-cue watcher on the requested killers.
-local function attachSound(sound)
-    if not sound or not sound:IsA("Sound") or SimpleAB.seenSounds[sound] then return end
-    SimpleAB.seenSounds[sound] = true
-
-    local function onPlayed()
-        if not SimpleAB.running or not Config.cueLayer or not Config.soundWatcher then return end
-        local now = tick()
-        local last = SimpleAB.soundDebounce[sound] or 0
-        if now - last < 0.10 then return end
-        SimpleAB.soundDebounce[sound] = now
-
-        local killer = getKillerFromInstance(sound)
-        if not killer then return end
-        local cueMatch = matchesAttackCue(getCueNameContext(sound, killer))
-        local duckIdMatch = soundHasDuckId(sound)
-        if not cueMatch and not duckIdMatch then return end
-
-        local didFire = requestBlock(killer, cueMatch and "sound-name" or "duck-sound-id")
-        if didFire then
-            local root = getRoot(killer)
-            if root then drawDuckBox(root) end
-        end
-    end
-
-    local okPlayed, playedConnection = pcall(function() return sound.Played:Connect(onPlayed) end)
-    if okPlayed and playedConnection then table.insert(SimpleAB.connections, playedConnection) end
-    local okResumed, resumedConnection = pcall(function() return sound.Resumed:Connect(onPlayed) end)
-    if okResumed and resumedConnection then table.insert(SimpleAB.connections, resumedConnection) end
-    if sound.IsPlaying then onPlayed() end
-end
-
-local function attachAnimator(killer)
-    local state = getKillerState(killer)
-    local humanoid = killer:FindFirstChildOfClass("Humanoid")
-    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
-    if not animator or state.animator == animator then return end
-    state.animator = animator
-    local ok, connection = pcall(function()
-        return animator.AnimationPlayed:Connect(function(track)
-            if not SimpleAB.running or not Config.cueLayer or not Config.animationWatcher then return end
-            local animation = track and track.Animation
-            local text = tostring(track and track.Name or "") .. " " .. tostring(animation and animation.Name or "")
-            if not matchesAttackCue(text) then return end
-            local didFire = requestBlock(killer, "animation-name")
-            if didFire then
-                local root = getRoot(killer)
-                if root then drawDuckBox(root) end
-            end
-        end)
-    end)
-    if ok and connection then table.insert(SimpleAB.connections, connection) end
-end
-
-local function trackKiller(killer)
-    if not killer or not killer:IsA("Model") or not isWatchedKiller(killer) then return end
-    local state = getKillerState(killer)
-    if state.tracked then
-        attachAnimator(killer)
-        return
-    end
-    state.tracked = true
-    attachAnimator(killer)
-    for _, descendant in ipairs(killer:GetDescendants()) do
-        if descendant:IsA("Sound") then attachSound(descendant) end
-    end
-    table.insert(SimpleAB.connections, killer.DescendantAdded:Connect(function(descendant)
-        if descendant:IsA("Animator") or descendant:IsA("Humanoid") then
-            task.defer(function()
-                if SimpleAB.running and killer.Parent then attachAnimator(killer) end
-            end)
-        elseif descendant:IsA("Sound") then
-            attachSound(descendant)
-        end
-    end))
-end
-
-local function scanWorkspaceSounds()
-    for _, descendant in ipairs(Workspace:GetDescendants()) do
-        if descendant:IsA("Sound") then attachSound(descendant) end
-    end
-end
-
-local function updateKillersFolder()
+local function updateFolder()
     local folder = getKillersFolder()
-    if folder == SimpleAB.lastFolder then return end
-    if SimpleAB.folderChildConnection then
-        pcall(function() SimpleAB.folderChildConnection:Disconnect() end)
-        SimpleAB.folderChildConnection = nil
+    if folder == State.Folder then return end
+
+    if State.FolderConnection then
+        pcall(function() State.FolderConnection:Disconnect() end)
+        State.FolderConnection = nil
     end
-    SimpleAB.lastFolder = folder
+    State.Folder = folder
+
     if folder then
-        SimpleAB.folderChildConnection = folder.ChildAdded:Connect(function(child)
-            task.defer(function() if SimpleAB.running then trackKiller(child) end end)
+        State.FolderConnection = folder.ChildAdded:Connect(function(child)
+            task.defer(function()
+                if State.Enabled then trackKiller(child); makeBox(child) end
+            end)
         end)
-        table.insert(SimpleAB.connections, SimpleAB.folderChildConnection)
-        for _, killer in ipairs(folder:GetChildren()) do trackKiller(killer) end
+        addConnection(State.FolderConnection)
+        addConnection(folder.ChildRemoved:Connect(function(child)
+            local state = State.KillerStates[child]
+            if state and state.Box then
+                pcall(function() state.Box:Destroy() end)
+                state.Box = nil
+            end
+            State.KillerStates[child] = nil
+        end))
+        for _, killer in ipairs(folder:GetChildren()) do
+            trackKiller(killer)
+            makeBox(killer)
+        end
     end
 end
 
-local function startWatcherLayers()
-    if SimpleAB.running then return end
-    SimpleAB.running = true
-    SimpleAB.killerStates = setmetatable({}, { __mode = "k" })
-    SimpleAB.seenSounds = setmetatable({}, { __mode = "k" })
-    SimpleAB.soundDebounce = setmetatable({}, { __mode = "k" })
-    SimpleAB.connections = {}
-    SimpleAB.lastFolder = nil
-    SimpleAB.lastConfirmedBlock = 0
-    SimpleAB.lastFolderScan = 0
+local function stop()
+    State.Enabled = false
+    if State.FolderConnection then
+        pcall(function() State.FolderConnection:Disconnect() end)
+        State.FolderConnection = nil
+    end
+    for _, connection in ipairs(State.Connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    State.Connections = {}
+    for killer, state in pairs(State.KillerStates) do
+        if state.Box then pcall(function() state.Box:Destroy() end) end
+        State.KillerStates[killer] = nil
+    end
+    State.SeenSounds = setmetatable({}, { __mode = "k" })
+    State.KillerStates = setmetatable({}, { __mode = "k" })
+    State.Folder = nil
+end
 
-    attachLocalConfirmation(LocalPlayer.Character)
-    table.insert(SimpleAB.connections, LocalPlayer.CharacterAdded:Connect(function(character)
-        if SimpleAB.running then task.wait(0.25); attachLocalConfirmation(character) end
-    end))
+local function start()
+    if State.Enabled then return true end
+    State.Enabled = true
+    State.Connections = {}
+    State.KillerStates = setmetatable({}, { __mode = "k" })
+    State.SeenSounds = setmetatable({}, { __mode = "k" })
+    State.Folder = nil
+    State.Remote = findRemote()
+    State.LastScan = 0
+    updateFolder()
 
-    table.insert(SimpleAB.connections, Workspace.DescendantAdded:Connect(function(descendant)
-        if not SimpleAB.running then return end
+    addConnection(Workspace.DescendantAdded:Connect(function(descendant)
+        if not State.Enabled then return end
         if descendant:IsA("Sound") then
             attachSound(descendant)
         elseif descendant:IsA("Model") then
-            local killer = getKillerFromInstance(descendant)
-            if killer then trackKiller(killer) end
+            if isWatchedKiller(descendant) then
+                trackKiller(descendant)
+                makeBox(descendant)
+            end
         end
     end))
 
-    scanWorkspaceSounds()
-    updateKillersFolder()
-    SimpleAB.heartbeat = RunService.Heartbeat:Connect(function()
-        if not SimpleAB.running then return end
-        local now = tick()
-        if now - SimpleAB.lastFolderScan >= 0.25 then
-            SimpleAB.lastFolderScan = now
-            updateKillersFolder()
+    addConnection(RunService.Heartbeat:Connect(function()
+        if not State.Enabled then return end
+        local now = os.clock()
+        if now - State.LastRemoteSearch >= 0.5 and (not State.Remote or not State.Remote.Parent) then
+            State.Remote = findRemote()
+            State.LastRemoteSearch = now
         end
+        updateFolder()
+        if now - State.LastScan < CONFIG.BoxScanInterval then return end
+        State.LastScan = now
 
-        if Config.duckLayer and not localPlayerIsKiller() then
-            local folder = getKillersFolder()
-            if folder then
-                for _, killer in ipairs(folder:GetChildren()) do
-                    if killer:IsA("Model") and isWatchedKiller(killer) then
-                        trackKiller(killer)
-                        local state = getKillerState(killer)
-                        if now - (state.lastBoxScan or 0) >= 0.035 then
-                            state.lastBoxScan = now
-                            local containsPlayer = duckBoxContainsPlayer(killer)
-                            if containsPlayer then
-                                local didFire = requestBlock(killer, "duck-box")
-                                if didFire then
-                                    local root = getRoot(killer)
-                                    if root then drawDuckBox(root) end
-                                end
-                            end
-                        end
-                    end
-                end
+        if isLocalPlayerKiller() then return end
+        local folder = State.Folder
+        if not folder or not folder.Parent then return end
+
+        for _, killer in ipairs(folder:GetChildren()) do
+            if killer:IsA("Model") and isWatchedKiller(killer) then
+                trackKiller(killer)
+                makeBox(killer)
+                scanAbilityAttributes(killer)
+                scanBox(killer)
             end
         end
-    end)
-end
-
-local function stopWatcherLayers()
-    SimpleAB.running = false
-    if SimpleAB.heartbeat then
-        pcall(function() SimpleAB.heartbeat:Disconnect() end)
-        SimpleAB.heartbeat = nil
-    end
-    if SimpleAB.folderChildConnection then
-        pcall(function() SimpleAB.folderChildConnection:Disconnect() end)
-        SimpleAB.folderChildConnection = nil
-    end
-    for _, connection in ipairs(SimpleAB.connections) do
-        pcall(function() connection:Disconnect() end)
-    end
-    SimpleAB.connections = {}
-    SimpleAB.killerStates = setmetatable({}, { __mode = "k" })
-    SimpleAB.seenSounds = setmetatable({}, { __mode = "k" })
-    SimpleAB.soundDebounce = setmetatable({}, { __mode = "k" })
-    SimpleAB.lastFolder = nil
-    pcall(function()
-        for _, child in ipairs(Workspace:GetChildren()) do
-            if child:IsA("BasePart") and child.Name == "SimpleHub_DuckBox" then child:Destroy() end
-        end
-    end)
-end
-
---// Core layer management. Existing core settings are restored when Simple Hub stops.
-local function startSkidLayer()
-    local settings = getSettings()
-    if type(settings) ~= "table" then return false end
-    if settings.PermanentABLock then
-        notify("Auto Block locked", "SkidSaken's safety lock is active.", "alert-triangle")
-        return false
-    end
-    settings.AutoBlock = false
-    settings.AutoBlockCustom = false
-    settings.AutoBlockRectangle = true
-    local start = G("StartAutoBlock")
-    local startHitbox = G("NS_StartHitboxLoop")
-    local ok, err = pcall(start)
-    if not ok then notify("SkidSaken start failed", tostring(err), "alert-triangle"); return false end
-    local ok2, err2 = pcall(startHitbox)
-    if not ok2 then
-        pcall(G("StopAutoBlock"))
-        notify("Hitbox start failed", tostring(err2), "alert-triangle")
-        return false
-    end
+    end))
     return true
 end
 
-local function stopSkidLayer()
-    local settings = getSettings()
-    if type(settings) == "table" then settings.AutoBlockRectangle = false end
-    pcall(G("StopAutoBlock"))
-    pcall(G("NS_StopHitboxLoop"))
-end
+State.Stop = stop
+SharedEnv.SimpleHubAutoBlock = State
 
-local function restoreCoreSettings()
-    local saved = SimpleAB.savedCore
-    if not saved then return end
-    stopSkidLayer()
-    local settings = getSettings()
-    if type(settings) == "table" then
-        settings.AutoBlock = saved.AutoBlock
-        settings.AutoBlockCustom = saved.AutoBlockCustom
-        settings.AutoBlockRectangle = saved.AutoBlockRectangle
-    end
-    if saved.wasRunning then
-        pcall(G("StartAutoBlock"))
-        if type(settings) == "table" and settings.AutoBlockRectangle then
-            pcall(G("NS_StartHitboxLoop"))
-        end
-    end
-    SimpleAB.savedCore = nil
-end
+-- Custom WindUI: Auto Block only.
+local WindUI
+local uiOK, uiResult = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+end)
+if uiOK then WindUI = uiResult end
 
-local function setSimpleHub(enabled)
+local function setEnabled(enabled)
     if enabled then
-        if not coreReady() then
-            notify("SkidSaken core missing", "Load the complete SkidSaken v1.7 core before enabling Simple Hub.", "alert-triangle")
-            return false
+        local ok, result = pcall(start)
+        if not ok or not result then
+            State.Enabled = false
+            pcall(function()
+                WindUI:Notify({
+                    Title = "Simple Hub",
+                    Content = "Auto Block could not start.",
+                    Icon = "alert-triangle",
+                    Duration = 3,
+                })
+            end)
+        else
+            pcall(function()
+                WindUI:Notify({
+                    Title = "Simple Hub",
+                    Content = "Auto Block enabled.",
+                    Icon = "shield-check",
+                    Duration = 2,
+                })
+            end)
         end
-        local settings = getSettings()
-        if settings.PermanentABLock then
-            notify("Auto Block locked", "SkidSaken's safety lock is active.", "alert-triangle")
-            return false
-        end
-        if not SimpleAB.savedCore then
-            local ab = G("AB")
-            SimpleAB.savedCore = {
-                AutoBlock = settings.AutoBlock,
-                AutoBlockCustom = settings.AutoBlockCustom,
-                AutoBlockRectangle = settings.AutoBlockRectangle,
-                wasRunning = type(ab) == "table" and ab.running == true,
-            }
-        end
-        Config.enabled = true
-        if Config.skidLayer and not startSkidLayer() then
-            Config.enabled = false
-            restoreCoreSettings()
-            return false
-        end
-        local watcherOK, watcherError = pcall(startWatcherLayers)
-        if not watcherOK then
-            Config.enabled = false
-            restoreCoreSettings()
-            notify("Watcher startup failed", tostring(watcherError), "alert-triangle")
-            return false
-        end
-        notify("Simple Hub active", "SkidSaken + Duck box + killer sound/animation watcher are running.", "shield-check")
-        return true
-    end
-
-    Config.enabled = false
-    stopWatcherLayers()
-    restoreCoreSettings()
-    notify("Simple Hub stopped", "All three detection layers have been stopped.", "shield-off")
-    return true
-end
-
-local function setSkidLayer(enabled)
-    Config.skidLayer = enabled
-    if not Config.enabled then return end
-    if enabled then
-        if not startSkidLayer() then Config.skidLayer = false end
     else
-        stopSkidLayer()
+        stop()
+        pcall(function()
+            WindUI:Notify({
+                Title = "Simple Hub",
+                Content = "Auto Block disabled.",
+                Icon = "shield-off",
+                Duration = 2,
+            })
+        end)
     end
 end
 
---// Tabs: order preserved from the requested layout.
-local TabESP = Window:Tab({ Title = "ESP", Icon = "eye" })
-local TabStamina = Window:Tab({ Title = "Stamina", Icon = "activity" })
-local TabAutoBlock = Window:Tab({ Title = "Auto Block", Icon = "shield-check" })
-local TabOther = Window:Tab({ Title = "Other stuff", Icon = "sliders-horizontal" })
+if WindUI then
+    local windowOK = pcall(function()
+        pcall(function()
+            WindUI.TransparencyValue = 0.10
+            WindUI:SetTheme("Dark")
+        end)
 
---// ESP tab
-local ESPOverview = section(TabESP, "Visual tracking", "scan-eye")
-ESPOverview:Paragraph({
-    Title = "SkidSaken ESP modules",
-    Desc = "These switches call ESP functions present in the supplied SkidSaken v1.7 source.",
-})
-local function espToggle(parent, title, tableName, startName, stopName, desc)
-    local state = false
-    local moduleTable = G(tableName)
-    if type(moduleTable) == "table" then state = moduleTable.running == true end
-    parent:Toggle({
-        Title = title,
-        Desc = desc,
-        Value = state,
-        Callback = function(enabled) runFeature(startName, stopName, enabled) end,
-    })
-end
-espToggle(ESPOverview, "Candy ESP", "CandyESP", "StartCandyESP", "StopCandyESP", "Marks C00lCandy pickups.")
-espToggle(ESPOverview, "Gear ESP", "GearESP", "StartGearESP", "StopGearESP", "Marks gear objects in the active map.")
-espToggle(ESPOverview, "Item ESP", "ItemESP", "StartItemESP", "StopItemESP", "Highlights item roots in the active map.")
-espToggle(ESPOverview, "Minion ESP", "MinionESP", "StartMinionESP", "StopMinionESP", "Highlights detected minion models.")
-espToggle(ESPOverview, "Azure Trap ESP", "AzureTrapESP", "StartAzureTrapESP", "StopAzureTrapESP", "Highlights Azure trap components.")
-
-local MapESPSection = section(TabESP, "Map objects", "map-pinned")
-local function mapEspToggle(title, mapKey, matcherName, color, desc)
-    MapESPSection:Toggle({
-        Title = title,
-        Desc = desc,
-        Value = type(G("MapESP")) == "table" and G("MapESP")[mapKey] ~= nil,
-        Callback = function(enabled)
-            if type(G("StartMapESP")) ~= "function" or type(G("StopMapESP")) ~= "function" or type(G(matcherName)) ~= "function" then
-                notify("ESP unavailable", "The map ESP helper is missing from the loaded core.", "alert-triangle")
-                return
-            end
-            if enabled then
-                local ok, err = pcall(G("StartMapESP"), mapKey, G(matcherName), color)
-                if not ok then notify("Map ESP error", tostring(err), "alert-triangle") end
-            else
-                pcall(G("StopMapESP"), mapKey)
-            end
-        end,
-    })
-end
-mapEspToggle("Graffiti ESP", "graffiti", "MatchGraffiti", Color3.fromRGB(175, 105, 255), "Marks graffiti objects.")
-mapEspToggle("Trapwire ESP", "trap", "MatchTrapwire", Color3.fromRGB(255, 155, 65), "Marks trapwire objects.")
-mapEspToggle("Tripmine ESP", "trip", "MatchTripmine", Color3.fromRGB(95, 220, 145), "Marks tripmine objects.")
-
---// Stamina tab
-local StaminaInfo = section(TabStamina, "Stamina controls", "activity")
-StaminaInfo:Paragraph({
-    Title = "Not safely portable from the supplied files",
-    Desc = "SkidSaken v1.7 has no stamina controller. Duck Hub's deobfuscated export has stamina settings, but its controller depends on unresolved locals and a malformed config table, so this hub does not expose fake stamina switches.",
-})
-
---// Auto Block tab
-local Master = section(TabAutoBlock, "Simple Hub engine", "shield-check")
-Master:Paragraph({
-    Title = "Three detection layers",
-    Desc = "1) SkidSaken native hitbox. 2) Duck Hub-style 8 x 7 x 12 oriented box. 3) Killer-filtered sound and animation names plus Duck's known attack-sound IDs. The first block attempt is immediate.",
-})
-Master:Toggle({
-    Title = "Enable Simple Hub Auto Block",
-    Desc = "Starts the three layers and one confirmation-based failover attempt.",
-    Value = false,
-    Callback = function(enabled) setSimpleHub(enabled) end,
-})
-
-local Layers = section(TabAutoBlock, "Layer controls", "layers")
-Layers:Toggle({
-    Title = "Layer 1: SkidSaken hitbox",
-    Desc = "Uses the original SkidSaken Auto Block Hitbox and its attack-attribute loop.",
-    Value = Config.skidLayer,
-    Callback = setSkidLayer,
-})
-Layers:Toggle({
-    Title = "Layer 2: Duck Hub box",
-    Desc = "Uses the Duck-style box overlap check with the uploaded dimensions and offset.",
-    Value = Config.duckLayer,
-    Callback = function(enabled) Config.duckLayer = enabled end,
-})
-Layers:Toggle({
-    Title = "Layer 3: killer + cue watcher",
-    Desc = "Only watches Slasher, C00lkid, 1x1x1x1, Noli, Guest 666, Nos/Nosferatu and Azure.",
-    Value = Config.cueLayer,
-    Callback = function(enabled) Config.cueLayer = enabled end,
-})
-Layers:Toggle({
-    Title = "Watch attack sounds",
-    Desc = "Matches sound/parent names against the attack words and accepts Duck Hub's whitelisted attack-sound IDs.",
-    Value = Config.soundWatcher,
-    Callback = function(enabled) Config.soundWatcher = enabled end,
-})
-Layers:Toggle({
-    Title = "Watch attack animations",
-    Desc = "Matches AnimationTrack.Name and Animation.Name against the attack words.",
-    Value = Config.animationWatcher,
-    Callback = function(enabled) Config.animationWatcher = enabled end,
-})
-Layers:Toggle({
-    Title = "Confirmation-based failover retry",
-    Desc = "If no local block-confirmation sound is detected, sends one retry after the selected delay.",
-    Value = Config.retryEnabled,
-    Callback = function(enabled) Config.retryEnabled = enabled end,
-})
-Layers:Slider({
-    Title = "Failover retry delay",
-    Desc = "The first attempt is still instant. This only controls the backup attempt.",
-    Value = { Min = 0.08, Max = 0.60, Default = Config.fallbackDelay },
-    Step = 0.02,
-    Callback = function(value) Config.fallbackDelay = math.clamp(tonumber(value) or 0.16, 0.08, 0.60) end,
-})
-Layers:Slider({
-    Title = "Maximum cue range",
-    Desc = "Prevents a distant killer sound from triggering a block.",
-    Value = { Min = 8, Max = 60, Default = Config.cueRange },
-    Step = 1,
-    Callback = function(value) Config.cueRange = math.clamp(tonumber(value) or 36, 8, 60) end,
-})
-
-local DuckBox = section(TabAutoBlock, "Duck Hub box settings", "scan-eye")
-DuckBox:Toggle({
-    Title = "Show Duck detection box",
-    Desc = "Shows a short-lived visual box when the Duck box or cue layer detects an attack.",
-    Value = Config.showDuckBox,
-    Callback = function(enabled) Config.showDuckBox = enabled end,
-})
-DuckBox:Slider({
-    Title = "Box width",
-    Value = { Min = 2, Max = 20, Default = Config.boxWidth },
-    Step = 0.5,
-    Callback = function(value) Config.boxWidth = math.clamp(tonumber(value) or 8, 2, 20) end,
-})
-DuckBox:Slider({
-    Title = "Box height",
-    Value = { Min = 2, Max = 20, Default = Config.boxHeight },
-    Step = 0.5,
-    Callback = function(value) Config.boxHeight = math.clamp(tonumber(value) or 7, 2, 20) end,
-})
-DuckBox:Slider({
-    Title = "Box depth",
-    Value = { Min = 4, Max = 30, Default = Config.boxDepth },
-    Step = 0.5,
-    Callback = function(value) Config.boxDepth = math.clamp(tonumber(value) or 12, 4, 30) end,
-})
-DuckBox:Slider({
-    Title = "Box distance offset",
-    Value = { Min = 0, Max = 8, Default = Config.boxDistance },
-    Step = 0.05,
-    Callback = function(value) Config.boxDistance = math.clamp(tonumber(value) or 0.01, 0, 8) end,
-})
-DuckBox:Slider({
-    Title = "Box transparency",
-    Value = { Min = 0, Max = 1, Default = Config.boxTransparency },
-    Step = 0.05,
-    Callback = function(value) Config.boxTransparency = math.clamp(tonumber(value) or 0.50, 0, 1) end,
-})
-DuckBox:Slider({
-    Title = "Visual duration",
-    Value = { Min = 0.1, Max = 1.5, Default = Config.visibleTime },
-    Step = 0.05,
-    Callback = function(value) Config.visibleTime = math.clamp(tonumber(value) or 0.40, 0.1, 1.5) end,
-})
-DuckBox:Colorpicker({
-    Title = "Duck box color",
-    Default = Config.boxColor,
-    Callback = function(color)
-        if typeof(color) == "Color3" then Config.boxColor = color end
-    end,
-})
-
-local Filters = section(TabAutoBlock, "Detection filters", "filter")
-Filters:Paragraph({
-    Title = "Killer names",
-    Desc = "Slasher  |  C00lkid / C00lkidd  |  1x1x1x1  |  Noli  |  Guest 666  |  Nos / Nosferatu  |  Azure",
-})
-Filters:Paragraph({
-    Title = "Attack name filters",
-    Desc = "SLASH  |  TAB  |  STAB  |  CARVING SLASH  |  EVISCERATE  |  LACERATE  |  PERFORATING",
-})
-
-local Aim = section(TabAutoBlock, "Aim Punch / Auto Punch", "crosshair")
-Aim:Paragraph({
-    Title = "SkidSaken feature",
-    Desc = "The supplied core already performs Punch after a local block-confirmation sound when AimPunch is enabled.",
-})
-Aim:Toggle({
-    Title = "Aim Punch / Auto Punch",
-    Value = getSetting("AimPunch", false) == true,
-    Callback = function(enabled) setSetting("AimPunch", enabled) end,
-})
-Aim:Slider({
-    Title = "Punch delay",
-    Value = { Min = 0, Max = 2, Default = tonumber(getSetting("PunchDelay", 0.5)) or 0.5 },
-    Step = 0.05,
-    Callback = function(value) setSetting("PunchDelay", math.clamp(tonumber(value) or 0.5, 0, 2)) end,
-})
-Aim:Dropdown({
-    Title = "Block ability mode",
-    Desc = "Guest 1337 uses Block; 007n7 uses Clone.",
-    Values = { "Guest 1337", "007n7" },
-    Value = getSetting("RectangleABMode", "Guest 1337"),
-    Callback = function(value)
-        local selected = pickValue(value)
-        if selected == "Guest 1337" or selected == "007n7" then
-            setSetting("RectangleABMode", selected)
-        end
-    end,
-})
-
---// Other stuff tab
-local Appearance = section(TabOther, "Appearance", "palette")
-local themeNames = {}
-pcall(function()
-    for name in pairs(WindUI:GetThemes()) do
-        if type(name) == "string" then table.insert(themeNames, name) end
+        local window = WindUI:CreateWindow({
+            Title = "SIMPLE HUB",
+            Author = "AUTO BLOCK",
+            Icon = "shield-check",
+            Theme = "Dark",
+            Acrylic = true,
+            Transparent = true,
+        })
+        local tab = window:Tab({ Title = "Auto Block", Icon = "shield-check" })
+        local section = tab:Section({
+            Title = "Auto Block",
+            Icon = "shield-check",
+            Box = true,
+            BoxBorder = true,
+        })
+        section:Toggle({
+            Title = "Auto Block",
+            Value = false,
+            Callback = function(value)
+                setEnabled(value == true)
+            end,
+        })
+    end)
+    if not windowOK then
+        warn("[Simple Hub] WindUI window could not be created.")
     end
-end)
-if #themeNames == 0 then themeNames = { "Dark", "Light" } end
-table.sort(themeNames)
-Appearance:Dropdown({
-    Title = "WindUI theme",
-    Values = themeNames,
-    Value = "Dark",
-    Callback = function(value)
-        local selected = pickValue(value)
-        if type(selected) == "string" then pcall(function() WindUI:SetTheme(selected) end) end
-    end,
-})
-Appearance:Slider({
-    Title = "UI transparency",
-    Value = { Min = 0, Max = 0.35, Default = 0.10 },
-    Step = 0.01,
-    Callback = function(value)
-        pcall(function() WindUI.TransparencyValue = math.clamp(tonumber(value) or 0.10, 0, 0.35) end)
-    end,
-})
+else
+    warn("[Simple Hub] WindUI failed to load. Auto Block module is ready but no toggle UI was created.")
+end
 
-local Utility = section(TabOther, "Utilities", "wrench")
-Utility:Button({
-    Title = "Stop Simple Hub",
-    Desc = "Stops all three Auto Block layers and restores the previous core toggles.",
-    Icon = "shield-off",
-    Callback = function() setSimpleHub(false) end,
-})
-Utility:Button({
-    Title = "Stop ESP modules",
-    Desc = "Stops the ESP modules from the supplied SkidSaken file.",
-    Icon = "eye-off",
-    Callback = function()
-        local names = { "StopCandyESP", "StopGearESP", "StopItemESP", "StopMinionESP", "StopAzureTrapESP" }
-        for _, name in ipairs(names) do
-            local fn = G(name)
-            if type(fn) == "function" then pcall(fn) end
-        end
-        if type(G("StopMapESP")) == "function" then
-            pcall(G("StopMapESP"), "graffiti")
-            pcall(G("StopMapESP"), "trap")
-            pcall(G("StopMapESP"), "trip")
-        end
-        notify("ESP", "Available ESP modules stopped.", "check")
-    end,
-})
-local Status = section(TabOther, "Core status", "activity-square")
-Status:Paragraph({
-    Title = coreReady() and "SkidSaken core detected" or "Waiting for SkidSaken core",
-    Desc = coreReady()
-        and "Core hooks were found. Simple Hub can start the native hitbox layer and route backup triggers through FireAbilityByMode."
-        or "Execute the complete SkidSaken v1.7 core before enabling the Auto Block system.",
-})
-Status:Paragraph({
-    Title = "Animation-name note",
-    Desc = "Animation detection checks AnimationTrack.Name and Animation.Name. If a game's animation objects have blank/unrelated names, that animation will not match; sound names and Duck's known sound IDs remain active as separate detectors.",
-})
-
-pcall(function()
-    Window:CreateTopbarButton("simple-theme", "palette", function()
-        local current = WindUI:GetCurrentTheme()
-        local nextTheme = current == "Dark" and "Light" or "Dark"
-        WindUI:SetTheme(nextTheme)
-        notify("Theme", "Switched to " .. nextTheme .. ".", "palette")
-    end, 990)
-end)
-
-notify("Simple Hub ready", "Load SkidSaken first, then enable the 3-layer Auto Block.", "check-circle")
-print("[Simple Hub] Custom WindUI loaded | 3-layer Auto Block ready")
+print("[Simple Hub] Auto Block loaded.")
